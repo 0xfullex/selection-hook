@@ -1,6 +1,8 @@
 node_modules
 build
 bin
+.git
+.github
 .backup
 .vscode
 .cursorrules

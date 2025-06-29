@@ -23,11 +23,13 @@
           ],
           "libraries": [ 
             "uiautomationcore.lib",
-            "user32.lib"  # Required for mouse hooks
+            # Required for mouse hooks
+            "user32.lib"
           ],
           "msvs_settings": {
             "VCCLCompilerTool": {
-              "ExceptionHandling": "1"  # Enable C++ exception handling (/EHsc)
+              # Enable C++ exception handling (/EHsc)
+              "ExceptionHandling": "1" 
             }
           }
         }],
@@ -47,7 +49,7 @@
           "link_settings": {
             "libraries": [
               "-framework ApplicationServices",
-              "-framework Cocoa",
+              "-framework Cocoa"
             ]
           }
         }],

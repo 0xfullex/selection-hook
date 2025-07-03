@@ -6,3 +6,4 @@ bin
 .backup
 .vscode
 .cursorrules
+.clang-format

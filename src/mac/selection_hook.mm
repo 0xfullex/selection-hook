@@ -27,12 +27,10 @@
  */
 
 #import <napi.h>
-#include <cstdint>
 
 #import <atomic>
 #import <string>
 #import <thread>
-// #import <vector>
 
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
@@ -231,6 +229,8 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
+    // current App(myself) process pid
+    pid_t running_pid = 0;
 
     CFRunLoopRef eventRunLoop = nullptr;
 
@@ -919,6 +919,10 @@ bool SelectionHook::GetTextViaAXAPI(NSRunningApplication *frontApp, TextSelectio
  */
 bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo)
 {
+    // currently, we don't support clipboard of the same process, we will fix it in future time
+    if (frontApp.processIdentifier == running_pid)
+        return false;
+
     int64_t newClipboardSequence = GetClipboardSequence();
 
     // Check if clipboard sequence number has changed since mouse down
@@ -935,9 +939,7 @@ bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSele
     }
 
     // no new copied message or read clipboard failed, we need to send Cmd+C to copy
-
     clipboard_sequence = newClipboardSequence;
-
     // Store current clipboard content to restore later
     std::string originalContent;
     bool hasOriginalContent = ReadClipboard(originalContent);
@@ -946,10 +948,9 @@ bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSele
     if (!SendCopyKey(frontApp.processIdentifier))
         return false;
 
-    // Check clipboard sequence number in a loop with 20ms interval
+    // Check clipboard sequence number in a loop with 10ms interval
     // This gives the copy operation up to 100ms to complete
     bool clipboardChanged = false;
-
     for (int i = 0; i < 10; i++)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1425,6 +1426,9 @@ void SelectionHook::MouseKeyboardEventThreadProc()
         CFRunLoopAddSource(eventRunLoop, keyboardRunLoopSource, kCFRunLoopDefaultMode);
         CGEventTapEnable(keyboardEventTap, true);
     }
+
+    // save current process pid
+    running_pid = getpid();
 
     // Run the event loop - this will block until CFRunLoopStop() is called
     CFRunLoopRun();

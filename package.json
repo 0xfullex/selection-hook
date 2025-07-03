@@ -1,6 +1,6 @@
 {
   "name": "selection-hook",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Text selection monitoring of native Node.js module with N-API across applications",
   "author": "0xfullex",
   "repository": {

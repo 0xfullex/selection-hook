@@ -907,6 +907,15 @@ bool SelectionHook::GetTextViaAXAPI(NSRunningApplication *frontApp, TextSelectio
         }
     }
 
+    // if we can't get text by AXAPI, we have to do final try for special cases
+    if (!result)
+    {
+        // Chrome/Chromium: set "AXEnhancedUserInterface" to true to enable AXAPI
+        AXUIElementSetAttributeValue(appElement, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
+        // Electron Apps: set "AXManualAccessibility" to true to enable AXAPI
+        AXUIElementSetAttributeValue(appElement, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
+    }
+
     // Clean up
     CFRelease(focusedElement);
     CFRelease(appElement);

@@ -46,7 +46,7 @@ constexpr int DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE = 128;
 
 // Mouse interaction constants
 constexpr int MIN_DRAG_DISTANCE = 8;
-constexpr uint64_t MAX_DRAG_TIME_MS = 8000;
+constexpr uint64_t MAX_DRAG_TIME_MS = 15000;
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
 static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 
@@ -1261,12 +1261,18 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
                     if (lastCharRangeValue)
                         CFRelease(lastCharRangeValue);
                 }
+                else
+                {
+                    if (firstCharRangeValue)
+                        CFRelease(firstCharRangeValue);
+                    if (lastCharRangeValue)
+                        CFRelease(lastCharRangeValue);
+                }
             }
         }
+        CFRelease(selectedRangeValue);
+        selectedRangeValue = nullptr;
     }
-
-    CFRelease(selectedRangeValue);
-    selectedRangeValue = nullptr;
 
     // Strategy 2: Try to get selected text range bounds using kAXBoundsForRangeParameterizedAttribute
     error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&selectedRangeValue);
@@ -1281,7 +1287,6 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
                 AXValueRef boundsValue = nullptr;
                 error = AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute,
                                                                    selectedRangeValue, (CFTypeRef *)&boundsValue);
-
                 if (error == kAXErrorSuccess && boundsValue)
                 {
                     CGRect rect = CGRectZero;
@@ -1308,9 +1313,8 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
                 }
             }
         }
+        CFRelease(selectedRangeValue);
     }
-
-    CFRelease(selectedRangeValue);
 
     return false;
 }

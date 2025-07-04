@@ -107,5 +107,6 @@ bool isIBeamCursor(NSCursor *cursor)
         return false;
 
     NSPoint hotSpot = [cursor hotSpot];
-    return NSEqualPoints(hotSpot, {4.0, 9.0});
+
+    return NSEqualPoints(hotSpot, {4.0, 9.0}) || NSEqualPoints(hotSpot, {16.0, 16.0});
 }

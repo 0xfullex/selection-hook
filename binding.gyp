@@ -53,7 +53,25 @@
             ]
           }
         }],
-        ['OS!="win" and OS!="mac"', {
+        ['OS=="linux"', {
+          "sources": [ 
+            "src/linux/selection_hook.cc"
+          ],
+          "libraries": [ 
+            "-levdev",
+            "-lX11",
+            "-lXext",
+            "-lXtst"
+          ],
+          "cflags_cc": [
+            "-std=c++17",
+            "-fexceptions"
+          ],
+          "include_dirs": [
+            "/usr/include/libevdev-1.0"
+          ]
+        }],
+        ['OS!="win" and OS!="mac" and OS!="linux"', {
           "defines": [
             "UNSUPPORTED_PLATFORM"
           ]

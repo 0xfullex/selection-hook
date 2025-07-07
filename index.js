@@ -2,7 +2,7 @@
  * Node Selection Hook
  *
  * This module provides a Node.js interface for monitoring text selections
- * across applications on Windows and macOS using UI Automation and Accessibility APIs.
+ * across applications on Windows, macOS, and Linux using UI Automation and Accessibility APIs.
  *
  * Copyright (c) 2025 0xfullex (https://github.com/0xfullex/selection-hook)
  * Licensed under the MIT License
@@ -14,14 +14,15 @@ const path = require("path");
 
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
+const isLinux = process.platform === "linux";
 
 let nativeModule = null;
 // Make debugFlag a private module variable to avoid global state issues
 let _debugFlag = false;
 
 try {
-  if (!isWindows && !isMac) {
-    throw new Error("[selection-hook] Only supports Windows and macOS platforms");
+  if (!isWindows && !isMac && !isLinux) {
+    throw new Error("[selection-hook] Only supports Windows, macOS, and Linux platforms");
   }
   nativeModule = gypBuild(path.resolve(__dirname));
 } catch (err) {
@@ -63,7 +64,7 @@ class SelectionHook extends EventEmitter {
   constructor() {
     if (!nativeModule) {
       throw new Error(
-        "[selection-hook] Native module failed to load - only works on Windows and macOS"
+        "[selection-hook] Native module failed to load - only works on Windows, macOS, and Linux"
       );
     }
     super();

@@ -16,8 +16,20 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/XInput2.h>
 #include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
+
+// epoll headers
+#include <sys/epoll.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <cstdio>
+#include <thread>
+
+// Linux input event constants
+#include <linux/input.h>
 
 // Undefine X11 None macro that conflicts with our enum
 #ifdef None
@@ -37,8 +49,51 @@ class X11Protocol : public ProtocolBase
     int screen;
     Window root;
 
+    // XInput2 related
+    int xi_opcode;
+    bool xi_initialized;
+    // std::vector<int> xi_devices;
+
+    // epoll monitoring
+    int epoll_fd;
+    int x11_fd;
+
+    // Thread management
+    std::atomic<bool> input_monitoring_running;
+    std::thread input_monitoring_thread;
+
+    // Callback functions
+    MouseEventCallback mouse_callback;
+    KeyboardEventCallback keyboard_callback;
+    void* callback_context;
+
+    // Current mouse position tracking
+    Point current_mouse_pos;
+
+    // Helper methods
+    bool InitializeXInput2();
+    void CleanupXInput2();
+    bool SetupXInput2DeviceMonitoring();
+    void InputMonitoringThreadProc();
+    void ProcessXInput2Event(XGenericEventCookie* cookie);
+    // bool RefreshXInput2Devices();
+
   public:
-    X11Protocol() : display(nullptr), screen(0), root(0) {}
+    X11Protocol()
+        : display(nullptr),
+          screen(0),
+          root(0),
+          xi_opcode(-1),
+          xi_initialized(false),
+          epoll_fd(-1),
+          x11_fd(-1),
+          input_monitoring_running(false),
+          mouse_callback(nullptr),
+          keyboard_callback(nullptr),
+          callback_context(nullptr),
+          current_mouse_pos(0, 0)
+    {
+    }
 
     ~X11Protocol() override { Cleanup(); }
 
@@ -324,33 +379,99 @@ class X11Protocol : public ProtocolBase
         return false;
     }
 
-    // Input monitoring implementation (placeholder for future XInput2 implementation)
+    // Input monitoring implementation using XInput2
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
                                    void* context) override
     {
-        // TODO: Implement X11-specific input monitoring using XInput2
-        // This would involve setting up XInput2 device monitoring
-        // For now, return false to indicate not implemented
-        return false;
+        if (!display)
+            return false;
+
+        // Store callback functions
+        mouse_callback = mouseCallback;
+        keyboard_callback = keyboardCallback;
+        callback_context = context;
+
+        // Initialize XInput2
+        if (!InitializeXInput2())
+            return false;
+
+        // Setup epoll for X11 connection monitoring
+        epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+        if (epoll_fd < 0)
+        {
+            CleanupXInput2();
+            return false;
+        }
+
+        // Get X11 connection file descriptor
+        x11_fd = ConnectionNumber(display);
+
+        // Add X11 fd to epoll
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLET;
+        ev.data.fd = x11_fd;
+
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, x11_fd, &ev) < 0)
+        {
+            close(epoll_fd);
+            epoll_fd = -1;
+            CleanupXInput2();
+            return false;
+        }
+
+        // Setup XInput2 device monitoring
+        if (!SetupXInput2DeviceMonitoring())
+        {
+            close(epoll_fd);
+            epoll_fd = -1;
+            CleanupXInput2();
+            return false;
+        }
+
+        return true;
     }
 
     void CleanupInputMonitoring() override
     {
-        // TODO: Implement X11-specific input monitoring cleanup
-        // This would involve cleaning up XInput2 resources
+        // Stop monitoring first
+        StopInputMonitoring();
+
+        // Close epoll file descriptor
+        if (epoll_fd >= 0)
+        {
+            close(epoll_fd);
+            epoll_fd = -1;
+        }
+
+        // Cleanup XInput2
+        CleanupXInput2();
+
+        // Reset callback functions
+        mouse_callback = nullptr;
+        keyboard_callback = nullptr;
+        callback_context = nullptr;
     }
 
     bool StartInputMonitoring() override
     {
-        // TODO: Implement X11-specific input monitoring start
-        // This would start the XInput2 event monitoring
-        return false;
+        if (!display || !xi_initialized || input_monitoring_running)
+            return false;
+
+        if (epoll_fd < 0 || x11_fd < 0)
+            return false;
+
+        input_monitoring_running = true;
+        input_monitoring_thread = std::thread(&X11Protocol::InputMonitoringThreadProc, this);
+        return true;
     }
 
     void StopInputMonitoring() override
     {
-        // TODO: Implement X11-specific input monitoring stop
-        // This would stop the XInput2 event monitoring
+        input_monitoring_running = false;
+        if (input_monitoring_thread.joinable())
+        {
+            input_monitoring_thread.join();
+        }
     }
 
     // X11-specific methods
@@ -373,6 +494,331 @@ class X11Protocol : public ProtocolBase
         return true;
     }
 };
+
+// XInput2 helper methods implementation
+bool X11Protocol::InitializeXInput2()
+{
+    if (!display)
+        return false;
+
+    // Check if XInput2 extension is available
+    int event, error;
+    if (!XQueryExtension(display, "XInputExtension", &xi_opcode, &event, &error))
+    {
+        return false;
+    }
+
+    // Check XInput2 version
+    int major = 2, minor = 0;
+    if (XIQueryVersion(display, &major, &minor) == BadRequest)
+    {
+        return false;
+    }
+
+    xi_initialized = true;
+    // return RefreshXInput2Devices();
+    return true;
+}
+
+void X11Protocol::CleanupXInput2()
+{
+    if (xi_initialized)
+    {
+        // xi_devices.clear();
+        xi_initialized = false;
+    }
+}
+
+// bool X11Protocol::RefreshXInput2Devices()
+// {
+//     if (!display || !xi_initialized)
+//         return false;
+
+//     // xi_devices.clear();
+
+//     // Get all XI2 devices
+//     int ndevices;
+//     XIDeviceInfo* devices = XIQueryDevice(display, XIAllDevices, &ndevices);
+//     if (!devices)
+//         return false;
+
+//     // Find all master and slave devices that can generate events
+//     for (int i = 0; i < ndevices; i++)
+//     {
+//         XIDeviceInfo* device = &devices[i];
+
+//         // We want master devices and slave devices that are attached
+//         if (device->use == XIMasterPointer || device->use == XIMasterKeyboard)
+//         {
+//             xi_devices.push_back(device->deviceid);
+//         }
+//     }
+
+//     XIFreeDeviceInfo(devices);
+//     return !xi_devices.empty();
+// }
+
+bool X11Protocol::SetupXInput2DeviceMonitoring()
+{
+    if (!display || !xi_initialized)
+        return false;
+
+    // Set up event mask for raw input events
+    XIEventMask eventmask;
+    unsigned char mask[XIMaskLen(XI_LASTEVENT)] = {0};
+
+    // Enable raw events for mouse and keyboard
+    XISetMask(mask, XI_RawMotion);
+    XISetMask(mask, XI_RawButtonPress);
+    XISetMask(mask, XI_RawButtonRelease);
+    XISetMask(mask, XI_RawKeyPress);
+    XISetMask(mask, XI_RawKeyRelease);
+
+    // Enable hierarchy change events for hotplug support
+    // XI_HierarchyChanged is introduced in XInput2 2.3, for now we don't need it
+    // XISetMask(mask, XI_HierarchyChanged);
+
+    eventmask.deviceid = XIAllDevices;
+    eventmask.mask_len = sizeof(mask);
+    eventmask.mask = mask;
+
+    // Select events on root window
+    if (XISelectEvents(display, root, &eventmask, 1) != Success)
+    {
+        return false;
+    }
+
+    XFlush(display);
+    return true;
+}
+
+void X11Protocol::InputMonitoringThreadProc()
+{
+    if (!display || epoll_fd < 0)
+        return;
+
+    const int MAX_EVENTS = 64;
+    struct epoll_event events[MAX_EVENTS];
+
+    while (input_monitoring_running)
+    {
+        // Wait for X11 events with timeout (10ms)
+        int num_events = epoll_wait(epoll_fd, events, MAX_EVENTS, 10);
+
+        if (num_events < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+
+        if (num_events == 0)
+            continue;
+
+        // Process X11 events
+        for (int i = 0; i < num_events; i++)
+        {
+            if (events[i].data.fd == x11_fd && (events[i].events & EPOLLIN))
+            {
+                // Process pending X11 events
+                while (XPending(display) > 0)
+                {
+                    XEvent event;
+                    XNextEvent(display, &event);
+
+                    // Handle XInput2 events
+                    if (event.type == GenericEvent && event.xcookie.extension == xi_opcode)
+                    {
+                        if (XGetEventData(display, &event.xcookie))
+                        {
+                            ProcessXInput2Event(&event.xcookie);
+                            XFreeEventData(display, &event.xcookie);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void X11Protocol::ProcessXInput2Event(XGenericEventCookie* cookie)
+{
+    if (!cookie || !cookie->data)
+        return;
+
+    switch (cookie->evtype)
+    {
+        case XI_RawMotion:
+        {
+            XIRawEvent* raw_event = (XIRawEvent*)cookie->data;
+            if (mouse_callback)
+            {
+                // Update current mouse position based on raw delta
+                double dx = 0, dy = 0;
+                if (raw_event->raw_values)
+                {
+                    if (XIMaskIsSet(raw_event->valuators.mask, 0))
+                        dx = raw_event->raw_values[0];
+                    if (XIMaskIsSet(raw_event->valuators.mask, 1))
+                        dy = raw_event->raw_values[1];
+                }
+
+                current_mouse_pos.x += static_cast<int>(dx);
+                current_mouse_pos.y += static_cast<int>(dy);
+
+                // Generate REL_X event if dx != 0
+                if (dx != 0)
+                {
+                    MouseEventContext* mouseEvent = new MouseEventContext();
+                    mouseEvent->type = EV_REL;
+                    mouseEvent->code = REL_X;
+                    mouseEvent->value = static_cast<int>(dx);
+                    mouseEvent->pos = current_mouse_pos;
+                    mouseEvent->button = static_cast<int>(MouseButton::None);
+                    mouseEvent->flag = 0;
+
+                    mouse_callback(callback_context, mouseEvent);
+                }
+
+                // Generate REL_Y event if dy != 0
+                if (dy != 0)
+                {
+                    MouseEventContext* mouseEvent = new MouseEventContext();
+                    mouseEvent->type = EV_REL;
+                    mouseEvent->code = REL_Y;
+                    mouseEvent->value = static_cast<int>(dy);
+                    mouseEvent->pos = current_mouse_pos;
+                    mouseEvent->button = static_cast<int>(MouseButton::None);
+                    mouseEvent->flag = 0;
+
+                    mouse_callback(callback_context, mouseEvent);
+                }
+            }
+            break;
+        }
+        case XI_RawButtonPress:
+        case XI_RawButtonRelease:
+        {
+            printf("XI_RawButtonPress/Release: %d\n", cookie->evtype);
+
+            XIRawEvent* raw_event = (XIRawEvent*)cookie->data;
+
+            if (mouse_callback)
+            {
+                MouseEventContext* mouseEvent = new MouseEventContext();
+                mouseEvent->value = (cookie->evtype == XI_RawButtonPress) ? 1 : 0;
+                mouseEvent->pos = current_mouse_pos;
+
+                // Map X11 button numbers to Linux input event codes
+                switch (raw_event->detail)
+                {
+                    case 1:  // Left button
+                        mouseEvent->type = EV_KEY;
+                        mouseEvent->code = BTN_LEFT;
+                        mouseEvent->button = static_cast<int>(MouseButton::Left);
+                        mouseEvent->flag = 0;
+                        break;
+                    case 2:  // Middle button
+                        mouseEvent->type = EV_KEY;
+                        mouseEvent->code = BTN_MIDDLE;
+                        mouseEvent->button = static_cast<int>(MouseButton::Middle);
+                        mouseEvent->flag = 0;
+                        break;
+                    case 3:  // Right button
+                        mouseEvent->type = EV_KEY;
+                        mouseEvent->code = BTN_RIGHT;
+                        mouseEvent->button = static_cast<int>(MouseButton::Right);
+                        mouseEvent->flag = 0;
+                        break;
+                    case 4:  // Wheel up
+                        mouseEvent->type = EV_REL;
+                        mouseEvent->code = REL_WHEEL;
+                        mouseEvent->value = 1;
+                        mouseEvent->button = static_cast<int>(MouseButton::WheelVertical);
+                        mouseEvent->flag = 1;
+                        break;
+                    case 5:  // Wheel down
+                        mouseEvent->type = EV_REL;
+                        mouseEvent->code = REL_WHEEL;
+                        mouseEvent->value = -1;
+                        mouseEvent->button = static_cast<int>(MouseButton::WheelVertical);
+                        mouseEvent->flag = -1;
+                        break;
+                    case 6:  // Wheel left
+                        mouseEvent->type = EV_REL;
+                        mouseEvent->code = REL_HWHEEL;
+                        mouseEvent->value = -1;
+                        mouseEvent->button = static_cast<int>(MouseButton::WheelHorizontal);
+                        mouseEvent->flag = -1;
+                        break;
+                    case 7:  // Wheel right
+                        mouseEvent->type = EV_REL;
+                        mouseEvent->code = REL_HWHEEL;
+                        mouseEvent->value = 1;
+                        mouseEvent->button = static_cast<int>(MouseButton::WheelHorizontal);
+                        mouseEvent->flag = 1;
+                        break;
+                    case 8:  // Back button
+                        mouseEvent->type = EV_KEY;
+                        mouseEvent->code = BTN_BACK;
+                        mouseEvent->button = static_cast<int>(MouseButton::Back);
+                        mouseEvent->flag = 0;
+                        break;
+                    case 9:  // Forward button
+                        mouseEvent->type = EV_KEY;
+                        mouseEvent->code = BTN_FORWARD;
+                        mouseEvent->button = static_cast<int>(MouseButton::Forward);
+                        mouseEvent->flag = 0;
+                        break;
+                    default:
+                        mouseEvent->type = EV_KEY;
+                        mouseEvent->code = raw_event->detail;
+                        mouseEvent->button = static_cast<int>(MouseButton::Unknown);
+                        mouseEvent->flag = 0;
+                        break;
+                }
+
+                mouse_callback(callback_context, mouseEvent);
+            }
+            break;
+        }
+        case XI_RawKeyPress:
+        case XI_RawKeyRelease:
+        {
+            XIRawEvent* raw_event = (XIRawEvent*)cookie->data;
+
+            if (keyboard_callback)
+            {
+                KeyboardEventContext* keyboardEvent = new KeyboardEventContext();
+                keyboardEvent->type = EV_KEY;
+                keyboardEvent->code = raw_event->detail;
+                keyboardEvent->value = (cookie->evtype == XI_RawKeyPress) ? 1 : 0;
+                keyboardEvent->flags = 0;  // TODO: Add modifier flags
+
+                keyboard_callback(callback_context, keyboardEvent);
+            }
+            break;
+        }
+            // case XI_HierarchyChanged:
+            // {
+            //     // Handle device hotplug events
+            //     XIHierarchyEvent* hierarchy_event = (XIHierarchyEvent*)cookie->data;
+            //     for (int i = 0; i < hierarchy_event->num_info; i++)
+            //     {
+            //         XIHierarchyInfo* info = &hierarchy_event->info[i];
+            //         if (info->flags & (XIDeviceEnabled | XIDeviceDisabled | XISlaveAdded | XISlaveRemoved))
+            //         {
+            //             // Refresh device list when devices are added/removed
+            //             RefreshXInput2Devices();
+            //             // Re-setup monitoring for new devices
+            //             SetupXInput2DeviceMonitoring();
+            //             break;
+            //         }
+            //     }
+            //     break;
+            // }
+    }
+}
 
 // Factory function to create X11Protocol instance
 std::unique_ptr<ProtocolBase> CreateX11Protocol()

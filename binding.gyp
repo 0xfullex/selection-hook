@@ -63,7 +63,8 @@
             "-levdev",
             "-lX11",
             "-lXext",
-            "-lXtst"
+            "-lXtst",
+            "-lXi"
           ],
           "cflags_cc": [
             "-std=c++17",

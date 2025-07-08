@@ -61,6 +61,13 @@ class SelectionHook extends EventEmitter {
     INCLUDE_CLIPBOARD_DELAY_READ: 1,
   };
 
+  // Linux only
+  static DisplayProtocol = {
+    UNKNOWN: 0,
+    X11: 1,
+    WAYLAND: 2,
+  };
+
   constructor() {
     if (!nativeModule) {
       throw new Error(
@@ -402,6 +409,29 @@ class SelectionHook extends EventEmitter {
     } catch (err) {
       this.#handleError("Failed to read text from clipboard", err);
       return null;
+    }
+  }
+
+  /**
+   * Get current display protocol (Linux only)
+   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   */
+  getCurrentDisplayProtocol() {
+    if (!isLinux) {
+      this.#logDebug("getCurrentDisplayProtocol is only supported on Linux");
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+
+    try {
+      return this.#instance.getCurrentDisplayProtocol();
+    } catch (err) {
+      this.#handleError("Failed to get current display protocol", err);
+      return SelectionHook.DisplayProtocol.UNKNOWN;
     }
   }
 

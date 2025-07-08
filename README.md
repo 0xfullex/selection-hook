@@ -17,7 +17,7 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - Keyboard events: `keydown/keyup` with keys
   - _No additional hooks required_ – works natively.
 - **Multi-method text extraction** (automatic fallback):
-  - For Windows: 
+  - For Windows:
     - _UI Automation_ (modern apps)
     - _Accessibility API_ (legacy apps)
     - _Focused control_ (active input fields)
@@ -33,11 +33,11 @@ Maybe the first-ever open-source, fully functional text selection tool.
 
 ## Supported Platforms
 
-| Platform | Status |
-|----------|--------|
-| Windows  | ✅ Fully supported. Windows 7+ |
-| macOS    | ✅ Fully supported. macOS 10.14+ |
-| Linux    | 🚧 Coming soon. |
+| Platform | Status                                              |
+| -------- | --------------------------------------------------- |
+| Windows  | ✅ Fully supported. Windows 7+                      |
+| macOS    | ✅ Fully supported. macOS 10.14+                    |
+| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Coming soon. |
 
 ## Installation
 
@@ -55,12 +55,12 @@ npm run demo
 
 ### Use pre-built packages
 
-The npm package ships with pre-built `.node` files in `prebuilds/*` — no rebuilding needed. 
+The npm package ships with pre-built `.node` files in `prebuilds/*` — no rebuilding needed.
 
 ### Build from scratch
 
 - Use `npm run rebuild` to build your platform's specific package.
-- Use `npm run prebuild` to build packages for all the supported platforms. 
+- Use `npm run prebuild` to build packages for all the supported platforms.
 
 #### Python setuptools
 
@@ -79,7 +79,6 @@ rebuildConfig: {
     onlyModules: [],
 },
 ```
-
 
 ## Usage
 
@@ -192,8 +191,9 @@ Configure fine-tuned lists for specific application behaviors. This allows you t
 For example, you can add `acrobat.exe` to those lists to enable text seleted in Acrobat.
 
 List types:
+
 - `EXCLUDE_CLIPBOARD_CURSOR_DETECT`: Exclude cursor detection for clipboard operations
-- `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content 
+- `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content
 
 See `SelectionHook.FineTunedListType` constants for details.
 
@@ -209,6 +209,18 @@ Write text to the system clipboard. This is useful for implementing custom copy 
 
 Read text from the system clipboard. Returns clipboard text content as string, or null if clipboard is empty or contains non-text data.
 
+#### **`getCurrentDisplayProtocol(): number`**
+
+_Linux Only_
+
+Get the current display protocol being used by the selection hook. This method returns the protocol that was detected during initialization and is useful for debugging and understanding which protocol is being used.
+
+Returns one of the `SelectionHook.DisplayProtocol` constants:
+
+- `UNKNOWN`: No protocol detected
+- `X11`: X11 protocol is being used
+- `WAYLAND`: Wayland protocol is being used
+
 #### **`macIsProcessTrusted(): boolean`**
 
 _macOS Only_
@@ -219,7 +231,7 @@ Check if the process is trusted for accessibility. If the process is not trusted
 
 _macOS Only_
 
-Try to request accessibility permissions. This MAY show a dialog to the user if permissions are not granted. 
+Try to request accessibility permissions. This MAY show a dialog to the user if permissions are not granted.
 
 Note: The return value indicates the current permission status, not the request result.
 
@@ -333,7 +345,7 @@ Contains mouse click/movement information in screen coordinates.
 | `y`      | `number` | Vertical pointer position (px)                                                                                                  |
 | `button` | `number` | Same as WebAPIs' MouseEvent.button <br /> `0`=Left, `1`=Middle, `2`=Right, `3`=Back, `4`=Forward <br /> `-1`=None, `99`=Unknown |
 
-If `button != -1` when `mouse-move`, which means it's dragging. 
+If `button != -1` when `mouse-move`, which means it's dragging.
 
 #### `MouseWheelEventData`
 
@@ -359,8 +371,9 @@ Represents keyboard key presses/releases.
 | `action`   | `string?` | `"key-down"` or `"key-up"`                                                  |
 
 About vkCode:
-- Windows: VK_* values of vkCode
-- macOS: kVK_* values of kCGKeyboardEventKeycode
+
+- Windows: VK\_\* values of vkCode
+- macOS: kVK\_\* values of kCGKeyboardEventKeycode
 
 ### Constants
 
@@ -399,6 +412,16 @@ Defines types for fine-tuned application behavior lists:
 
 - `EXCLUDE_CLIPBOARD_CURSOR_DETECT`: Exclude cursor detection for clipboard operations. Useful for applications with custom cursors (e.g., Adobe Acrobat) where cursor shape detection may not work reliably.
 - `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content. Useful for applications that modify clipboard content multiple times in quick succession (e.g., Adobe Acrobat).
+
+#### **`SelectionHook.DisplayProtocol`**
+
+_Linux Only_
+
+Defines the display protocol types used on Linux systems:
+
+- `UNKNOWN`: No protocol detected or not applicable
+- `X11`: X11 windowing system protocol
+- `WAYLAND`: Wayland display server protocol
 
 ### TypeScript Support
 

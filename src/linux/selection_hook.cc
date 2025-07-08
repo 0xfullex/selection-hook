@@ -32,6 +32,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -42,15 +43,10 @@
 // Include common definitions
 #include "common.h"
 
-// libevdev headers (for input monitoring)
-#include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <libevdev/libevdev.h>
+// Headers for input monitoring - now handled by protocol layer
+
+// Linux input constants for event processing
 #include <linux/input.h>
-#include <sys/epoll.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 // Undefine X11 None macro that conflicts with our enum
 #ifdef None
@@ -58,8 +54,24 @@
 #endif
 
 // External function declarations from protocol implementations
-extern bool InitializeX11Protocol(ProtocolInterface *protocol);
-extern bool InitializeWaylandProtocol(ProtocolInterface *protocol);
+extern std::unique_ptr<ProtocolBase> CreateX11Protocol();
+extern std::unique_ptr<ProtocolBase> CreateWaylandProtocol();
+
+/**
+ * Factory function to create protocol instances
+ */
+std::unique_ptr<ProtocolBase> CreateProtocol(DisplayProtocol protocol)
+{
+    switch (protocol)
+    {
+        case DisplayProtocol::X11:
+            return CreateX11Protocol();
+        case DisplayProtocol::Wayland:
+            return CreateWaylandProtocol();
+        default:
+            return nullptr;
+    }
+}
 
 /**
  * Detect the current display protocol (X11 or Wayland)
@@ -121,6 +133,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::Value GetCurrentSelection(const Napi::CallbackInfo &info);
     Napi::Value WriteToClipboard(const Napi::CallbackInfo &info);
     Napi::Value ReadFromClipboard(const Napi::CallbackInfo &info);
+    Napi::Value GetCurrentDisplayProtocol(const Napi::CallbackInfo &info);
 
     // Core functionality methods
     bool GetSelectedText(uint64_t window, TextSelectionInfo &selectionInfo);
@@ -135,35 +148,21 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     void ProcessStringArrayToList(const Napi::Array &array, std::vector<std::string> &targetList);
 
     // Mouse and keyboard event handling methods
-    void StartMouseKeyboardEventThread();
-    void StopMouseKeyboardEventThread();
-    void MouseKeyboardEventThreadProc();
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
     static void ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *keyboardEvent);
 
-    // libevdev helper methods
-    struct InputDevice
-    {
-        int fd;
-        struct libevdev *dev;
-        std::string path;
-        bool is_mouse;
-        bool is_keyboard;
-    };
-
-    bool InitializeInputDevices();
-    void CleanupInputDevices();
-    bool IsInputDevice(const std::string &device_path);
-    bool SetupInputDevice(const std::string &device_path);
-    void ProcessLibevdevEvent(const struct input_event &ev, const InputDevice &device);
+    // Input monitoring callback methods
+    static void OnMouseEventCallback(void *context, MouseEventContext *mouseEvent);
+    static void OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent);
 
     // Protocol interface for X11/Wayland abstraction
-    ProtocolInterface protocol;
+    std::unique_ptr<ProtocolBase> protocol;
 
-    // libevdev related (for input monitoring)
-    std::vector<InputDevice> input_devices;
+    // Current display protocol (X11 or Wayland)
+    DisplayProtocol current_display_protocol;
+
+    // Mouse position tracking
     Point current_mouse_pos;
-    int epoll_fd;
 
     // Thread communication
     Napi::ThreadSafeFunction tsfn;
@@ -172,8 +171,6 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
-
-    std::thread event_thread;
 
     // the text selection is processing, we should ignore some events
     std::atomic<bool> is_processing{false};
@@ -218,19 +215,16 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     currentInstance = this;
 
     // Detect and initialize display protocol
-    DisplayProtocol detectedProtocol = DetectDisplayProtocol();
-    bool initialized = false;
+    current_display_protocol = DetectDisplayProtocol();
 
-    if (detectedProtocol == DisplayProtocol::X11)
+    protocol = CreateProtocol(current_display_protocol);
+    if (!protocol)
     {
-        initialized = InitializeX11Protocol(&protocol);
-    }
-    else if (detectedProtocol == DisplayProtocol::Wayland)
-    {
-        initialized = InitializeWaylandProtocol(&protocol);
+        Napi::Error::New(env, "Failed to create protocol interface").ThrowAsJavaScriptException();
+        return;
     }
 
-    if (!initialized)
+    if (!protocol->Initialize())
     {
         Napi::Error::New(env, "Failed to initialize display protocol").ThrowAsJavaScriptException();
         return;
@@ -241,9 +235,6 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
 
     // Initialize current mouse position
     current_mouse_pos = Point(0, 0);
-
-    // Initialize epoll
-    epoll_fd = -1;
 }
 
 /**
@@ -258,11 +249,12 @@ SelectionHook::~SelectionHook()
         tsfn.Release();
     }
 
-    // Stop mouse/keyboard event monitoring
-    StopMouseKeyboardEventThread();
-
-    // Cleanup input devices
-    CleanupInputDevices();
+    // Stop input monitoring via protocol
+    if (protocol)
+    {
+        protocol->StopInputMonitoring();
+        protocol->CleanupInputMonitoring();
+    }
 
     // Release thread-safe functions
     if (mouse_tsfn)
@@ -280,17 +272,10 @@ SelectionHook::~SelectionHook()
         currentInstance = nullptr;
     }
 
-    // Close epoll
-    if (epoll_fd >= 0)
-    {
-        close(epoll_fd);
-        epoll_fd = -1;
-    }
-
     // Cleanup protocol
-    if (protocol.Cleanup)
+    if (protocol)
     {
-        protocol.Cleanup(protocol.context);
+        protocol->Cleanup();
     }
 }
 
@@ -315,7 +300,8 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
                      InstanceMethod("setSelectionPassiveMode", &SelectionHook::SetSelectionPassiveMode),
                      InstanceMethod("getCurrentSelection", &SelectionHook::GetCurrentSelection),
                      InstanceMethod("writeToClipboard", &SelectionHook::WriteToClipboard),
-                     InstanceMethod("readFromClipboard", &SelectionHook::ReadFromClipboard)});
+                     InstanceMethod("readFromClipboard", &SelectionHook::ReadFromClipboard),
+                     InstanceMethod("getCurrentDisplayProtocol", &SelectionHook::GetCurrentDisplayProtocol)});
 
     constructor = Napi::Persistent(func);
     constructor.SuppressDestruct();
@@ -367,31 +353,35 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         mouse_keyboard_running = true;
     }
 
-    // Initialize input devices first
-    if (!InitializeInputDevices())
+    // Initialize input monitoring via protocol
+    if (!protocol->InitializeInputMonitoring(&SelectionHook::OnMouseEventCallback,
+                                             &SelectionHook::OnKeyboardEventCallback, this))
     {
         mouse_keyboard_running = false;
         mouse_tsfn.Release();
         keyboard_tsfn.Release();
         tsfn.Release();
-        Napi::Error::New(env, "Failed to initialize input devices").ThrowAsJavaScriptException();
+        Napi::Error::New(env, "Failed to initialize input monitoring").ThrowAsJavaScriptException();
         return;
     }
 
-    // Start event monitoring thread
+    // Start input monitoring
     try
     {
-        StartMouseKeyboardEventThread();
+        if (!protocol->StartInputMonitoring())
+        {
+            throw std::runtime_error("Failed to start input monitoring");
+        }
         running = true;
     }
     catch (const std::exception &e)
     {
         mouse_keyboard_running = false;
-        CleanupInputDevices();
+        protocol->CleanupInputMonitoring();
         mouse_tsfn.Release();
         keyboard_tsfn.Release();
         tsfn.Release();
-        Napi::Error::New(env, "Failed to start mouse keyboard event thread").ThrowAsJavaScriptException();
+        Napi::Error::New(env, "Failed to start input monitoring").ThrowAsJavaScriptException();
         return;
     }
 }
@@ -414,8 +404,11 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         tsfn.Release();
     }
 
-    // Stop mouse and keyboard event monitoring
-    StopMouseKeyboardEventThread();
+    // Stop input monitoring via protocol
+    if (protocol)
+    {
+        protocol->StopInputMonitoring();
+    }
 
     // Release thread-safe functions
     if (mouse_tsfn)
@@ -575,7 +568,7 @@ Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
         }
 
         // Get the currently active window
-        uint64_t activeWindow = protocol.GetActiveWindow(protocol.context);
+        uint64_t activeWindow = protocol->GetActiveWindow();
         if (!activeWindow)
         {
             return env.Null();
@@ -622,7 +615,7 @@ Napi::Value SelectionHook::WriteToClipboard(const Napi::CallbackInfo &info)
         std::string text = info[0].As<Napi::String>().Utf8Value();
 
         // Write to clipboard using protocol interface
-        bool result = protocol.WriteClipboard(protocol.context, text);
+        bool result = protocol->WriteClipboard(text);
         return Napi::Boolean::New(env, result);
     }
     catch (const std::exception &e)
@@ -643,7 +636,7 @@ Napi::Value SelectionHook::ReadFromClipboard(const Napi::CallbackInfo &info)
     {
         // Read from clipboard
         std::string clipboardContent;
-        bool result = protocol.ReadClipboard(protocol.context, clipboardContent);
+        bool result = protocol->ReadClipboard(clipboardContent);
 
         if (!result)
         {
@@ -652,6 +645,25 @@ Napi::Value SelectionHook::ReadFromClipboard(const Napi::CallbackInfo &info)
 
         // Return as UTF-8 string
         return Napi::String::New(env, clipboardContent);
+    }
+    catch (const std::exception &e)
+    {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+/**
+ * NAPI: Get current display protocol
+ */
+Napi::Value SelectionHook::GetCurrentDisplayProtocol(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+
+    try
+    {
+        // Return the current display protocol as a number
+        return Napi::Number::New(env, static_cast<int>(current_display_protocol));
     }
     catch (const std::exception &e)
     {
@@ -677,7 +689,7 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
     selectionInfo.clear();
 
     // Get program name and store it in selectionInfo
-    if (!protocol.GetProgramNameFromWindow(protocol.context, window, selectionInfo.programName))
+    if (!protocol->GetProgramNameFromWindow(window, selectionInfo.programName))
     {
         selectionInfo.programName = "";
 
@@ -731,12 +743,12 @@ bool SelectionHook::GetTextViaSelection(uint64_t window, TextSelectionInfo &sele
 
     // Try to get text from primary selection
     std::string selectedText;
-    if (protocol.GetSelectedTextFromSelection(protocol.context, selectedText) && !selectedText.empty())
+    if (protocol->GetSelectedTextFromSelection(selectedText) && !selectedText.empty())
     {
         selectionInfo.text = selectedText;
 
         // Try to get coordinates
-        if (protocol.SetTextRangeCoordinates(protocol.context, window, selectionInfo))
+        if (protocol->SetTextRangeCoordinates(window, selectionInfo))
         {
             selectionInfo.posLevel = SelectionPositionLevel::Full;
         }
@@ -761,22 +773,22 @@ bool SelectionHook::GetTextViaClipboard(uint64_t window, TextSelectionInfo &sele
 
     // Store current clipboard content to restore later
     std::string originalContent;
-    bool hasOriginalContent = protocol.ReadClipboard(protocol.context, originalContent);
+    bool hasOriginalContent = protocol->ReadClipboard(originalContent);
 
     // Send Ctrl+C to copy selected text
-    protocol.SendCopyKey(protocol.context, CopyKeyType::CtrlC);
+    protocol->SendCopyKey(CopyKeyType::CtrlC);
 
     // Wait a bit for the copy operation to complete
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // Read the new clipboard content
     std::string newContent;
-    if (!protocol.ReadClipboard(protocol.context, newContent) || newContent.empty())
+    if (!protocol->ReadClipboard(newContent) || newContent.empty())
     {
         // Restore original clipboard if possible
         if (hasOriginalContent)
         {
-            protocol.WriteClipboard(protocol.context, originalContent);
+            protocol->WriteClipboard(originalContent);
         }
         return false;
     }
@@ -787,7 +799,7 @@ bool SelectionHook::GetTextViaClipboard(uint64_t window, TextSelectionInfo &sele
     // Restore original clipboard content
     if (hasOriginalContent && originalContent != newContent)
     {
-        protocol.WriteClipboard(protocol.context, originalContent);
+        protocol->WriteClipboard(originalContent);
     }
 
     return true;
@@ -924,107 +936,42 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
 }
 
 /**
- * Start event monitoring thread
+ * Input monitoring callback methods
  */
-void SelectionHook::StartMouseKeyboardEventThread()
+void SelectionHook::OnMouseEventCallback(void *context, MouseEventContext *mouseEvent)
 {
-    if (event_thread.joinable())
-    {
-        return;  // Already running
-    }
-
-    event_thread = std::thread(&SelectionHook::MouseKeyboardEventThreadProc, this);
-}
-
-/**
- * Stop event monitoring thread
- */
-void SelectionHook::StopMouseKeyboardEventThread()
-{
-    mouse_keyboard_running = false;
-
-    if (event_thread.joinable())
-    {
-        event_thread.join();
-    }
-}
-
-/**
- * Event monitoring thread function using libevdev with epoll
- */
-void SelectionHook::MouseKeyboardEventThreadProc()
-{
-    if (input_devices.empty() || epoll_fd < 0)
+    SelectionHook *instance = static_cast<SelectionHook *>(context);
+    if (!instance || !mouseEvent)
         return;
 
-    const int MAX_EVENTS = 64;
-    struct epoll_event events[MAX_EVENTS];
+    // Update current mouse position
+    instance->current_mouse_pos = mouseEvent->pos;
 
-    while (mouse_keyboard_running)
+    // Call the ThreadSafeFunction for processing
+    if (instance->mouse_tsfn)
     {
-        // Wait for input events with timeout (10ms)
-        int num_events = epoll_wait(epoll_fd, events, MAX_EVENTS, 10);
+        instance->mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
+    }
+    else
+    {
+        delete mouseEvent;
+    }
+}
 
-        if (num_events < 0)
-        {
-            // Error occurred
-            if (errno == EINTR)
-                continue;  // Interrupted by signal, continue
-            break;         // Other errors, exit loop
-        }
+void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent)
+{
+    SelectionHook *instance = static_cast<SelectionHook *>(context);
+    if (!instance || !keyboardEvent)
+        return;
 
-        if (num_events == 0)
-            continue;  // Timeout, continue
-
-        // Process events
-        for (int i = 0; i < num_events; i++)
-        {
-            int fd = events[i].data.fd;
-
-            // Find the corresponding device
-            InputDevice *target_device = nullptr;
-            for (auto &device : input_devices)
-            {
-                if (device.fd == fd)
-                {
-                    target_device = &device;
-                    break;
-                }
-            }
-
-            if (!target_device)
-                continue;
-
-            // Check for errors or hangup
-            if (events[i].events & (EPOLLERR | EPOLLHUP))
-            {
-                // Device error or disconnected, skip this device
-                continue;
-            }
-
-            // Process input events from this device
-            if (events[i].events & EPOLLIN)
-            {
-                struct input_event ev;
-                int rc = libevdev_next_event(target_device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
-
-                while (rc == LIBEVDEV_READ_STATUS_SUCCESS)
-                {
-                    ProcessLibevdevEvent(ev, *target_device);
-                    rc = libevdev_next_event(target_device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
-                }
-
-                if (rc == LIBEVDEV_READ_STATUS_SYNC)
-                {
-                    // Handle sync events
-                    while (rc == LIBEVDEV_READ_STATUS_SYNC)
-                    {
-                        ProcessLibevdevEvent(ev, *target_device);
-                        rc = libevdev_next_event(target_device->dev, LIBEVDEV_READ_FLAG_SYNC, &ev);
-                    }
-                }
-            }
-        }
+    // Call the ThreadSafeFunction for processing
+    if (instance->keyboard_tsfn)
+    {
+        instance->keyboard_tsfn.NonBlockingCall(keyboardEvent, ProcessKeyboardEvent);
+    }
+    else
+    {
+        delete keyboardEvent;
     }
 }
 
@@ -1165,7 +1112,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     if (shouldDetectSelection)
     {
         TextSelectionInfo selectionInfo;
-        uint64_t activeWindow = currentInstance->protocol.GetActiveWindow(currentInstance->protocol.context);
+        uint64_t activeWindow = currentInstance->protocol->GetActiveWindow();
 
         if (currentInstance->GetSelectedText(activeWindow, selectionInfo) && !selectionInfo.text.empty())
         {
@@ -1275,253 +1222,6 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
     }
 
     delete pKeyboardEvent;
-}
-
-//=============================================================================
-// libevdev Helper Methods Implementation
-//=============================================================================
-
-/**
- * Initialize input devices using libevdev with epoll
- */
-bool SelectionHook::InitializeInputDevices()
-{
-    // Create epoll instance
-    epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (epoll_fd < 0)
-        return false;
-
-    const char *input_dir = "/dev/input";
-    DIR *dir = opendir(input_dir);
-    if (!dir)
-    {
-        close(epoll_fd);
-        epoll_fd = -1;
-        return false;
-    }
-
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != nullptr)
-    {
-        if (strncmp(entry->d_name, "event", 5) == 0)
-        {
-            std::string device_path = std::string(input_dir) + "/" + entry->d_name;
-            if (IsInputDevice(device_path))
-            {
-                SetupInputDevice(device_path);
-            }
-        }
-    }
-
-    closedir(dir);
-
-    if (input_devices.empty())
-    {
-        close(epoll_fd);
-        epoll_fd = -1;
-        return false;
-    }
-
-    return true;
-}
-
-/**
- * Cleanup input devices and epoll
- */
-void SelectionHook::CleanupInputDevices()
-{
-    for (auto &device : input_devices)
-    {
-        if (device.fd >= 0)
-        {
-            // Remove from epoll before closing
-            if (epoll_fd >= 0)
-            {
-                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, device.fd, nullptr);
-            }
-            close(device.fd);
-            device.fd = -1;
-        }
-        if (device.dev)
-        {
-            libevdev_free(device.dev);
-            device.dev = nullptr;
-        }
-    }
-    input_devices.clear();
-
-    // Close epoll instance
-    if (epoll_fd >= 0)
-    {
-        close(epoll_fd);
-        epoll_fd = -1;
-    }
-}
-
-/**
- * Check if a device path is a valid input device
- */
-bool SelectionHook::IsInputDevice(const std::string &device_path)
-{
-    int fd = open(device_path.c_str(), O_RDONLY | O_NONBLOCK);
-    if (fd < 0)
-        return false;
-
-    struct libevdev *dev = nullptr;
-    int rc = libevdev_new_from_fd(fd, &dev);
-    if (rc < 0)
-    {
-        close(fd);
-        return false;
-    }
-
-    // Check if device has mouse or keyboard capabilities
-    bool is_mouse = libevdev_has_event_code(dev, EV_KEY, BTN_LEFT) || libevdev_has_event_code(dev, EV_REL, REL_X) ||
-                    libevdev_has_event_code(dev, EV_REL, REL_Y);
-
-    bool is_keyboard = libevdev_has_event_code(dev, EV_KEY, KEY_A) || libevdev_has_event_code(dev, EV_KEY, KEY_SPACE);
-
-    libevdev_free(dev);
-    close(fd);
-
-    return is_mouse || is_keyboard;
-}
-
-/**
- * Setup an input device for monitoring with epoll
- */
-bool SelectionHook::SetupInputDevice(const std::string &device_path)
-{
-    int fd = open(device_path.c_str(), O_RDONLY | O_NONBLOCK);
-    if (fd < 0)
-        return false;
-
-    struct libevdev *dev = nullptr;
-    int rc = libevdev_new_from_fd(fd, &dev);
-    if (rc < 0)
-    {
-        close(fd);
-        return false;
-    }
-
-    InputDevice device;
-    device.fd = fd;
-    device.dev = dev;
-    device.path = device_path;
-
-    // Determine device capabilities
-    device.is_mouse = libevdev_has_event_code(dev, EV_KEY, BTN_LEFT) || libevdev_has_event_code(dev, EV_REL, REL_X) ||
-                      libevdev_has_event_code(dev, EV_REL, REL_Y);
-
-    device.is_keyboard = libevdev_has_event_code(dev, EV_KEY, KEY_A) || libevdev_has_event_code(dev, EV_KEY, KEY_SPACE);
-
-    // Add to epoll for monitoring
-    if (epoll_fd >= 0)
-    {
-        struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLET;  // Edge-triggered mode
-        ev.data.fd = fd;
-
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
-        {
-            libevdev_free(dev);
-            close(fd);
-            return false;
-        }
-    }
-
-    input_devices.push_back(device);
-    return true;
-}
-
-/**
- * Process a libevdev event and convert it to our event system
- */
-void SelectionHook::ProcessLibevdevEvent(const struct input_event &ev, const InputDevice &device)
-{
-    if (ev.type == EV_SYN)
-        return;  // Skip sync events
-
-    // Handle mouse events
-    if (device.is_mouse && mouse_tsfn)
-    {
-        if (ev.type == EV_KEY && (ev.code == BTN_LEFT || ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE))
-        {
-            // Mouse button event
-            MouseEventContext *mouseEvent = new MouseEventContext();
-            mouseEvent->type = ev.type;
-            mouseEvent->code = ev.code;
-            mouseEvent->value = ev.value;
-            mouseEvent->pos = current_mouse_pos;
-            mouseEvent->button = (ev.code == BTN_LEFT)    ? static_cast<int>(MouseButton::Left)
-                                 : (ev.code == BTN_RIGHT) ? static_cast<int>(MouseButton::Right)
-                                                          : static_cast<int>(MouseButton::Middle);
-            mouseEvent->flag = 0;
-
-            mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
-        }
-        else if (ev.type == EV_REL)
-        {
-            if (ev.code == REL_X)
-            {
-                current_mouse_pos.x += ev.value;
-                if (is_enabled_mouse_move_event)
-                {
-                    MouseEventContext *mouseEvent = new MouseEventContext();
-                    mouseEvent->type = ev.type;
-                    mouseEvent->code = ev.code;
-                    mouseEvent->value = ev.value;
-                    mouseEvent->pos = current_mouse_pos;
-                    mouseEvent->button = static_cast<int>(MouseButton::None);
-                    mouseEvent->flag = 0;
-
-                    mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
-                }
-            }
-            else if (ev.code == REL_Y)
-            {
-                current_mouse_pos.y += ev.value;
-                if (is_enabled_mouse_move_event)
-                {
-                    MouseEventContext *mouseEvent = new MouseEventContext();
-                    mouseEvent->type = ev.type;
-                    mouseEvent->code = ev.code;
-                    mouseEvent->value = ev.value;
-                    mouseEvent->pos = current_mouse_pos;
-                    mouseEvent->button = static_cast<int>(MouseButton::None);
-                    mouseEvent->flag = 0;
-
-                    mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
-                }
-            }
-            else if (ev.code == REL_WHEEL || ev.code == REL_HWHEEL)
-            {
-                // Mouse wheel event
-                MouseEventContext *mouseEvent = new MouseEventContext();
-                mouseEvent->type = ev.type;
-                mouseEvent->code = ev.code;
-                mouseEvent->value = ev.value;
-                mouseEvent->pos = current_mouse_pos;
-                mouseEvent->button = (ev.code == REL_WHEEL) ? static_cast<int>(MouseButton::WheelVertical)
-                                                            : static_cast<int>(MouseButton::WheelHorizontal);
-                mouseEvent->flag = ev.value > 0 ? 1 : -1;
-
-                mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
-            }
-        }
-    }
-
-    // Handle keyboard events
-    if (device.is_keyboard && keyboard_tsfn && ev.type == EV_KEY)
-    {
-        KeyboardEventContext *keyboardEvent = new KeyboardEventContext();
-        keyboardEvent->type = ev.type;
-        keyboardEvent->code = ev.code;
-        keyboardEvent->value = ev.value;
-        keyboardEvent->flags = 0;  // TODO: Add modifier flags
-
-        keyboard_tsfn.NonBlockingCall(keyboardEvent, ProcessKeyboardEvent);
-    }
 }
 
 //=============================================================================

@@ -160,6 +160,12 @@ declare class SelectionHook extends EventEmitter {
     INCLUDE_CLIPBOARD_DELAY_READ: 1;
   };
 
+  static DisplayProtocol: {
+    UNKNOWN: 0;
+    X11: 1;
+    WAYLAND: 2;
+  };
+
   /**
    * Start monitoring text selections
    *
@@ -313,6 +319,16 @@ declare class SelectionHook extends EventEmitter {
    * @returns {string|null} Text from clipboard or null if empty or error
    */
   readFromClipboard(): string | null;
+
+  /**
+   * Get current display protocol (Linux only)
+   * 
+   * Returns the current display protocol being used by the selection hook.
+   * This is useful for debugging and understanding which protocol is being used.
+   * 
+   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   */
+  getCurrentDisplayProtocol(): (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
 
   /**
    * Check if the process is trusted for accessibility (macOS only)

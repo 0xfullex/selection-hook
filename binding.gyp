@@ -55,7 +55,9 @@
         }],
         ['OS=="linux"', {
           "sources": [ 
-            "src/linux/selection_hook.cc"
+            "src/linux/selection_hook.cc",
+            "src/linux/protocols/x11.cc",
+            "src/linux/protocols/wayland.cc"
           ],
           "libraries": [ 
             "-levdev",

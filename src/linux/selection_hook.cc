@@ -1153,6 +1153,13 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     // Create and emit mouse event object
     if (!mouseTypeStr.empty())
     {
+        // Filter mouse move events based on the flag
+        if (mouseTypeStr == "mouse-move" && !currentInstance->is_enabled_mouse_move_event)
+        {
+            delete pMouseEvent;
+            return;
+        }
+
         Napi::Object resultObj = Napi::Object::New(env);
         resultObj.Set(Napi::String::New(env, "type"), Napi::String::New(env, "mouse-event"));
         resultObj.Set(Napi::String::New(env, "action"), Napi::String::New(env, mouseTypeStr));

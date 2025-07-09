@@ -351,6 +351,16 @@ declare class SelectionHook extends EventEmitter {
   linuxGetDisplayProtocol(): (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
 
   /**
+   * Check if the current process is running as root (Linux only)
+   * 
+   * Determines whether the current process has root privileges.
+   * This is useful for checking if the process has elevated permissions.
+   * 
+   * @returns {boolean} True if the process is running as root, false otherwise
+   */
+  linuxIsRoot(): boolean;
+
+  /**
    * Release resources
    *
    * Stops monitoring and releases all native resources.

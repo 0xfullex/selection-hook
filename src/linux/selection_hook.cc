@@ -40,6 +40,10 @@
 #include <cstdlib>
 #include <cstring>
 
+// Linux system headers for root detection
+#include <sys/types.h>
+#include <unistd.h>
+
 // Include common definitions
 #include "common.h"
 
@@ -134,6 +138,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::Value WriteToClipboard(const Napi::CallbackInfo &info);
     Napi::Value ReadFromClipboard(const Napi::CallbackInfo &info);
     Napi::Value LinuxGetDisplayProtocol(const Napi::CallbackInfo &info);
+    Napi::Value LinuxIsRoot(const Napi::CallbackInfo &info);
 
     // Core functionality methods
     bool GetSelectedText(uint64_t window, TextSelectionInfo &selectionInfo);
@@ -304,7 +309,8 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
                      InstanceMethod("getCurrentSelection", &SelectionHook::GetCurrentSelection),
                      InstanceMethod("writeToClipboard", &SelectionHook::WriteToClipboard),
                      InstanceMethod("readFromClipboard", &SelectionHook::ReadFromClipboard),
-                     InstanceMethod("linuxGetDisplayProtocol", &SelectionHook::LinuxGetDisplayProtocol)});
+                     InstanceMethod("linuxGetDisplayProtocol", &SelectionHook::LinuxGetDisplayProtocol),
+                     InstanceMethod("linuxIsRoot", &SelectionHook::LinuxIsRoot)});
 
     constructor = Napi::Persistent(func);
     constructor.SuppressDestruct();
@@ -661,6 +667,26 @@ Napi::Value SelectionHook::LinuxGetDisplayProtocol(const Napi::CallbackInfo &inf
     {
         // Return the current display protocol as a number
         return Napi::Number::New(env, static_cast<int>(current_display_protocol));
+    }
+    catch (const std::exception &e)
+    {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+/**
+ * NAPI: Check if the current process is running as root
+ */
+Napi::Value SelectionHook::LinuxIsRoot(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+
+    try
+    {
+        // Check if the effective user ID is 0 (root)
+        bool isRoot = (geteuid() == 0);
+        return Napi::Boolean::New(env, isRoot);
     }
     catch (const std::exception &e)
     {

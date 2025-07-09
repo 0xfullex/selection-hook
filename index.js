@@ -486,6 +486,29 @@ class SelectionHook extends EventEmitter {
   }
 
   /**
+   * Check if the current process is running as root (Linux only)
+   * @returns {boolean} True if the process is running as root, false otherwise
+   */
+  linuxIsRoot() {
+    if (!isLinux) {
+      this.#logDebug("linuxIsRoot is only supported on Linux");
+      return false;
+    }
+
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
+      return false;
+    }
+
+    try {
+      return this.#instance.linuxIsRoot();
+    } catch (err) {
+      this.#handleError("Failed to check root status", err);
+      return false;
+    }
+  }
+
+  /**
    * Check if hook is running
    * @returns {boolean} Running status
    */

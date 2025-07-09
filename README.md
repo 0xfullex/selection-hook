@@ -235,6 +235,14 @@ Returns one of the `SelectionHook.DisplayProtocol` constants:
 - `X11`: X11 protocol is being used
 - `WAYLAND`: Wayland protocol is being used
 
+#### **`linuxIsRoot(): boolean`**
+
+_Linux Only_
+
+Check if the current process is running as root. This method determines whether the current process has root privileges, which is useful for checking if the process has elevated permissions.
+
+Returns `true` if the process is running as root, `false` otherwise.
+
 #### **`isRunning(): boolean`**
 
 Check if selection-hook is currently running.

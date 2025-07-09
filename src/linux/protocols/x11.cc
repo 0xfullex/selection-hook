@@ -31,6 +31,9 @@
 // Linux input event constants
 #include <linux/input.h>
 
+// X11 None constant redefine
+constexpr long X11_None = None;
+
 // Undefine X11 None macro that conflicts with our enum
 #ifdef None
 #undef None
@@ -40,7 +43,7 @@
 #include "../common.h"
 
 // Forward declaration for SelectionHook from selection_hook.cc
-class SelectionHook;
+// class SelectionHook;
 
 /**
  * X11 Protocol Class Implementation
@@ -81,7 +84,7 @@ class X11Protocol : public ProtocolBase
         : display(nullptr),
           screen(0),
           root(0),
-          record_context(0),
+          record_context(X11_None),
           record_range(nullptr),
           record_display(nullptr),
           control_display(nullptr),
@@ -196,7 +199,7 @@ class X11Protocol : public ProtocolBase
         // Request the primary selection
         Atom selection = XInternAtom(display, "PRIMARY", False);
         Atom utf8_string = XInternAtom(display, "UTF8_STRING", False);
-        Atom targets = XInternAtom(display, "TARGETS", False);
+        // Atom targets = XInternAtom(display, "TARGETS", False);
         Atom property = XInternAtom(display, "SELECTION_DATA", False);
 
         XConvertSelection(display, selection, utf8_string, property, window, CurrentTime);
@@ -212,7 +215,7 @@ class X11Protocol : public ProtocolBase
         {
             if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event))
             {
-                if (event.xselection.property != 0)  // X11 None constant
+                if (event.xselection.property != X11_None)  // X11 None constant
                 {
                     // Get the selection data
                     Atom actual_type;
@@ -223,7 +226,7 @@ class X11Protocol : public ProtocolBase
                     if (XGetWindowProperty(display, window, property, 0, LONG_MAX, False, AnyPropertyType, &actual_type,
                                            &actual_format, &nitems, &bytes_after, &data) == Success)
                     {
-                        if (data && nitems > 0)
+                        if (actual_type == utf8_string && data && nitems > 0)
                         {
                             text = std::string(reinterpret_cast<char*>(data), nitems);
                             success = true;
@@ -313,7 +316,7 @@ class X11Protocol : public ProtocolBase
         {
             if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event))
             {
-                if (event.xselection.property != 0)  // X11 None constant
+                if (event.xselection.property != X11_None)  // X11 None constant
                 {
                     // Get the selection data
                     Atom actual_type;
@@ -324,7 +327,7 @@ class X11Protocol : public ProtocolBase
                     if (XGetWindowProperty(display, window, property, 0, LONG_MAX, False, AnyPropertyType, &actual_type,
                                            &actual_format, &nitems, &bytes_after, &data) == Success)
                     {
-                        if (data && nitems > 0)
+                        if (actual_type == utf8_string && data && nitems > 0)
                         {
                             text = std::string(reinterpret_cast<char*>(data), nitems);
                             success = true;
@@ -435,7 +438,7 @@ class X11Protocol : public ProtocolBase
         input_monitoring_running = false;
 
         // Disable the XRecord context using the control display to unblock the monitoring thread
-        if (control_display && record_context != 0)
+        if (control_display && record_context != X11_None)
         {
             XRecordDisableContext(control_display, record_context);
             XFlush(control_display);
@@ -446,6 +449,9 @@ class X11Protocol : public ProtocolBase
         {
             input_monitoring_thread.join();
         }
+
+        // Give XRecord a moment to fully disable the context before cleanup
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     // X11-specific methods
@@ -536,7 +542,7 @@ bool X11Protocol::InitializeXRecord()
 
     // Create a record context
     record_context = XRecordCreateContext(record_display, 0, &client_spec, 1, &record_range, 1);
-    if (record_context == 0)
+    if (record_context == X11_None)
     {
         XFree(record_range);
         XCloseDisplay(record_display);
@@ -556,11 +562,16 @@ void X11Protocol::CleanupXRecord()
     if (record_initialized)
     {
         // Free the context first
-        if (record_context != 0)
+        if (record_context != X11_None)
         {
             if (control_display)
+            {
+                // Try to free the context, but don't fail if it's already been freed
                 XRecordFreeContext(control_display, record_context);
-            record_context = 0;
+                // Clear any pending errors from XRecordFreeContext
+                XSync(control_display, False);
+            }
+            record_context = X11_None;
         }
 
         // Free resources
@@ -601,7 +612,7 @@ void X11Protocol::XRecordMonitoringThreadProc()
 
     // Enable XRecord context (this will block until disabled)
     // The thread will be interrupted when XRecordDisableContext is called from StopInputMonitoring
-    while (input_monitoring_running && record_display && record_context != 0)
+    while (input_monitoring_running && record_display && record_context != X11_None)
     {
         XRecordEnableContext(record_display, record_context, XRecordDataCallback, (XPointer)this);
 

@@ -5,17 +5,16 @@
  * the main implementation and protocol-specific files.
  */
 
-#ifndef LINUX_SELECTION_HOOK_COMMON_H
-#define LINUX_SELECTION_HOOK_COMMON_H
+#pragma once
 
 #include <cstdint>
 #include <memory>
 #include <string>
 
 // Undefine X11 None macro that conflicts with our enum
-#ifdef None
-#undef None
-#endif
+// #ifdef None
+// #undef None
+// #endif
 
 // Common Point structure for coordinates
 struct Point
@@ -204,5 +203,3 @@ std::unique_ptr<ProtocolBase> CreateProtocol(DisplayProtocol protocol);
 // Factory function declarations for protocol implementations
 extern std::unique_ptr<ProtocolBase> CreateX11Protocol();
 extern std::unique_ptr<ProtocolBase> CreateWaylandProtocol();
-
-#endif  // LINUX_SELECTION_HOOK_COMMON_H

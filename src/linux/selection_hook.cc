@@ -53,9 +53,9 @@
 #include <linux/input.h>
 
 // Undefine X11 None macro that conflicts with our enum
-#ifdef None
-#undef None
-#endif
+// #ifdef None
+// #undef None
+// #endif
 
 // External function declarations from protocol implementations
 extern std::unique_ptr<ProtocolBase> CreateX11Protocol();

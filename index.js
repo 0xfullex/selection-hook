@@ -39,6 +39,7 @@ class SelectionHook extends EventEmitter {
     FOCUSCTL: 2,
     ACCESSIBLE: 3,
     AXAPI: 11,
+    PRIMARY: 21,
     CLIPBOARD: 99,
   };
 
@@ -413,29 +414,6 @@ class SelectionHook extends EventEmitter {
   }
 
   /**
-   * Get current display protocol (Linux only)
-   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
-   */
-  getCurrentDisplayProtocol() {
-    if (!isLinux) {
-      this.#logDebug("getCurrentDisplayProtocol is only supported on Linux");
-      return SelectionHook.DisplayProtocol.UNKNOWN;
-    }
-
-    if (!this.#instance) {
-      this.#logDebug("Text selection hook instance not created");
-      return SelectionHook.DisplayProtocol.UNKNOWN;
-    }
-
-    try {
-      return this.#instance.getCurrentDisplayProtocol();
-    } catch (err) {
-      this.#handleError("Failed to get current display protocol", err);
-      return SelectionHook.DisplayProtocol.UNKNOWN;
-    }
-  }
-
-  /**
    * Check if the process is trusted for accessibility (macOS only)
    * @returns {boolean} True if the process is trusted for accessibility, false otherwise
    */
@@ -481,6 +459,29 @@ class SelectionHook extends EventEmitter {
     } catch (err) {
       this.#handleError("Failed to request macOS process trust", err);
       return false;
+    }
+  }
+
+  /**
+   * Get current display protocol (Linux only)
+   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   */
+  linuxGetDisplayProtocol() {
+    if (!isLinux) {
+      this.#logDebug("linuxGetDisplayProtocol is only supported on Linux");
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+
+    try {
+      return this.#instance.linuxGetDisplayProtocol();
+    } catch (err) {
+      this.#handleError("Failed to get current display protocol", err);
+      return SelectionHook.DisplayProtocol.UNKNOWN;
     }
   }
 

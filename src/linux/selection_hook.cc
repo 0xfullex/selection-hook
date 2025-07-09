@@ -133,11 +133,11 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::Value GetCurrentSelection(const Napi::CallbackInfo &info);
     Napi::Value WriteToClipboard(const Napi::CallbackInfo &info);
     Napi::Value ReadFromClipboard(const Napi::CallbackInfo &info);
-    Napi::Value GetCurrentDisplayProtocol(const Napi::CallbackInfo &info);
+    Napi::Value LinuxGetDisplayProtocol(const Napi::CallbackInfo &info);
 
     // Core functionality methods
     bool GetSelectedText(uint64_t window, TextSelectionInfo &selectionInfo);
-    bool GetTextViaSelection(uint64_t window, TextSelectionInfo &selectionInfo);
+    bool GetTextViaPrimary(uint64_t window, TextSelectionInfo &selectionInfo);
     bool GetTextViaClipboard(uint64_t window, TextSelectionInfo &selectionInfo);
     bool ShouldProcessGetSelection();
     bool ShouldProcessViaClipboard(const std::string &programName);
@@ -301,7 +301,7 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
                      InstanceMethod("getCurrentSelection", &SelectionHook::GetCurrentSelection),
                      InstanceMethod("writeToClipboard", &SelectionHook::WriteToClipboard),
                      InstanceMethod("readFromClipboard", &SelectionHook::ReadFromClipboard),
-                     InstanceMethod("getCurrentDisplayProtocol", &SelectionHook::GetCurrentDisplayProtocol)});
+                     InstanceMethod("linuxGetDisplayProtocol", &SelectionHook::LinuxGetDisplayProtocol)});
 
     constructor = Napi::Persistent(func);
     constructor.SuppressDestruct();
@@ -501,40 +501,11 @@ void SelectionHook::SetGlobalFilterMode(const Napi::CallbackInfo &info)
 
 /**
  * NAPI: Set fine-tuned list based on type
+ * only for Windows now
  */
 void SelectionHook::SetFineTunedList(const Napi::CallbackInfo &info)
 {
-    Napi::Env env = info.Env();
-    // Validate arguments
-    if (info.Length() < 2 || !info[0u].IsNumber() || !info[1u].IsArray())
-    {
-        Napi::TypeError::New(env, "Number and Array expected as arguments").ThrowAsJavaScriptException();
-        return;
-    }
-
-    // Get fine-tuned list type from first argument
-    int listType = info[0u].As<Napi::Number>().Int32Value();
-    FineTunedListType ftlType = static_cast<FineTunedListType>(listType);
-
-    Napi::Array listArray = info[1u].As<Napi::Array>();
-
-    // Select the appropriate list based on type
-    std::vector<std::string> *targetList = nullptr;
-    switch (ftlType)
-    {
-        case FineTunedListType::ExcludeClipboardCursorDetect:
-            targetList = &ftl_exclude_clipboard_cursor_detect;
-            break;
-        case FineTunedListType::IncludeClipboardDelayRead:
-            targetList = &ftl_include_clipboard_delay_read;
-            break;
-        default:
-            Napi::TypeError::New(env, "Invalid FineTunedListType").ThrowAsJavaScriptException();
-            return;
-    }
-
-    // Use helper method to process the array
-    ProcessStringArrayToList(listArray, *targetList);
+    return;
 }
 
 /**
@@ -656,7 +627,7 @@ Napi::Value SelectionHook::ReadFromClipboard(const Napi::CallbackInfo &info)
 /**
  * NAPI: Get current display protocol
  */
-Napi::Value SelectionHook::GetCurrentDisplayProtocol(const Napi::CallbackInfo &info)
+Napi::Value SelectionHook::LinuxGetDisplayProtocol(const Napi::CallbackInfo &info)
 {
     Napi::Env env = info.Env();
 
@@ -714,20 +685,20 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
     }
 
     // First try selection (primary selection)
-    if (GetTextViaSelection(window, selectionInfo))
+    if (GetTextViaPrimary(window, selectionInfo))
     {
-        selectionInfo.method = SelectionMethod::X11Selection;
+        selectionInfo.method = SelectionMethod::Primary;
         is_processing.store(false);
         return true;
     }
 
     // Last resort: try to get text using clipboard and Ctrl+C if enabled
-    if (ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(window, selectionInfo))
-    {
-        selectionInfo.method = SelectionMethod::Clipboard;
-        is_processing.store(false);
-        return true;
-    }
+    // if (ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(window, selectionInfo))
+    // {
+    //     selectionInfo.method = SelectionMethod::Clipboard;
+    //     is_processing.store(false);
+    //     return true;
+    // }
 
     is_processing.store(false);
     return false;
@@ -736,26 +707,26 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
 /**
  * Get text selection via protocol selection APIs
  */
-bool SelectionHook::GetTextViaSelection(uint64_t window, TextSelectionInfo &selectionInfo)
+bool SelectionHook::GetTextViaPrimary(uint64_t window, TextSelectionInfo &selectionInfo)
 {
     if (!window)
         return false;
 
     // Try to get text from primary selection
     std::string selectedText;
-    if (protocol->GetSelectedTextFromSelection(selectedText) && !selectedText.empty())
+    if (protocol->GetTextViaPrimary(selectedText) && !selectedText.empty())
     {
         selectionInfo.text = selectedText;
 
         // Try to get coordinates
-        if (protocol->SetTextRangeCoordinates(window, selectionInfo))
-        {
-            selectionInfo.posLevel = SelectionPositionLevel::Full;
-        }
-        else
-        {
-            selectionInfo.posLevel = SelectionPositionLevel::None;
-        }
+        // if (protocol->SetTextRangeCoordinates(window, selectionInfo))
+        // {
+        //     selectionInfo.posLevel = SelectionPositionLevel::Full;
+        // }
+        // else
+        // {
+        //     selectionInfo.posLevel = SelectionPositionLevel::None;
+        // }
 
         return true;
     }
@@ -771,38 +742,39 @@ bool SelectionHook::GetTextViaClipboard(uint64_t window, TextSelectionInfo &sele
     if (!window)
         return false;
 
-    // Store current clipboard content to restore later
-    std::string originalContent;
-    bool hasOriginalContent = protocol->ReadClipboard(originalContent);
+    // // Store current clipboard content to restore later
+    // std::string originalContent;
+    // bool hasOriginalContent = protocol->ReadClipboard(originalContent);
 
-    // Send Ctrl+C to copy selected text
-    protocol->SendCopyKey(CopyKeyType::CtrlC);
+    // // Send Ctrl+C to copy selected text
+    // protocol->SendCopyKey(CopyKeyType::CtrlC);
 
-    // Wait a bit for the copy operation to complete
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // // Wait a bit for the copy operation to complete
+    // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // Read the new clipboard content
-    std::string newContent;
-    if (!protocol->ReadClipboard(newContent) || newContent.empty())
-    {
-        // Restore original clipboard if possible
-        if (hasOriginalContent)
-        {
-            protocol->WriteClipboard(originalContent);
-        }
-        return false;
-    }
+    // // Read the new clipboard content
+    // std::string newContent;
+    // if (!protocol->ReadClipboard(newContent) || newContent.empty())
+    // {
+    //     // Restore original clipboard if possible
+    //     if (hasOriginalContent)
+    //     {
+    //         protocol->WriteClipboard(originalContent);
+    //     }
+    //     return false;
+    // }
 
-    // Store the copied text
-    selectionInfo.text = newContent;
+    // // Store the copied text
+    // selectionInfo.text = newContent;
 
-    // Restore original clipboard content
-    if (hasOriginalContent && originalContent != newContent)
-    {
-        protocol->WriteClipboard(originalContent);
-    }
+    // // Restore original clipboard content
+    // if (hasOriginalContent && originalContent != newContent)
+    // {
+    //     protocol->WriteClipboard(originalContent);
+    // }
 
-    return true;
+    // return true;
+    return false;
 }
 
 /**
@@ -1111,6 +1083,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     // Check for text selection
     if (shouldDetectSelection)
     {
+        printf("shouldDetectSelection: %d\n", shouldDetectSelection);
+
         TextSelectionInfo selectionInfo;
         uint64_t activeWindow = currentInstance->protocol->GetActiveWindow();
 

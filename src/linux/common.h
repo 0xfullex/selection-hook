@@ -47,7 +47,7 @@ enum class SelectionDetectType
 enum class SelectionMethod
 {
     None = 0,
-    X11Selection = 21,
+    Primary = 21,  // primary selection
     Clipboard = 99
 };
 
@@ -174,16 +174,16 @@ class ProtocolBase
     virtual bool GetProgramNameFromWindow(uint64_t window, std::string& programName) = 0;
 
     // Text selection
-    virtual bool GetSelectedTextFromSelection(std::string& text) = 0;
-    virtual bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo& selectionInfo) = 0;
+    virtual bool GetTextViaPrimary(std::string& text) = 0;
+    // virtual bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo& selectionInfo) = 0;
 
     // Clipboard operations
     virtual bool WriteClipboard(const std::string& text) = 0;
     virtual bool ReadClipboard(std::string& text) = 0;
 
-    // Key operations
-    virtual void SendCopyKey(CopyKeyType type) = 0;
-    virtual bool ShouldKeyInterruptViaClipboard() = 0;
+    // // Key operations
+    // virtual void SendCopyKey(CopyKeyType type) = 0;
+    // virtual bool ShouldKeyInterruptViaClipboard() = 0;
 
     // Input monitoring (for mouse and keyboard events)
     virtual bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,

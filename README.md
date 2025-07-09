@@ -209,18 +209,6 @@ Write text to the system clipboard. This is useful for implementing custom copy 
 
 Read text from the system clipboard. Returns clipboard text content as string, or null if clipboard is empty or contains non-text data.
 
-#### **`getCurrentDisplayProtocol(): number`**
-
-_Linux Only_
-
-Get the current display protocol being used by the selection hook. This method returns the protocol that was detected during initialization and is useful for debugging and understanding which protocol is being used.
-
-Returns one of the `SelectionHook.DisplayProtocol` constants:
-
-- `UNKNOWN`: No protocol detected
-- `X11`: X11 protocol is being used
-- `WAYLAND`: Wayland protocol is being used
-
 #### **`macIsProcessTrusted(): boolean`**
 
 _macOS Only_
@@ -234,6 +222,18 @@ _macOS Only_
 Try to request accessibility permissions. This MAY show a dialog to the user if permissions are not granted.
 
 Note: The return value indicates the current permission status, not the request result.
+
+#### **`linuxGetDisplayProtocol(): number`**
+
+_Linux Only_
+
+Get the current display protocol being used by the selection hook. This method returns the protocol that was detected during initialization and is useful for debugging and understanding which protocol is being used.
+
+Returns one of the `SelectionHook.DisplayProtocol` constants:
+
+- `UNKNOWN`: No protocol detected
+- `X11`: X11 protocol is being used
+- `WAYLAND`: Wayland protocol is being used
 
 #### **`isRunning(): boolean`**
 
@@ -365,7 +365,7 @@ Represents keyboard key presses/releases.
 | `uniKey`   | `string`  | Unified key name, refer to MDN `KeyboardEvent.key`, converted from `vkCode` |
 | `vkCode`   | `number`  | Virtual key code. Definitions and values vary by platforms.                 |
 | `sys`      | `boolean` | Whether modifier keys (Alt/Ctrl/Win/⌘/⌥/Fn) are pressed simultaneously      |
-| `scanCode` | `number?` | Hardware scan code. _Windows Only_                                          |
+| `scanCode` | `number?` | Hardware scan code. (_Windows Only_)                                        |
 | `flags`    | `number`  | Additional state flags.                                                     |
 | `type`     | `string?` | Internal event type                                                         |
 | `action`   | `string?` | `"key-down"` or `"key-up"`                                                  |
@@ -382,10 +382,11 @@ About vkCode:
 Indicates which method was used to detect the text selection:
 
 - `NONE`: No selection detected
-- `UIA`: UI Automation (Windows)
-- `ACCESSIBLE`: Accessibility interface (Windows)
-- `FOCUSCTL`: Focused control (Windows)
-- `AXAPI`: Accessibility API (macOS)
+- `UIA`: UI Automation (_Windows_)
+- `ACCESSIBLE`: Accessibility interface (_Windows_)
+- `FOCUSCTL`: Focused control (_Windows_)
+- `AXAPI`: Accessibility API (_macOS_)
+- `PRIMARY`: Primary Selection (_Linux_)
 - `CLIPBOARD`: Clipboard fallback
 
 #### **`SelectionHook.PositionLevel`**
@@ -407,6 +408,8 @@ Before version `v0.9.16`, this variable was named `ClipboardMode`
 - `EXCLUDE_LIST`: Only the progrmas NOT in in list will pass the filter
 
 #### **`SelectionHook.FineTunedListType`**
+
+_Windows Only_
 
 Defines types for fine-tuned application behavior lists:
 

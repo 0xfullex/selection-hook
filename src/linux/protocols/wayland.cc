@@ -126,7 +126,7 @@ class WaylandProtocol : public ProtocolBase
     }
 
     // Text selection
-    bool GetSelectedTextFromSelection(std::string &text) override
+    bool GetTextViaPrimary(std::string &text) override
     {
         if (!initialized)
             return false;
@@ -136,15 +136,15 @@ class WaylandProtocol : public ProtocolBase
         return false;
     }
 
-    bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo &selectionInfo) override
-    {
-        if (!initialized || !window)
-            return false;
+    // bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo &selectionInfo) override
+    // {
+    //     if (!initialized || !window)
+    //         return false;
 
-        // TODO: Implement Wayland-specific coordinate retrieval
-        // This would be more complex as Wayland doesn't expose global coordinates
-        return false;
-    }
+    //     // TODO: Implement Wayland-specific coordinate retrieval
+    //     // This would be more complex as Wayland doesn't expose global coordinates
+    //     return false;
+    // }
 
     // Clipboard operations
     bool WriteClipboard(const std::string &text) override
@@ -167,24 +167,24 @@ class WaylandProtocol : public ProtocolBase
         return false;
     }
 
-    // Key operations
-    void SendCopyKey(CopyKeyType type) override
-    {
-        if (!initialized)
-            return;
+    // // Key operations
+    // void SendCopyKey(CopyKeyType type) override
+    // {
+    //     if (!initialized)
+    //         return;
 
-        // TODO: Implement Wayland key sending
-        // This would use virtual input protocols or other methods
-    }
+    //     // TODO: Implement Wayland key sending
+    //     // This would use virtual input protocols or other methods
+    // }
 
-    bool ShouldKeyInterruptViaClipboard() override
-    {
-        if (!initialized)
-            return false;
+    // bool ShouldKeyInterruptViaClipboard() override
+    // {
+    //     if (!initialized)
+    //         return false;
 
-        // TODO: Implement Wayland-specific key state checking
-        return false;
-    }
+    //     // TODO: Implement Wayland-specific key state checking
+    //     return false;
+    // }
 
     // Input monitoring implementation
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,

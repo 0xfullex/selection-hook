@@ -185,7 +185,7 @@ class X11Protocol : public ProtocolBase
     }
 
     // Text selection
-    bool GetSelectedTextFromSelection(std::string& text) override
+    bool GetTextViaPrimary(std::string& text) override
     {
         if (!display)
             return false;
@@ -241,16 +241,16 @@ class X11Protocol : public ProtocolBase
         return success;
     }
 
-    bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo& selectionInfo) override
-    {
-        if (!display || !window)
-            return false;
+    // bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo& selectionInfo) override
+    // {
+    //     if (!display || !window)
+    //         return false;
 
-        // TODO: Implement X11-specific coordinate retrieval
-        // This would involve getting the selection bounds from the X11 server
-        // For now, return false to indicate no coordinates available
-        return false;
-    }
+    //     // TODO: Implement X11-specific coordinate retrieval
+    //     // This would involve getting the selection bounds from the X11 server
+    //     // For now, return false to indicate no coordinates available
+    //     return false;
+    // }
 
     // Clipboard operations
     bool WriteClipboard(const std::string& text) override
@@ -342,40 +342,40 @@ class X11Protocol : public ProtocolBase
         return success;
     }
 
-    // Key operations
-    void SendCopyKey(CopyKeyType type) override
-    {
-        if (!display)
-            return;
+    // // Key operations
+    // void SendCopyKey(CopyKeyType type) override
+    // {
+    //     if (!display)
+    //         return;
 
-        KeySym keysym = (type == CopyKeyType::CtrlInsert) ? XK_Insert : XK_c;
-        KeyCode keycode = XKeysymToKeycode(display, keysym);
-        KeyCode ctrl_keycode = XKeysymToKeycode(display, XK_Control_L);
+    //     KeySym keysym = (type == CopyKeyType::CtrlInsert) ? XK_Insert : XK_c;
+    //     KeyCode keycode = XKeysymToKeycode(display, keysym);
+    //     KeyCode ctrl_keycode = XKeysymToKeycode(display, XK_Control_L);
 
-        if (keycode != 0 && ctrl_keycode != 0)
-        {
-            // Press Ctrl
-            XTestFakeKeyEvent(display, ctrl_keycode, True, 0);
-            // Press key
-            XTestFakeKeyEvent(display, keycode, True, 0);
-            // Release key
-            XTestFakeKeyEvent(display, keycode, False, 0);
-            // Release Ctrl
-            XTestFakeKeyEvent(display, ctrl_keycode, False, 0);
-            XFlush(display);
-        }
-    }
+    //     if (keycode != 0 && ctrl_keycode != 0)
+    //     {
+    //         // Press Ctrl
+    //         XTestFakeKeyEvent(display, ctrl_keycode, True, 0);
+    //         // Press key
+    //         XTestFakeKeyEvent(display, keycode, True, 0);
+    //         // Release key
+    //         XTestFakeKeyEvent(display, keycode, False, 0);
+    //         // Release Ctrl
+    //         XTestFakeKeyEvent(display, ctrl_keycode, False, 0);
+    //         XFlush(display);
+    //     }
+    // }
 
-    bool ShouldKeyInterruptViaClipboard() override
-    {
-        if (!display)
-            return false;
+    // bool ShouldKeyInterruptViaClipboard() override
+    // {
+    //     if (!display)
+    //         return false;
 
-        // TODO: Implement X11-specific key state checking
-        // This would involve checking modifier keys and other key states
-        // For now, return false
-        return false;
-    }
+    //     // TODO: Implement X11-specific key state checking
+    //     // This would involve checking modifier keys and other key states
+    //     // For now, return false
+    //     return false;
+    // }
 
     // Input monitoring implementation using XRecord
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,

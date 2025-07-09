@@ -138,6 +138,7 @@ declare class SelectionHook extends EventEmitter {
     FOCUSCTL: 2;
     ACCESSIBLE: 3;
     AXAPI: 11;
+    PRIMARY: 21;
     CLIPBOARD: 99;
   };
 
@@ -321,16 +322,6 @@ declare class SelectionHook extends EventEmitter {
   readFromClipboard(): string | null;
 
   /**
-   * Get current display protocol (Linux only)
-   * 
-   * Returns the current display protocol being used by the selection hook.
-   * This is useful for debugging and understanding which protocol is being used.
-   * 
-   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
-   */
-  getCurrentDisplayProtocol(): (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
-
-  /**
    * Check if the process is trusted for accessibility (macOS only)
    *
    * Checks whether the current process has accessibility permissions
@@ -348,6 +339,16 @@ declare class SelectionHook extends EventEmitter {
    * @returns {boolean} The current permission status, not the request result
    */
   macRequestProcessTrust(): boolean;
+
+  /**
+   * Get current display protocol (Linux only)
+   * 
+   * Returns the current display protocol being used by the selection hook.
+   * This is useful for debugging and understanding which protocol is being used.
+   * 
+   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   */
+  linuxGetDisplayProtocol(): (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
 
   /**
    * Release resources

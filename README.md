@@ -394,6 +394,7 @@ Indicates which method was used to detect the text selection:
 - `ACCESSIBLE`: Accessibility interface (_Windows_)
 - `FOCUSCTL`: Focused control (_Windows_)
 - `AXAPI`: Accessibility API (_macOS_)
+- `ATSPI`: Assistive Technology Service Provider Interface (_Linux_)
 - `PRIMARY`: Primary Selection (_Linux_)
 - `CLIPBOARD`: Clipboard fallback
 

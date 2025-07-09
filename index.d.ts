@@ -138,7 +138,8 @@ declare class SelectionHook extends EventEmitter {
     FOCUSCTL: 2;
     ACCESSIBLE: 3;
     AXAPI: 11;
-    PRIMARY: 21;
+    ATSPI: 21;
+    PRIMARY: 22;
     CLIPBOARD: 99;
   };
 

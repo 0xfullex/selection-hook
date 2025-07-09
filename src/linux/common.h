@@ -46,7 +46,8 @@ enum class SelectionDetectType
 enum class SelectionMethod
 {
     None = 0,
-    Primary = 21,  // primary selection
+    ATSPI = 21,
+    Primary = 22,  // primary selection
     Clipboard = 99
 };
 

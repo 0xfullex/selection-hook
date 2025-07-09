@@ -202,6 +202,9 @@ class WaylandProtocol : public ProtocolBase
 
     void CleanupInputMonitoring() override
     {
+        // Stop monitoring first
+        StopInputMonitoring();
+
         CleanupInputDevices();
         mouse_callback = nullptr;
         keyboard_callback = nullptr;

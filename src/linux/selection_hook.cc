@@ -334,33 +334,39 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         return;
     }
 
+    // Don't start if mouse/keyboard monitoring is already running
+    if (mouse_keyboard_running)
+    {
+        Napi::Error::New(env, "Input monitoring is already running").ThrowAsJavaScriptException();
+        return;
+    }
+
+    // Ensure ThreadSafeFunction objects are clean
+    if (tsfn || mouse_tsfn || keyboard_tsfn)
+    {
+        Napi::Error::New(env, "ThreadSafeFunction objects are not clean").ThrowAsJavaScriptException();
+        return;
+    }
+
     // Create thread-safe function from JavaScript callback
     Napi::Function callback = info[0u].As<Napi::Function>();
 
     tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1,
                                          [this](Napi::Env) { running = false; });
 
-    // Set up mouse and keyboard hooks
-    if (!mouse_keyboard_running)
-    {
-        // Create thread-safe function for mouse events
-        mouse_tsfn = Napi::ThreadSafeFunction::New(env, callback, "MouseEventCallback", DEFAULT_MOUSE_EVENT_QUEUE_SIZE,
-                                                   1, [this](Napi::Env) { mouse_keyboard_running = false; });
+    // Create thread-safe function for mouse events
+    mouse_tsfn = Napi::ThreadSafeFunction::New(env, callback, "MouseEventCallback", DEFAULT_MOUSE_EVENT_QUEUE_SIZE, 1,
+                                               [this](Napi::Env) { mouse_keyboard_running = false; });
 
-        // Create thread-safe function for keyboard events
-        keyboard_tsfn =
-            Napi::ThreadSafeFunction::New(env, callback, "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
-                                          [this](Napi::Env) { mouse_keyboard_running = false; });
-
-        // Set running flag
-        mouse_keyboard_running = true;
-    }
+    // Create thread-safe function for keyboard events
+    keyboard_tsfn =
+        Napi::ThreadSafeFunction::New(env, callback, "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
+                                      [this](Napi::Env) { mouse_keyboard_running = false; });
 
     // Initialize input monitoring via protocol
     if (!protocol->InitializeInputMonitoring(&SelectionHook::OnMouseEventCallback,
                                              &SelectionHook::OnKeyboardEventCallback, this))
     {
-        mouse_keyboard_running = false;
         mouse_tsfn.Release();
         keyboard_tsfn.Release();
         tsfn.Release();
@@ -375,11 +381,13 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         {
             throw std::runtime_error("Failed to start input monitoring");
         }
+
+        // Set running flags only after successful start
         running = true;
+        mouse_keyboard_running = true;
     }
     catch (const std::exception &e)
     {
-        mouse_keyboard_running = false;
         protocol->CleanupInputMonitoring();
         mouse_tsfn.Release();
         keyboard_tsfn.Release();
@@ -400,31 +408,39 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         return;
     }
 
-    // Set running flag to false and release thread-safe function
+    // Set running flags to false first
     running = false;
-    if (tsfn)
-    {
-        tsfn.Release();
-    }
+    mouse_keyboard_running = false;
 
-    // Stop input monitoring via protocol
+    // Stop and cleanup input monitoring via protocol (this will wait for threads to finish)
     if (protocol)
     {
-        protocol->StopInputMonitoring();
         protocol->CleanupInputMonitoring();
     }
 
-    // Set mouse_keyboard_running to false to ensure proper cleanup
-    mouse_keyboard_running = false;
-
-    // Release thread-safe functions
-    if (mouse_tsfn)
+    // Release thread-safe functions after threads have stopped
+    try
     {
-        mouse_tsfn.Release();
+        if (tsfn)
+        {
+            tsfn.Release();
+            tsfn = nullptr;
+        }
+        if (mouse_tsfn)
+        {
+            mouse_tsfn.Release();
+            mouse_tsfn = nullptr;
+        }
+        if (keyboard_tsfn)
+        {
+            keyboard_tsfn.Release();
+            keyboard_tsfn = nullptr;
+        }
     }
-    if (keyboard_tsfn)
+    catch (const std::exception &e)
     {
-        keyboard_tsfn.Release();
+        // Log error but don't throw to prevent further issues
+        printf("Error releasing ThreadSafeFunction: %s\n", e.what());
     }
 }
 

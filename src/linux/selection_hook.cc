@@ -256,6 +256,9 @@ SelectionHook::~SelectionHook()
         protocol->CleanupInputMonitoring();
     }
 
+    // Ensure mouse_keyboard_running is set to false
+    mouse_keyboard_running = false;
+
     // Release thread-safe functions
     if (mouse_tsfn)
     {
@@ -408,7 +411,11 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
     if (protocol)
     {
         protocol->StopInputMonitoring();
+        protocol->CleanupInputMonitoring();
     }
+
+    // Set mouse_keyboard_running to false to ensure proper cleanup
+    mouse_keyboard_running = false;
 
     // Release thread-safe functions
     if (mouse_tsfn)

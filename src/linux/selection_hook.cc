@@ -418,6 +418,9 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         protocol->CleanupInputMonitoring();
     }
 
+    // Give a small delay to ensure any pending callbacks complete
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
     // Release thread-safe functions after threads have stopped
     try
     {
@@ -936,38 +939,28 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
 void SelectionHook::OnMouseEventCallback(void *context, MouseEventContext *mouseEvent)
 {
     SelectionHook *instance = static_cast<SelectionHook *>(context);
-    if (!instance || !mouseEvent)
+    if (!instance || !mouseEvent || !instance->mouse_keyboard_running.load() || !instance->mouse_tsfn)
+    {
+        delete mouseEvent;
         return;
+    }
 
     // Update current mouse position
     instance->current_mouse_pos = mouseEvent->pos;
 
-    // Call the ThreadSafeFunction for processing
-    if (instance->mouse_tsfn)
-    {
-        instance->mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
-    }
-    else
-    {
-        delete mouseEvent;
-    }
+    instance->mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
 }
 
 void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent)
 {
     SelectionHook *instance = static_cast<SelectionHook *>(context);
-    if (!instance || !keyboardEvent)
-        return;
-
-    // Call the ThreadSafeFunction for processing
-    if (instance->keyboard_tsfn)
-    {
-        instance->keyboard_tsfn.NonBlockingCall(keyboardEvent, ProcessKeyboardEvent);
-    }
-    else
+    if (!instance || !keyboardEvent || !instance->mouse_keyboard_running.load() || !instance->keyboard_tsfn)
     {
         delete keyboardEvent;
+        return;
     }
+
+    instance->keyboard_tsfn.NonBlockingCall(keyboardEvent, ProcessKeyboardEvent);
 }
 
 /**
@@ -1143,7 +1136,11 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 jsCallback.Call({resultObj});
             };
 
-            currentInstance->tsfn.NonBlockingCall(callback);
+            // Check if still running before calling ThreadSafeFunction
+            if (currentInstance->running.load() && currentInstance->tsfn)
+            {
+                currentInstance->tsfn.NonBlockingCall(callback);
+            }
         }
     }
 

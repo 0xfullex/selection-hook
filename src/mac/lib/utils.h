@@ -42,3 +42,8 @@ bool GetProgramNameFromFrontApp(NSRunningApplication *frontApp, std::string &pro
  * Check if cursor is I-beam cursor by comparing hotSpot
  */
 bool isIBeamCursor(NSCursor *cursor);
+
+/**
+ * Check if the current app's front window is in fullscreen mode
+ */
+bool IsWindowFullscreen(NSRunningApplication *frontApp);

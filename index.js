@@ -532,7 +532,7 @@ class SelectionHook extends EventEmitter {
   #formatSelectionData(data) {
     if (!data) return null;
 
-    return {
+    const selectionInfo = {
       text: data.text,
       programName: data.programName,
       startTop: { x: data.startTopX, y: data.startTopY },
@@ -544,6 +544,12 @@ class SelectionHook extends EventEmitter {
       method: data.method || 0,
       posLevel: data.posLevel || 0,
     };
+
+    if (isMac) {
+      selectionInfo.isFullscreen = data.isFullscreen;
+    }
+
+    return selectionInfo;
   }
 
   // Private helper methods

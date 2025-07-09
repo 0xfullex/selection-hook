@@ -122,6 +122,8 @@ struct TextSelectionInfo
     SelectionMethod method;
     SelectionPositionLevel posLevel;
 
+    bool isFullscreen;  ///< Whether the current app's front window is in fullscreen mode, only for macOS
+
     TextSelectionInfo() : method(SelectionMethod::None), posLevel(SelectionPositionLevel::None)
     {
         startTop = CGPointZero;
@@ -144,6 +146,7 @@ struct TextSelectionInfo
         mousePosEnd = CGPointZero;
         method = SelectionMethod::None;
         posLevel = SelectionPositionLevel::None;
+        isFullscreen = false;
     }
 };
 
@@ -802,24 +805,27 @@ bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectio
         }
     }
 
+    bool result = false;
     // First try Accessibility API (supported by modern applications)
     if (GetTextViaAXAPI(frontApp, selectionInfo))
     {
         selectionInfo.method = SelectionMethod::AXAPI;
-        is_processing.store(false);
-        return true;
+        result = true;
     }
 
     // Last resort: try to get text using clipboard and Cmd+C if enabled
-    if (ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
+    if (!result && ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
     {
         selectionInfo.method = SelectionMethod::Clipboard;
-        is_processing.store(false);
-        return true;
+        result = true;
     }
 
     is_processing.store(false);
-    return false;
+
+    if (result)
+        selectionInfo.isFullscreen = IsWindowFullscreen(frontApp);
+
+    return result;
 }
 
 /**
@@ -1333,6 +1339,7 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
     // Add method and position level information
     resultObj.Set(Napi::String::New(env, "method"), Napi::Number::New(env, static_cast<int>(selectionInfo.method)));
     resultObj.Set(Napi::String::New(env, "posLevel"), Napi::Number::New(env, static_cast<int>(selectionInfo.posLevel)));
+    resultObj.Set(Napi::String::New(env, "isFullscreen"), Napi::Boolean::New(env, selectionInfo.isFullscreen));
 
     // First paragraph left-top point (start position)
     resultObj.Set(Napi::String::New(env, "startTopX"), Napi::Number::New(env, selectionInfo.startTop.x));

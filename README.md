@@ -314,6 +314,7 @@ Represents text selection information including content, source application, and
 | `mousePosEnd`   | `Point`           | Mouse position when selection ended (px)                      |
 | `method`        | `SelectionMethod` | Indicates which method was used to detect the text selection. |
 | `posLevel`      | `PositionLevel`   | Indicates which positional data is provided.                  |
+| `isFullscreen`  | `boolean`         | _macOS Only_ Whether the window is in fullscreen mode         |
 
 Type `Point` is `{ x: number; y: number }`
 

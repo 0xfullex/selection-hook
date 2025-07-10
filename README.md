@@ -13,10 +13,10 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - Auto-triggers on user selection, or manual API triggers
   - Rich API to control the selection behaviors
 - **Input event listeners**
-  - Mouse events: `down/up/wheel/move` with buttons
-  - Keyboard events: `keydown/keyup` with keys
+  - Mouse events: `down`/`up`/`wheel`/`move` with buttons information
+  - Keyboard events: `keydown`/`keyup` with keys information
   - _No additional hooks required_ – works natively.
-- **Multi-method text extraction** (automatic fallback):
+- **Multi-method to get selected text** (automatic fallback):
   - For Windows: 
     - _UI Automation_ (modern apps)
     - _Accessibility API_ (legacy apps)
@@ -24,7 +24,7 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - For macOS:
     - _Accessibility API (AXAPI)_
   - For all platforms:
-    - _Clipboard fallback_ (simulated `Ctrl+C`/`⌘+C` with optimizations when all other methods fail)
+    - _Clipboard fallback_ (simulated `Ctrl + C`/`⌘ + C` with optimizations when all other methods fail)
 - **Clipboard**
   - Read/write clipboard
 - **Compatibility**
@@ -35,9 +35,9 @@ Maybe the first-ever open-source, fully functional text selection tool.
 
 | Platform | Status |
 |----------|--------|
-| Windows  | ✅ Fully supported. Windows 7+ |
+| Windows  | ✅ Fully supported. Windows 7+   |
 | macOS    | ✅ Fully supported. macOS 10.14+ |
-| Linux    | 🚧 Coming soon. |
+| Linux    | 🚧 Coming soon                   |
 
 ## Installation
 
@@ -79,6 +79,7 @@ rebuildConfig: {
     onlyModules: [],
 },
 ```
+
 
 
 ## Usage

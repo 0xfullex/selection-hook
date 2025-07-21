@@ -45,8 +45,9 @@
 
 #pragma comment(lib, "Oleacc.lib")            // For IAccessible
 #pragma comment(lib, "UIAutomationCore.lib")  // For UI Automation
-#pragma comment(lib, "Shcore.lib")            // For SetProcessDpiAwareness
-#pragma comment(lib, "Shell32.lib")           // For SHQueryUserNotificationState
+// #pragma comment(lib, "Shcore.lib") // Fo/r SetProcessDpiAwareness
+#pragma comment(lib, "Shell32.lib")  // For SHQueryUserNotificationState
+#pragma comment(lib, "User32.lib")   // For SetProcessDPIAware
 
 // UI Automation constants (if not defined)
 #ifndef UIA_IsSelectionActivePropertyId
@@ -250,6 +251,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
     static void ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *keyboardEvent);
 
+    // DPI awareness helper method
+    void EnableDpiAwareness();
+
     bool com_initialized_by_us = false;  // Flag indicating whether COM was initialized by this module
 
     // Thread communication
@@ -321,9 +325,8 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     // Get the system's double-click time
     DOUBLE_CLICK_TIME_MS = GetDoubleClickTime();
 
-    // Set process to be per-monitor DPI aware
-    HRESULT dpiResult = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
-    // Ignore error if the DPI awareness is already set by the host process
+    // Set process DPI awareness based on Windows version
+    EnableDpiAwareness();
 
     // Initialize COM with thread safety
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -2486,6 +2489,43 @@ LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, L
 
     // Pass to next hook
     return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+/**
+ * Enable DPI awareness based on Windows version
+ * For Windows 8.1 and above: use SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+ * For older versions: use SetProcessDPIAware()
+ */
+void SelectionHook::EnableDpiAwareness()
+{
+    // 定义 SetProcessDpiAwareness 函数指针类型
+    typedef HRESULT(WINAPI * SetProcessDpiAwareness_t)(PROCESS_DPI_AWARENESS);
+
+    // 尝试从 Shcore.dll 加载新函数
+    HMODULE shcore = LoadLibraryA("Shcore.dll");
+    if (shcore)
+    {
+        SetProcessDpiAwareness_t SetProcessDpiAwareness_func =
+            (SetProcessDpiAwareness_t)GetProcAddress(shcore, "SetProcessDpiAwareness");
+
+        if (SetProcessDpiAwareness_func != nullptr)
+        {
+            // Windows 8.1+, use SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+            // we don't check the result, because it's not important
+            HRESULT result = SetProcessDpiAwareness_func(PROCESS_PER_MONITOR_DPI_AWARE);
+        }
+        else
+        {
+            // fallback to old method
+            SetProcessDPIAware();
+        }
+        FreeLibrary(shcore);
+    }
+    else
+    {
+        // Windows 7+
+        SetProcessDPIAware();
+    }
 }
 
 //=============================================================================

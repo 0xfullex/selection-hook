@@ -270,6 +270,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     bool is_enabled_mouse_move_event = false;
     // the cursor of mouse down and mouse up, for clipboard detection
+    HCURSOR mouse_down_cursor = NULL;
     HCURSOR mouse_up_cursor = NULL;
 
     // UI Automation objects
@@ -924,6 +925,14 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 GetWindowRect(lastWindowHandler, &lastWindowRect);
             }
 
+            // Store mouse down cursor when clipboard is enabled
+            if (currentInstance->is_enabled_clipboard)
+            {
+                CURSORINFO ci = {sizeof(CURSORINFO)};
+                GetCursorInfo(&ci);
+                currentInstance->mouse_down_cursor = ci.hCursor;
+            }
+
             // Store clipboard sequence number when mouse down
             currentInstance->clipboard_sequence = GetClipboardSequenceNumber();
 
@@ -1366,8 +1375,9 @@ bool SelectionHook::ShouldProcessViaClipboard(HWND hwnd, std::wstring &programNa
         HCURSOR beamCursor = LoadCursor(NULL, IDC_IBEAM);
         HCURSOR handCursor = LoadCursor(NULL, IDC_HAND);
 
-        // beam is surely ok
-        if (currentInstance->mouse_up_cursor != beamCursor)
+        // when mouse down or up, any one of them is beamCursor, we can use clipboard
+        // otherwise, we have to check the situation further
+        if (currentInstance->mouse_down_cursor != beamCursor && currentInstance->mouse_up_cursor != beamCursor)
         {
             // not beam, not arrow, not hand: invalid text selection cursor
             if (currentInstance->mouse_up_cursor != arrowCursor && currentInstance->mouse_up_cursor != handCursor)

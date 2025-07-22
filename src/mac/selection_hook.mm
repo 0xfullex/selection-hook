@@ -1537,6 +1537,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 double distance = sqrt(dx * dx + dy * dy);
 
                 bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
+                bool isValidCursor = isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]);
 
                 if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
                 {
@@ -1545,7 +1546,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Check for drag selection
                 else if (distance >= MIN_DRAG_DISTANCE)
                 {
-                    if (isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]))
+                    // Only support IBeamCursor for now
+                    if (isValidCursor)
                     {
                         shouldDetectSelection = true;
                         detectionType = SelectionDetectType::Drag;
@@ -1562,7 +1564,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
                     {
                         // Only support IBeamCursor for now
-                        if (isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]))
+                        if (isValidCursor)
                         {
                             shouldDetectSelection = true;
                             detectionType = SelectionDetectType::DoubleClick;
@@ -1583,10 +1585,14 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         bool isCmdPressed = (flags & kCGEventFlagMaskCommand) != 0;
                         bool isOptionPressed = (flags & kCGEventFlagMaskAlternate) != 0;
 
-                        if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed)
+                        if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed &&)
                         {
-                            shouldDetectSelection = true;
-                            detectionType = SelectionDetectType::ShiftClick;
+                            // Only support IBeamCursor for now
+                            if (isValidCursor)
+                            {
+                                shouldDetectSelection = true;
+                                detectionType = SelectionDetectType::ShiftClick;
+                            }
                         }
                         CFRelease(currentEvent);
                     }

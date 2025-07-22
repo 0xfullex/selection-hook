@@ -1585,7 +1585,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         bool isCmdPressed = (flags & kCGEventFlagMaskCommand) != 0;
                         bool isOptionPressed = (flags & kCGEventFlagMaskAlternate) != 0;
 
-                        if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed &&)
+                        if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed)
                         {
                             // Only support IBeamCursor for now
                             if (isValidCursor)

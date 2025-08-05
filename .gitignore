@@ -9,3 +9,8 @@ compile_commands.json
 .cache
 .clangd
 .DS_Store
+.claude
+.gemini
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md

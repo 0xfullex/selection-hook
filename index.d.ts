@@ -137,6 +137,7 @@ declare class SelectionHook extends EventEmitter {
   static SelectionMethod: {
     NONE: 0;
     UIA: 1;
+    /** @deprecated This method has been removed */
     FOCUSCTL: 2;
     ACCESSIBLE: 3;
     AXAPI: 11;

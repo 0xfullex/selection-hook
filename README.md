@@ -20,7 +20,6 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - For Windows: 
     - _UI Automation_ (modern apps)
     - _Accessibility API_ (legacy apps)
-    - _Focused control_ (active input fields)
   - For macOS:
     - _Accessibility API (AXAPI)_
   - For all platforms:
@@ -373,7 +372,6 @@ Indicates which method was used to detect the text selection:
 - `NONE`: No selection detected
 - `UIA`: UI Automation (Windows)
 - `ACCESSIBLE`: Accessibility interface (Windows)
-- `FOCUSCTL`: Focused control (Windows)
 - `AXAPI`: Accessibility API (macOS)
 - `CLIPBOARD`: Clipboard fallback
 

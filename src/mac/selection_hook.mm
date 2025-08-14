@@ -1135,31 +1135,45 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
         {
             if (AXValueGetValue(rangeValue, kAXValueTypeCFRange, &selectedRange))
             {
+                // Validate and adjust the range bounds to prevent crashes
+                CFIndex valueLength = CFStringGetLength(value);
+                
+                // Ensure location is within bounds
+                if (selectedRange.location < 0)
+                    selectedRange.location = 0;
+                else if (selectedRange.location >= valueLength)
+                    selectedRange.location = valueLength - 1;
+                
+                // Ensure length doesn't exceed the remaining string
+                if (selectedRange.location + selectedRange.length > valueLength)
+                    selectedRange.length = valueLength - selectedRange.location;
+                
+                // Only proceed if we still have a valid range after adjustment
                 if (selectedRange.length > 0)
-                {
-                    //  Extract selected substring
-                    CFStringRef selectedSubstring =
-                        CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
-                    if (selectedSubstring)
                     {
-                        CFIndex length = CFStringGetLength(selectedSubstring);
-                        CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-                        char *buffer = new char[maxSize];
-
-                        if (CFStringGetCString(selectedSubstring, buffer, maxSize, kCFStringEncodingUTF8))
+                        //  Extract selected substring
+                        CFStringRef selectedSubstring =
+                            CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
+                        if (selectedSubstring)
                         {
-                            text = std::string(buffer);
+                            CFIndex length = CFStringGetLength(selectedSubstring);
+                            CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                            char *buffer = new char[maxSize];
+
+                            if (CFStringGetCString(selectedSubstring, buffer, maxSize, kCFStringEncodingUTF8))
+                            {
+                                text = std::string(buffer);
+                                delete[] buffer;
+                                CFRelease(selectedSubstring);
+                                CFRelease(rangeValue);
+                                CFRelease(value);
+                                return !text.empty();
+                            }
+
                             delete[] buffer;
                             CFRelease(selectedSubstring);
-                            CFRelease(rangeValue);
-                            CFRelease(value);
-                            return !text.empty();
                         }
-
-                        delete[] buffer;
-                        CFRelease(selectedSubstring);
                     }
-                }
             }
             CFRelease(rangeValue);
         }
@@ -1187,11 +1201,11 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
         CFRange selectedRange = {0, 0};
         if (AXValueGetValue(selectedRangeValue, kAXValueTypeCFRange, &selectedRange))
         {
-            if (selectedRange.length > 0)
-            {
-                // Try to get bounds for first and last character of the selection
-                CFRange firstCharRange = {selectedRange.location, 1};
-                CFRange lastCharRange = {selectedRange.location + selectedRange.length - 1, 1};
+                if (selectedRange.length > 0)
+                {
+                    // Try to get bounds for first and last character of the selection
+                    CFRange firstCharRange = {selectedRange.location, 1};
+                    CFRange lastCharRange = {selectedRange.location + selectedRange.length - 1, 1};
 
                 AXValueRef firstCharRangeValue = AXValueCreate(kAXValueTypeCFRange, &firstCharRange);
                 AXValueRef lastCharRangeValue = AXValueCreate(kAXValueTypeCFRange, &lastCharRange);

@@ -1096,90 +1096,129 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
     }
 
     // Try to get selected text first
-    CFStringRef selectedText = nullptr;
-    AXError error = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, (CFTypeRef *)&selectedText);
+    CFTypeRef selectedTextRef = nullptr;
+    AXError error = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, &selectedTextRef);
 
-    if (error == kAXErrorSuccess && selectedText)
+    if (error == kAXErrorSuccess && selectedTextRef)
     {
-        CFIndex length = CFStringGetLength(selectedText);
-        if (length > 0)
+        CFTypeID typeID = CFGetTypeID(selectedTextRef);
+
+        // Handle CFStringRef (most common case)
+        if (typeID == CFStringGetTypeID())
         {
-            CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-            char *buffer = new char[maxSize];
-
-            if (CFStringGetCString(selectedText, buffer, maxSize, kCFStringEncodingUTF8))
+            CFStringRef selectedText = (CFStringRef)selectedTextRef;
+            CFIndex length = CFStringGetLength(selectedText);
+            if (length > 0)
             {
-                text = std::string(buffer);
-                delete[] buffer;
-                CFRelease(selectedText);
-                return !text.empty();
-            }
+                CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                char *buffer = new char[maxSize];
 
-            delete[] buffer;
+                if (CFStringGetCString(selectedText, buffer, maxSize, kCFStringEncodingUTF8))
+                {
+                    text = std::string(buffer);
+                    delete[] buffer;
+                    CFRelease(selectedTextRef);
+                    return !text.empty();
+                }
+
+                delete[] buffer;
+            }
         }
-        CFRelease(selectedText);
+        // Handle CFNumberRef (for numeric input fields)
+        else if (typeID == CFNumberGetTypeID())
+        {
+            CFNumberRef number = (CFNumberRef)selectedTextRef;
+
+            if (CFNumberIsFloatType(number))
+            {
+                double doubleValue;
+                if (CFNumberGetValue(number, kCFNumberDoubleType, &doubleValue))
+                {
+                    text = std::to_string(doubleValue);
+                    CFRelease(selectedTextRef);
+                    return !text.empty();
+                }
+            }
+            else
+            {
+                long longValue;
+                if (CFNumberGetValue(number, kCFNumberLongType, &longValue))
+                {
+                    text = std::to_string(longValue);
+                    CFRelease(selectedTextRef);
+                    return !text.empty();
+                }
+            }
+        }
+        // For unsupported types, just release and continue to next strategy
+        CFRelease(selectedTextRef);
     }
 
     // If no selected text, try to get value and check if there's a selection range
-    CFStringRef value = nullptr;
-    error = AXUIElementCopyAttributeValue(element, kAXValueAttribute, (CFTypeRef *)&value);
+    CFTypeRef valueRef = nullptr;
+    error = AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueRef);
 
-    if (error == kAXErrorSuccess && value)
+    if (error == kAXErrorSuccess && valueRef)
     {
-        //  Try to get selected text range
-        CFRange selectedRange = {0, 0};
-        AXValueRef rangeValue = nullptr;
-        error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&rangeValue);
+        CFTypeID valueTypeID = CFGetTypeID(valueRef);
 
-        if (error == kAXErrorSuccess && rangeValue)
+        // Convert different types to string for range processing
+        if (valueTypeID == CFStringGetTypeID())
         {
-            if (AXValueGetValue(rangeValue, kAXValueTypeCFRange, &selectedRange))
+            CFStringRef value = (CFStringRef)valueRef;
+            //  Try to get selected text range
+            CFRange selectedRange = {0, 0};
+            AXValueRef rangeValue = nullptr;
+            error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&rangeValue);
+
+            if (error == kAXErrorSuccess && rangeValue)
             {
-                // Validate and adjust the range bounds to prevent crashes
-                CFIndex valueLength = CFStringGetLength(value);
+                if (AXValueGetValue(rangeValue, kAXValueTypeCFRange, &selectedRange))
+                {
+                    // Validate and adjust the range bounds to prevent crashes
+                    CFIndex valueLength = CFStringGetLength(value);
 
-                // Handle empty string case - no valid selection possible
-                if (valueLength <= 0)
-                {
-                    CFRelease(rangeValue);
-                    CFRelease(value);
-                    return false;
-                }
+                    // Handle empty string case - no valid selection possible
+                    if (valueLength <= 0)
+                    {
+                        CFRelease(rangeValue);
+                        CFRelease(valueRef);
+                        return false;
+                    }
 
-                // Ensure location is within bounds
-                if (selectedRange.location < 0)
-                {
-                    selectedRange.location = 0;
-                }
-                else if (selectedRange.location >= valueLength)
-                {
-                    // For non-empty strings, clamp to last valid position
-                    selectedRange.location = valueLength - 1;
-                }
+                    // Ensure location is within bounds
+                    if (selectedRange.location < 0)
+                    {
+                        selectedRange.location = 0;
+                    }
+                    else if (selectedRange.location >= valueLength)
+                    {
+                        // For non-empty strings, clamp to last valid position
+                        selectedRange.location = valueLength - 1;
+                    }
 
-                // Ensure length is positive and doesn't exceed remaining string
-                if (selectedRange.length <= 0)
-                {
-                    CFRelease(rangeValue);
-                    CFRelease(value);
-                    return false;
-                }
+                    // Ensure length is positive and doesn't exceed remaining string
+                    if (selectedRange.length <= 0)
+                    {
+                        CFRelease(rangeValue);
+                        CFRelease(valueRef);
+                        return false;
+                    }
 
-                if (selectedRange.location + selectedRange.length > valueLength)
-                {
-                    selectedRange.length = valueLength - selectedRange.location;
-                }
+                    if (selectedRange.location + selectedRange.length > valueLength)
+                    {
+                        selectedRange.length = valueLength - selectedRange.location;
+                    }
 
-                // Final check: ensure we have a valid range
-                if (selectedRange.length <= 0)
-                {
-                    CFRelease(rangeValue);
-                    CFRelease(value);
-                    return false;
-                }
+                    // Final check: ensure we have a valid range
+                    if (selectedRange.length <= 0)
+                    {
+                        CFRelease(rangeValue);
+                        CFRelease(valueRef);
+                        return false;
+                    }
 
-                // Only proceed if we still have a valid range after adjustment
-                {
+                    // Only proceed if we still have a valid range after adjustment
                     //  Extract selected substring
                     CFStringRef selectedSubstring =
                         CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
@@ -1195,7 +1234,7 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
                             delete[] buffer;
                             CFRelease(selectedSubstring);
                             CFRelease(rangeValue);
-                            CFRelease(value);
+                            CFRelease(valueRef);
                             return !text.empty();
                         }
 
@@ -1203,10 +1242,11 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
                         CFRelease(selectedSubstring);
                     }
                 }
+                CFRelease(rangeValue);
             }
-            CFRelease(rangeValue);
+
+            CFRelease(valueRef);
         }
-        CFRelease(value);
     }
 
     return false;

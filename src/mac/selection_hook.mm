@@ -1137,40 +1137,47 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
             {
                 // Validate and adjust the range bounds to prevent crashes
                 CFIndex valueLength = CFStringGetLength(value);
-                
+
                 // Handle empty string case - no valid selection possible
-                if (valueLength <= 0) {
+                if (valueLength <= 0)
+                {
                     CFRelease(rangeValue);
                     CFRelease(value);
                     return false;
                 }
-                
+
                 // Ensure location is within bounds
-                if (selectedRange.location < 0) {
+                if (selectedRange.location < 0)
+                {
                     selectedRange.location = 0;
-                } else if (selectedRange.location >= valueLength) {
+                }
+                else if (selectedRange.location >= valueLength)
+                {
                     // For non-empty strings, clamp to last valid position
                     selectedRange.location = valueLength - 1;
                 }
-                
+
                 // Ensure length is positive and doesn't exceed remaining string
-                if (selectedRange.length <= 0) {
+                if (selectedRange.length <= 0)
+                {
                     CFRelease(rangeValue);
                     CFRelease(value);
                     return false;
                 }
-                
-                if (selectedRange.location + selectedRange.length > valueLength) {
+
+                if (selectedRange.location + selectedRange.length > valueLength)
+                {
                     selectedRange.length = valueLength - selectedRange.location;
                 }
-                
+
                 // Final check: ensure we have a valid range
-                if (selectedRange.length <= 0) {
+                if (selectedRange.length <= 0)
+                {
                     CFRelease(rangeValue);
                     CFRelease(value);
                     return false;
                 }
-                
+
                 // Only proceed if we still have a valid range after adjustment
                 {
                     //  Extract selected substring
@@ -1223,11 +1230,11 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
         CFRange selectedRange = {0, 0};
         if (AXValueGetValue(selectedRangeValue, kAXValueTypeCFRange, &selectedRange))
         {
-                if (selectedRange.length > 0)
-                {
-                    // Try to get bounds for first and last character of the selection
-                    CFRange firstCharRange = {selectedRange.location, 1};
-                    CFRange lastCharRange = {selectedRange.location + selectedRange.length - 1, 1};
+            if (selectedRange.length > 0)
+            {
+                // Try to get bounds for first and last character of the selection
+                CFRange firstCharRange = {selectedRange.location, 1};
+                CFRange lastCharRange = {selectedRange.location + selectedRange.length - 1, 1};
 
                 AXValueRef firstCharRangeValue = AXValueCreate(kAXValueTypeCFRange, &firstCharRange);
                 AXValueRef lastCharRangeValue = AXValueCreate(kAXValueTypeCFRange, &lastCharRange);

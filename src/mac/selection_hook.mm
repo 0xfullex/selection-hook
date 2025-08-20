@@ -1138,42 +1138,64 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
                 // Validate and adjust the range bounds to prevent crashes
                 CFIndex valueLength = CFStringGetLength(value);
                 
-                // Ensure location is within bounds
-                if (selectedRange.location < 0)
-                    selectedRange.location = 0;
-                else if (selectedRange.location >= valueLength)
-                    selectedRange.location = valueLength - 1;
+                // Handle empty string case - no valid selection possible
+                if (valueLength <= 0) {
+                    CFRelease(rangeValue);
+                    CFRelease(value);
+                    return false;
+                }
                 
-                // Ensure length doesn't exceed the remaining string
-                if (selectedRange.location + selectedRange.length > valueLength)
+                // Ensure location is within bounds
+                if (selectedRange.location < 0) {
+                    selectedRange.location = 0;
+                } else if (selectedRange.location >= valueLength) {
+                    // For non-empty strings, clamp to last valid position
+                    selectedRange.location = valueLength - 1;
+                }
+                
+                // Ensure length is positive and doesn't exceed remaining string
+                if (selectedRange.length <= 0) {
+                    CFRelease(rangeValue);
+                    CFRelease(value);
+                    return false;
+                }
+                
+                if (selectedRange.location + selectedRange.length > valueLength) {
                     selectedRange.length = valueLength - selectedRange.location;
+                }
+                
+                // Final check: ensure we have a valid range
+                if (selectedRange.length <= 0) {
+                    CFRelease(rangeValue);
+                    CFRelease(value);
+                    return false;
+                }
                 
                 // Only proceed if we still have a valid range after adjustment
-                if (selectedRange.length > 0)
+                {
+                    //  Extract selected substring
+                    CFStringRef selectedSubstring =
+                        CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
+                    if (selectedSubstring)
                     {
-                        //  Extract selected substring
-                        CFStringRef selectedSubstring =
-                            CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
-                        if (selectedSubstring)
+                        CFIndex length = CFStringGetLength(selectedSubstring);
+                        CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                        char *buffer = new char[maxSize];
+
+                        if (CFStringGetCString(selectedSubstring, buffer, maxSize, kCFStringEncodingUTF8))
                         {
-                            CFIndex length = CFStringGetLength(selectedSubstring);
-                            CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-                            char *buffer = new char[maxSize];
-
-                            if (CFStringGetCString(selectedSubstring, buffer, maxSize, kCFStringEncodingUTF8))
-                            {
-                                text = std::string(buffer);
-                                delete[] buffer;
-                                CFRelease(selectedSubstring);
-                                CFRelease(rangeValue);
-                                CFRelease(value);
-                                return !text.empty();
-                            }
-
+                            text = std::string(buffer);
                             delete[] buffer;
                             CFRelease(selectedSubstring);
+                            CFRelease(rangeValue);
+                            CFRelease(value);
+                            return !text.empty();
                         }
+
+                        delete[] buffer;
+                        CFRelease(selectedSubstring);
                     }
+                }
             }
             CFRelease(rangeValue);
         }

@@ -1328,7 +1328,7 @@ bool SelectionHook::ShouldProcessGetSelection()
     // QUNS_BUSY (2) - System is busy
     // QUNS_RUNNING_D3D_FULL_SCREEN (3) - Running in full-screen mode
     // QUNS_PRESENTATION_MODE (4) - Presentation mode
-    lastResult = state != QUNS_RUNNING_D3D_FULL_SCREEN && state != QUNS_BUSY && state != QUNS_PRESENTATION_MODE;
+    lastResult = state != QUNS_RUNNING_D3D_FULL_SCREEN && state != QUNS_PRESENTATION_MODE;
     return lastResult;
 }
 

@@ -985,8 +985,19 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     if (distance <= DOUBLE_CLICK_MAX_DISTANCE &&
                         (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
                     {
-                        shouldDetectSelection = true;
-                        detectionType = SelectionDetectType::DoubleClick;
+                        // check whether it's a maximized/restored behavior of the window
+                        HWND hwnd = GetWindowUnderMouse();
+                        if (hwnd && hwnd == lastWindowHandler)
+                        {
+                            RECT currentWindowRect;
+                            GetWindowRect(hwnd, &currentWindowRect);
+
+                            if (!HasWindowMoved(currentWindowRect, lastWindowRect))
+                            {
+                                shouldDetectSelection = true;
+                                detectionType = SelectionDetectType::DoubleClick;
+                            }
+                        }
                     }
                 }
 

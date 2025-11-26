@@ -13,18 +13,17 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - Auto-triggers on user selection, or manual API triggers
   - Rich API to control the selection behaviors
 - **Input event listeners**
-  - Mouse events: `down/up/wheel/move` with buttons
-  - Keyboard events: `keydown/keyup` with keys
+  - Mouse events: `down`/`up`/`wheel`/`move` with buttons information
+  - Keyboard events: `keydown`/`keyup` with keys information
   - _No additional hooks required_ – works natively.
-- **Multi-method text extraction** (automatic fallback):
-  - For Windows:
+- **Multi-method to get selected text** (automatic fallback):
+  - For Windows: 
     - _UI Automation_ (modern apps)
     - _Accessibility API_ (legacy apps)
-    - _Focused control_ (active input fields)
   - For macOS:
     - _Accessibility API (AXAPI)_
   - For all platforms:
-    - _Clipboard fallback_ (simulated `Ctrl+C`/`⌘+C` with optimizations when all other methods fail)
+    - _Clipboard fallback_ (simulated `Ctrl + C`/`⌘ + C` with optimizations when all other methods fail)
 - **Clipboard**
   - Read/write clipboard
 - **Compatibility**
@@ -35,9 +34,9 @@ Maybe the first-ever open-source, fully functional text selection tool.
 
 | Platform | Status                                              |
 | -------- | --------------------------------------------------- |
-| Windows  | ✅ Fully supported. Windows 7+                      |
+| Windows  | ✅ Fully supported. Windows 7+                        |
 | macOS    | ✅ Fully supported. macOS 10.14+                    |
-| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Coming soon. |
+| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Coming soon                   |
 
 ## Installation
 
@@ -79,6 +78,8 @@ rebuildConfig: {
     onlyModules: [],
 },
 ```
+
+
 
 ## Usage
 
@@ -334,6 +335,7 @@ Represents text selection information including content, source application, and
 | `mousePosEnd`   | `Point`           | Mouse position when selection ended (px)                      |
 | `method`        | `SelectionMethod` | Indicates which method was used to detect the text selection. |
 | `posLevel`      | `PositionLevel`   | Indicates which positional data is provided.                  |
+| `isFullscreen`  | `boolean`         | _macOS Only_ Whether the window is in fullscreen mode         |
 
 Type `Point` is `{ x: number; y: number }`
 
@@ -392,7 +394,6 @@ Indicates which method was used to detect the text selection:
 - `NONE`: No selection detected
 - `UIA`: UI Automation (_Windows_)
 - `ACCESSIBLE`: Accessibility interface (_Windows_)
-- `FOCUSCTL`: Focused control (_Windows_)
 - `AXAPI`: Accessibility API (_macOS_)
 - `ATSPI`: Assistive Technology Service Provider Interface (_Linux_)
 - `PRIMARY`: Primary Selection (_Linux_)

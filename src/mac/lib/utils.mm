@@ -107,5 +107,45 @@ bool isIBeamCursor(NSCursor *cursor)
         return false;
 
     NSPoint hotSpot = [cursor hotSpot];
-    return NSEqualPoints(hotSpot, {4.0, 9.0});
+
+    // macOS 26 IBeam {12,11}
+    return NSEqualPoints(hotSpot, {4.0, 9.0}) || NSEqualPoints(hotSpot, {16.0, 16.0}) ||
+           NSEqualPoints(hotSpot, {12.0, 11.0});
+}
+
+/**
+ * Check if the current app's front window is in fullscreen mode
+ */
+bool IsWindowFullscreen(NSRunningApplication *frontApp)
+{
+    if (!frontApp)
+        return false;
+
+    @autoreleasepool
+    {
+        // Get the front window of the app
+        AXUIElementRef appElement = GetAppElementFromFrontApp(frontApp);
+        AXUIElementRef frontWindow = GetFrontWindowElementFromAppElement(appElement);
+        if (!frontWindow)
+        {
+            CFRelease(appElement);
+            return false;
+        }
+
+        // Check if the window is in fullscreen mode using fullscreen attribute
+        CFTypeRef fsValue = nullptr;
+        AXError error = AXUIElementCopyAttributeValue(frontWindow, CFSTR("AXFullScreen"), &fsValue);
+
+        bool isFullscreen = false;
+        if (error == kAXErrorSuccess && fsValue)
+        {
+            isFullscreen = CFBooleanGetValue((CFBooleanRef)fsValue);
+            CFRelease(fsValue);
+        }
+
+        CFRelease(frontWindow);
+        CFRelease(appElement);
+
+        return isFullscreen;
+    }
 }

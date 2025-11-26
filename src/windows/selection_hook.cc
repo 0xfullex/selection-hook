@@ -45,17 +45,13 @@
 
 #pragma comment(lib, "Oleacc.lib")            // For IAccessible
 #pragma comment(lib, "UIAutomationCore.lib")  // For UI Automation
-#pragma comment(lib, "Shcore.lib")            // For SetProcessDpiAwareness
-#pragma comment(lib, "Shell32.lib")           // For SHQueryUserNotificationState
+// #pragma comment(lib, "Shcore.lib") // Fo/r SetProcessDpiAwareness
+#pragma comment(lib, "Shell32.lib")  // For SHQueryUserNotificationState
+#pragma comment(lib, "User32.lib")   // For SetProcessDPIAware
 
 // UI Automation constants (if not defined)
 #ifndef UIA_IsSelectionActivePropertyId
 #define UIA_IsSelectionActivePropertyId 30034
-#endif
-
-// Define EM_GETSELTEXT if not defined
-#ifndef EM_GETSELTEXT
-#define EM_GETSELTEXT (WM_USER + 70)  // This is the standard value for Rich Edit controls
 #endif
 
 // Mouse&Keyboard hook constants
@@ -82,6 +78,7 @@ enum class SelectionMethod
 {
     None = 0,
     UIA = 1,
+    /** @deprecated This method has been removed */
     FocusControl = 2,
     Accessible = 3,
     Clipboard = 99
@@ -230,7 +227,6 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     bool GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool GetTextViaAccessible(HWND hwnd, TextSelectionInfo &selectionInfo);
-    bool GetTextViaFocusedControl(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool ShouldProcessGetSelection();  // check if we should get text based on system state
     bool ShouldProcessViaClipboard(HWND hwnd, std::wstring &programName);
@@ -249,6 +245,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static LRESULT CALLBACK KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam);
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
     static void ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *keyboardEvent);
+
+    // DPI awareness helper method
+    void EnableDpiAwareness();
 
     bool com_initialized_by_us = false;  // Flag indicating whether COM was initialized by this module
 
@@ -270,6 +269,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     bool is_enabled_mouse_move_event = false;
     // the cursor of mouse down and mouse up, for clipboard detection
+    HCURSOR mouse_down_cursor = NULL;
     HCURSOR mouse_up_cursor = NULL;
 
     // UI Automation objects
@@ -320,9 +320,8 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     // Get the system's double-click time
     DOUBLE_CLICK_TIME_MS = GetDoubleClickTime();
 
-    // Set process to be per-monitor DPI aware
-    HRESULT dpiResult = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
-    // Ignore error if the DPI awareness is already set by the host process
+    // Set process DPI awareness based on Windows version
+    EnableDpiAwareness();
 
     // Initialize COM with thread safety
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -924,6 +923,14 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 GetWindowRect(lastWindowHandler, &lastWindowRect);
             }
 
+            // Store mouse down cursor when clipboard is enabled
+            if (currentInstance->is_enabled_clipboard)
+            {
+                CURSORINFO ci = {sizeof(CURSORINFO)};
+                GetCursorInfo(&ci);
+                currentInstance->mouse_down_cursor = ci.hCursor;
+            }
+
             // Store clipboard sequence number when mouse down
             currentInstance->clipboard_sequence = GetClipboardSequenceNumber();
 
@@ -978,8 +985,19 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     if (distance <= DOUBLE_CLICK_MAX_DISTANCE &&
                         (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
                     {
-                        shouldDetectSelection = true;
-                        detectionType = SelectionDetectType::DoubleClick;
+                        // check whether it's a maximized/restored behavior of the window
+                        HWND hwnd = GetWindowUnderMouse();
+                        if (hwnd && hwnd == lastWindowHandler)
+                        {
+                            RECT currentWindowRect;
+                            GetWindowRect(hwnd, &currentWindowRect);
+
+                            if (!HasWindowMoved(currentWindowRect, lastWindowRect))
+                            {
+                                shouldDetectSelection = true;
+                                detectionType = SelectionDetectType::DoubleClick;
+                            }
+                        }
                     }
                 }
 
@@ -1269,14 +1287,6 @@ bool SelectionHook::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInfo)
         return true;
     }
 
-    // Try to get text from focused control
-    if (GetTextViaFocusedControl(hwnd, selectionInfo))
-    {
-        selectionInfo.method = SelectionMethod::FocusControl;
-        is_processing.store(false);
-        return true;
-    }
-
     // Fall back to IAccessible interface (supported by older applications)
     if (GetTextViaAccessible(hwnd, selectionInfo))
     {
@@ -1329,7 +1339,7 @@ bool SelectionHook::ShouldProcessGetSelection()
     // QUNS_BUSY (2) - System is busy
     // QUNS_RUNNING_D3D_FULL_SCREEN (3) - Running in full-screen mode
     // QUNS_PRESENTATION_MODE (4) - Presentation mode
-    lastResult = state != QUNS_RUNNING_D3D_FULL_SCREEN && state != QUNS_BUSY && state != QUNS_PRESENTATION_MODE;
+    lastResult = state != QUNS_RUNNING_D3D_FULL_SCREEN && state != QUNS_PRESENTATION_MODE;
     return lastResult;
 }
 
@@ -1366,8 +1376,9 @@ bool SelectionHook::ShouldProcessViaClipboard(HWND hwnd, std::wstring &programNa
         HCURSOR beamCursor = LoadCursor(NULL, IDC_IBEAM);
         HCURSOR handCursor = LoadCursor(NULL, IDC_HAND);
 
-        // beam is surely ok
-        if (currentInstance->mouse_up_cursor != beamCursor)
+        // when mouse down or up, any one of them is beamCursor, we can use clipboard
+        // otherwise, we have to check the situation further
+        if (currentInstance->mouse_down_cursor != beamCursor && currentInstance->mouse_up_cursor != beamCursor)
         {
             // not beam, not arrow, not hand: invalid text selection cursor
             if (currentInstance->mouse_up_cursor != arrowCursor && currentInstance->mouse_up_cursor != handCursor)
@@ -1858,96 +1869,6 @@ bool SelectionHook::GetTextViaAccessible(HWND hwnd, TextSelectionInfo &selection
 
     pAcc->Release();
     return result;
-}
-
-/**
- * Get text from the focused control in the window
- */
-bool SelectionHook::GetTextViaFocusedControl(HWND hwnd, TextSelectionInfo &selectionInfo)
-{
-    if (!hwnd)
-        return false;
-
-    // Get thread ID of the foreground window
-    DWORD foregroundThreadId = GetWindowThreadProcessId(hwnd, NULL);
-    DWORD currentThreadId = GetCurrentThreadId();
-
-    // Attach thread input to get accurate focus information
-    bool attached = false;
-    if (foregroundThreadId != currentThreadId)
-    {
-        attached = AttachThreadInput(currentThreadId, foregroundThreadId, TRUE) != 0;
-    }
-
-    // Get the focused control
-    HWND focusedControl = GetFocus();
-
-    // Detach thread input if we attached it
-    if (attached)
-    {
-        AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
-    }
-
-    if (!focusedControl)
-    {
-        return false;
-    }
-
-    // Try to get selected text first
-    DWORD selStart = 0, selEnd = 0;
-    SendMessageW(focusedControl, EM_GETSEL, (WPARAM)&selStart, (LPARAM)&selEnd);
-
-    if (selStart != selEnd)
-    {
-        // We have a selection
-        DWORD selLength = selEnd - selStart;
-        if (selLength > 0 && selLength < 8192)  // Reasonable limit
-        {
-            // Approach 1: Use EM_GETSELTEXT (works for rich edit controls)
-            wchar_t buffer[8192] = {0};
-            int textLength = SendMessageW(focusedControl, EM_GETSELTEXT, 0, (LPARAM)buffer);
-
-            if (textLength > 0)
-            {
-                selectionInfo.text = std::wstring(buffer, textLength);
-            }
-            else
-            {
-                // Approach 2: Get all text and extract the selection manually
-                wchar_t fullTextBuffer[8192] = {0};
-                int fullTextLength = SendMessageW(focusedControl, WM_GETTEXT, sizeof(fullTextBuffer) / sizeof(wchar_t),
-                                                  (LPARAM)fullTextBuffer);
-
-                if (fullTextLength > 0 && selStart < static_cast<DWORD>(fullTextLength))
-                {
-                    // Ensure selection bounds are within text length
-                    if (selEnd > static_cast<DWORD>(fullTextLength))
-                    {
-                        selEnd = static_cast<DWORD>(fullTextLength);
-                    }
-                    selectionInfo.text = std::wstring(fullTextBuffer + selStart, selEnd - selStart);
-                }
-            }
-        }
-    }
-
-    // Try to get control rectangle for position information
-    // not accurate
-    RECT rect;
-    if (GetWindowRect(focusedControl, &rect))
-    {
-        selectionInfo.startTop.x = rect.left;
-        selectionInfo.startTop.y = rect.top;
-        selectionInfo.startBottom.x = rect.left;
-        selectionInfo.startBottom.y = rect.bottom;
-
-        selectionInfo.endTop.x = rect.right;
-        selectionInfo.endTop.y = rect.top;
-        selectionInfo.endBottom.x = rect.right;
-        selectionInfo.endBottom.y = rect.bottom;
-    }
-
-    return !selectionInfo.text.empty();
 }
 
 /**
@@ -2476,6 +2397,43 @@ LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, L
 
     // Pass to next hook
     return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+/**
+ * Enable DPI awareness based on Windows version
+ * For Windows 8.1 and above: use SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+ * For older versions: use SetProcessDPIAware()
+ */
+void SelectionHook::EnableDpiAwareness()
+{
+    // 定义 SetProcessDpiAwareness 函数指针类型
+    typedef HRESULT(WINAPI * SetProcessDpiAwareness_t)(PROCESS_DPI_AWARENESS);
+
+    // 尝试从 Shcore.dll 加载新函数
+    HMODULE shcore = LoadLibraryA("Shcore.dll");
+    if (shcore)
+    {
+        SetProcessDpiAwareness_t SetProcessDpiAwareness_func =
+            (SetProcessDpiAwareness_t)GetProcAddress(shcore, "SetProcessDpiAwareness");
+
+        if (SetProcessDpiAwareness_func != nullptr)
+        {
+            // Windows 8.1+, use SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+            // we don't check the result, because it's not important
+            HRESULT result = SetProcessDpiAwareness_func(PROCESS_PER_MONITOR_DPI_AWARE);
+        }
+        else
+        {
+            // fallback to old method
+            SetProcessDPIAware();
+        }
+        FreeLibrary(shcore);
+    }
+    else
+    {
+        // Windows 7+
+        SetProcessDPIAware();
+    }
 }
 
 //=============================================================================

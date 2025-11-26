@@ -34,6 +34,8 @@ export interface TextSelectionData {
   method: (typeof SelectionHook.SelectionMethod)[keyof typeof SelectionHook.SelectionMethod];
   /** Position level identifier */
   posLevel: (typeof SelectionHook.PositionLevel)[keyof typeof SelectionHook.PositionLevel];
+  /** Whether the current app's front window is in fullscreen mode, macOS only */
+  isFullscreen?: boolean;
 }
 
 /**
@@ -135,6 +137,7 @@ declare class SelectionHook extends EventEmitter {
   static SelectionMethod: {
     NONE: 0;
     UIA: 1;
+    /** @deprecated This method has been removed */
     FOCUSCTL: 2;
     ACCESSIBLE: 3;
     AXAPI: 11;

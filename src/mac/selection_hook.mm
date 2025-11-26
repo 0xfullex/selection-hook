@@ -46,7 +46,7 @@ constexpr int DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE = 128;
 
 // Mouse interaction constants
 constexpr int MIN_DRAG_DISTANCE = 8;
-constexpr uint64_t MAX_DRAG_TIME_MS = 8000;
+constexpr uint64_t MAX_DRAG_TIME_MS = 15000;
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
 static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 
@@ -122,6 +122,8 @@ struct TextSelectionInfo
     SelectionMethod method;
     SelectionPositionLevel posLevel;
 
+    bool isFullscreen;  ///< Whether the current app's front window is in fullscreen mode, only for macOS
+
     TextSelectionInfo() : method(SelectionMethod::None), posLevel(SelectionPositionLevel::None)
     {
         startTop = CGPointZero;
@@ -144,6 +146,7 @@ struct TextSelectionInfo
         mousePosEnd = CGPointZero;
         method = SelectionMethod::None;
         posLevel = SelectionPositionLevel::None;
+        isFullscreen = false;
     }
 };
 
@@ -802,24 +805,27 @@ bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectio
         }
     }
 
+    bool result = false;
     // First try Accessibility API (supported by modern applications)
     if (GetTextViaAXAPI(frontApp, selectionInfo))
     {
         selectionInfo.method = SelectionMethod::AXAPI;
-        is_processing.store(false);
-        return true;
+        result = true;
     }
 
     // Last resort: try to get text using clipboard and Cmd+C if enabled
-    if (ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
+    if (!result && ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
     {
         selectionInfo.method = SelectionMethod::Clipboard;
-        is_processing.store(false);
-        return true;
+        result = true;
     }
 
     is_processing.store(false);
-    return false;
+
+    if (result)
+        selectionInfo.isFullscreen = IsWindowFullscreen(frontApp);
+
+    return result;
 }
 
 /**
@@ -1090,47 +1096,129 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
     }
 
     // Try to get selected text first
-    CFStringRef selectedText = nullptr;
-    AXError error = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, (CFTypeRef *)&selectedText);
+    CFTypeRef selectedTextRef = nullptr;
+    AXError error = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, &selectedTextRef);
 
-    if (error == kAXErrorSuccess && selectedText)
+    if (error == kAXErrorSuccess && selectedTextRef)
     {
-        CFIndex length = CFStringGetLength(selectedText);
-        if (length > 0)
+        CFTypeID typeID = CFGetTypeID(selectedTextRef);
+
+        // Handle CFStringRef (most common case)
+        if (typeID == CFStringGetTypeID())
         {
-            CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-            char *buffer = new char[maxSize];
-
-            if (CFStringGetCString(selectedText, buffer, maxSize, kCFStringEncodingUTF8))
+            CFStringRef selectedText = (CFStringRef)selectedTextRef;
+            CFIndex length = CFStringGetLength(selectedText);
+            if (length > 0)
             {
-                text = std::string(buffer);
-                delete[] buffer;
-                CFRelease(selectedText);
-                return !text.empty();
-            }
+                CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                char *buffer = new char[maxSize];
 
-            delete[] buffer;
+                if (CFStringGetCString(selectedText, buffer, maxSize, kCFStringEncodingUTF8))
+                {
+                    text = std::string(buffer);
+                    delete[] buffer;
+                    CFRelease(selectedTextRef);
+                    return !text.empty();
+                }
+
+                delete[] buffer;
+            }
         }
-        CFRelease(selectedText);
+        // Handle CFNumberRef (for numeric input fields)
+        else if (typeID == CFNumberGetTypeID())
+        {
+            CFNumberRef number = (CFNumberRef)selectedTextRef;
+
+            if (CFNumberIsFloatType(number))
+            {
+                double doubleValue;
+                if (CFNumberGetValue(number, kCFNumberDoubleType, &doubleValue))
+                {
+                    text = std::to_string(doubleValue);
+                    CFRelease(selectedTextRef);
+                    return !text.empty();
+                }
+            }
+            else
+            {
+                long longValue;
+                if (CFNumberGetValue(number, kCFNumberLongType, &longValue))
+                {
+                    text = std::to_string(longValue);
+                    CFRelease(selectedTextRef);
+                    return !text.empty();
+                }
+            }
+        }
+        // For unsupported types, just release and continue to next strategy
+        CFRelease(selectedTextRef);
     }
 
     // If no selected text, try to get value and check if there's a selection range
-    CFStringRef value = nullptr;
-    error = AXUIElementCopyAttributeValue(element, kAXValueAttribute, (CFTypeRef *)&value);
+    CFTypeRef valueRef = nullptr;
+    error = AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueRef);
 
-    if (error == kAXErrorSuccess && value)
+    if (error == kAXErrorSuccess && valueRef)
     {
-        //  Try to get selected text range
-        CFRange selectedRange = {0, 0};
-        AXValueRef rangeValue = nullptr;
-        error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&rangeValue);
+        CFTypeID valueTypeID = CFGetTypeID(valueRef);
 
-        if (error == kAXErrorSuccess && rangeValue)
+        // Convert different types to string for range processing
+        if (valueTypeID == CFStringGetTypeID())
         {
-            if (AXValueGetValue(rangeValue, kAXValueTypeCFRange, &selectedRange))
+            CFStringRef value = (CFStringRef)valueRef;
+            //  Try to get selected text range
+            CFRange selectedRange = {0, 0};
+            AXValueRef rangeValue = nullptr;
+            error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&rangeValue);
+
+            if (error == kAXErrorSuccess && rangeValue)
             {
-                if (selectedRange.length > 0)
+                if (AXValueGetValue(rangeValue, kAXValueTypeCFRange, &selectedRange))
                 {
+                    // Validate and adjust the range bounds to prevent crashes
+                    CFIndex valueLength = CFStringGetLength(value);
+
+                    // Handle empty string case - no valid selection possible
+                    if (valueLength <= 0)
+                    {
+                        CFRelease(rangeValue);
+                        CFRelease(valueRef);
+                        return false;
+                    }
+
+                    // Ensure location is within bounds
+                    if (selectedRange.location < 0)
+                    {
+                        selectedRange.location = 0;
+                    }
+                    else if (selectedRange.location >= valueLength)
+                    {
+                        // For non-empty strings, clamp to last valid position
+                        selectedRange.location = valueLength - 1;
+                    }
+
+                    // Ensure length is positive and doesn't exceed remaining string
+                    if (selectedRange.length <= 0)
+                    {
+                        CFRelease(rangeValue);
+                        CFRelease(valueRef);
+                        return false;
+                    }
+
+                    if (selectedRange.location + selectedRange.length > valueLength)
+                    {
+                        selectedRange.length = valueLength - selectedRange.location;
+                    }
+
+                    // Final check: ensure we have a valid range
+                    if (selectedRange.length <= 0)
+                    {
+                        CFRelease(rangeValue);
+                        CFRelease(valueRef);
+                        return false;
+                    }
+
+                    // Only proceed if we still have a valid range after adjustment
                     //  Extract selected substring
                     CFStringRef selectedSubstring =
                         CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
@@ -1146,7 +1234,7 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
                             delete[] buffer;
                             CFRelease(selectedSubstring);
                             CFRelease(rangeValue);
-                            CFRelease(value);
+                            CFRelease(valueRef);
                             return !text.empty();
                         }
 
@@ -1154,10 +1242,11 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
                         CFRelease(selectedSubstring);
                     }
                 }
+                CFRelease(rangeValue);
             }
-            CFRelease(rangeValue);
+
+            CFRelease(valueRef);
         }
-        CFRelease(value);
     }
 
     return false;
@@ -1261,12 +1350,18 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
                     if (lastCharRangeValue)
                         CFRelease(lastCharRangeValue);
                 }
+                else
+                {
+                    if (firstCharRangeValue)
+                        CFRelease(firstCharRangeValue);
+                    if (lastCharRangeValue)
+                        CFRelease(lastCharRangeValue);
+                }
             }
         }
+        CFRelease(selectedRangeValue);
+        selectedRangeValue = nullptr;
     }
-
-    CFRelease(selectedRangeValue);
-    selectedRangeValue = nullptr;
 
     // Strategy 2: Try to get selected text range bounds using kAXBoundsForRangeParameterizedAttribute
     error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&selectedRangeValue);
@@ -1281,7 +1376,6 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
                 AXValueRef boundsValue = nullptr;
                 error = AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute,
                                                                    selectedRangeValue, (CFTypeRef *)&boundsValue);
-
                 if (error == kAXErrorSuccess && boundsValue)
                 {
                     CGRect rect = CGRectZero;
@@ -1308,9 +1402,8 @@ bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectio
                 }
             }
         }
+        CFRelease(selectedRangeValue);
     }
-
-    CFRelease(selectedRangeValue);
 
     return false;
 }
@@ -1329,6 +1422,7 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
     // Add method and position level information
     resultObj.Set(Napi::String::New(env, "method"), Napi::Number::New(env, static_cast<int>(selectionInfo.method)));
     resultObj.Set(Napi::String::New(env, "posLevel"), Napi::Number::New(env, static_cast<int>(selectionInfo.posLevel)));
+    resultObj.Set(Napi::String::New(env, "isFullscreen"), Napi::Boolean::New(env, selectionInfo.isFullscreen));
 
     // First paragraph left-top point (start position)
     resultObj.Set(Napi::String::New(env, "startTopX"), Napi::Number::New(env, selectionInfo.startTop.x));
@@ -1526,6 +1620,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 double distance = sqrt(dx * dx + dy * dy);
 
                 bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
+                bool isValidCursor = isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]);
 
                 if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
                 {
@@ -1534,7 +1629,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Check for drag selection
                 else if (distance >= MIN_DRAG_DISTANCE)
                 {
-                    if (isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]))
+                    // Only support IBeamCursor for now
+                    if (isValidCursor)
                     {
                         shouldDetectSelection = true;
                         detectionType = SelectionDetectType::Drag;
@@ -1551,7 +1647,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
                     {
                         // Only support IBeamCursor for now
-                        if (isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]))
+                        if (isValidCursor)
                         {
                             shouldDetectSelection = true;
                             detectionType = SelectionDetectType::DoubleClick;
@@ -1574,8 +1670,12 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 
                         if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed)
                         {
-                            shouldDetectSelection = true;
-                            detectionType = SelectionDetectType::ShiftClick;
+                            // Only support IBeamCursor for now
+                            if (isValidCursor)
+                            {
+                                shouldDetectSelection = true;
+                                detectionType = SelectionDetectType::ShiftClick;
+                            }
                         }
                         CFRelease(currentEvent);
                     }

@@ -1851,6 +1851,7 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
             {
                 // If we can't determine which modifier changed, we just return
                 // This might happen in edge cases or when multiple modifiers change simultaneously
+                delete pKeyboardEvent;
                 return;
             }
 
@@ -1859,6 +1860,7 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
             break;
         }
         default:
+            delete pKeyboardEvent;
             return;
     }
 

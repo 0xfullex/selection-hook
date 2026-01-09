@@ -1815,33 +1815,32 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
             CGEventFlags changedFlags = currentFlags ^ previousFlags;
 
             // Determine key-down or key-up based on which flag changed
-            // vkCode is already set from pKeyboardEvent->keyCode which distinguishes left/right keys
+            // For Command/Shift/Option/Control: vkCode is already set from pKeyboardEvent->keyCode
+            // which correctly distinguishes between left/right variants
             if (changedFlags & kCGEventFlagMaskCommand)
             {
-                // vkCode already contains kVK_Command or kVK_RightCommand
                 eventTypeStr = (currentFlags & kCGEventFlagMaskCommand) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskShift)
             {
-                // vkCode already contains kVK_Shift or kVK_RightShift
                 eventTypeStr = (currentFlags & kCGEventFlagMaskShift) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskAlternate)
             {
-                // vkCode already contains kVK_Option or kVK_RightOption
                 eventTypeStr = (currentFlags & kCGEventFlagMaskAlternate) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskControl)
             {
-                // vkCode already contains kVK_Control or kVK_RightControl
                 eventTypeStr = (currentFlags & kCGEventFlagMaskControl) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskSecondaryFn)
             {
+                vkCode = kVK_Function;
                 eventTypeStr = (currentFlags & kCGEventFlagMaskSecondaryFn) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskAlphaShift)
             {
+                vkCode = kVK_CapsLock;
                 // CapsLock is a toggle key, so we treat it differently
                 // When CapsLock changes, we consider it as key-down
                 eventTypeStr = "key-down";

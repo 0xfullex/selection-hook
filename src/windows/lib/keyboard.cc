@@ -11,39 +11,37 @@
 #include "keyboard.h"
 
 // Pre-allocated string constants to avoid repeated allocations
+// MDN standard: no left/right distinction in uniKey values
 static const std::string UNIDENTIFIED_KEY = "Unidentified";
 static const std::string CONTROL_KEY = "Control";
-static const std::string RIGHT_CONTROL_KEY = "RightControl";
 static const std::string ALT_KEY = "Alt";
-static const std::string RIGHT_ALT_KEY = "RightAlt";
 static const std::string SHIFT_KEY = "Shift";
-static const std::string RIGHT_SHIFT_KEY = "RightShift";
 static const std::string META_KEY = "Meta";
-static const std::string RIGHT_META_KEY = "RightMeta";
 
 // Character constants for better performance
 static constexpr char SHIFTED_NUMBERS[] = ")!@#$%^&*(";
 
 // Static mapping for virtual key codes to MDN KeyboardEvent.key values
+// MDN standard: modifier keys return the same value regardless of left/right
 static const std::unordered_map<DWORD, const std::string*> vkCodeMaps = {
     // Control keys
     {VK_LCONTROL, &CONTROL_KEY},
-    {VK_RCONTROL, &RIGHT_CONTROL_KEY},
+    {VK_RCONTROL, &CONTROL_KEY},
     {VK_CONTROL, &CONTROL_KEY},
 
     // Alt keys
     {VK_LMENU, &ALT_KEY},
-    {VK_RMENU, &RIGHT_ALT_KEY},
+    {VK_RMENU, &ALT_KEY},
     {VK_MENU, &ALT_KEY},
 
     // Shift keys
     {VK_LSHIFT, &SHIFT_KEY},
-    {VK_RSHIFT, &RIGHT_SHIFT_KEY},
+    {VK_RSHIFT, &SHIFT_KEY},
     {VK_SHIFT, &SHIFT_KEY},
 
     // Windows keys
     {VK_LWIN, &META_KEY},
-    {VK_RWIN, &RIGHT_META_KEY},
+    {VK_RWIN, &META_KEY},
 
     // Lock keys
     {VK_CAPITAL, new std::string("CapsLock")},

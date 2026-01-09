@@ -83,15 +83,15 @@ static const std::unordered_map<CGKeyCode, std::string> keyCodeMap = {
     {kVK_UpArrow, "ArrowUp"},
     {kVK_DownArrow, "ArrowDown"},
 
-    // Modifier keys
+    // Modifier keys - MDN standard (no left/right distinction in uniKey)
     {kVK_Shift, "Shift"},
-    {kVK_RightShift, "RightShift"},
+    {kVK_RightShift, "Shift"},
     {kVK_Control, "Control"},
-    {kVK_RightControl, "RightControl"},
+    {kVK_RightControl, "Control"},
     {kVK_Option, "Alt"},
-    {kVK_RightOption, "RightAlt"},
+    {kVK_RightOption, "Alt"},
     {kVK_Command, "Meta"},
-    {kVK_RightCommand, "RightMeta"},
+    {kVK_RightCommand, "Meta"},
     {kVK_CapsLock, "CapsLock"},
 
     // Function keys

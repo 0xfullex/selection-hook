@@ -11,6 +11,7 @@
 #include "keyboard.h"
 
 // Pre-allocated string constants to avoid repeated allocations
+// MDN standard: no left/right distinction in uniKey values
 static const std::string UNIDENTIFIED_KEY = "Unidentified";
 static const std::string CONTROL_KEY = "Control";
 static const std::string ALT_KEY = "Alt";
@@ -21,6 +22,7 @@ static const std::string META_KEY = "Meta";
 static constexpr char SHIFTED_NUMBERS[] = ")!@#$%^&*(";
 
 // Static mapping for virtual key codes to MDN KeyboardEvent.key values
+// MDN standard: modifier keys return the same value regardless of left/right
 static const std::unordered_map<DWORD, const std::string*> vkCodeMaps = {
     // Control keys
     {VK_LCONTROL, &CONTROL_KEY},

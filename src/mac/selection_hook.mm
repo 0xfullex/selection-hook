@@ -1809,30 +1809,28 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
         {
             // For flags changed events, we need to track previous flags state
             // to determine which modifier key was pressed or released
+            // The keyCode already contains the correct left/right key info
             static CGEventFlags previousFlags = 0;
             CGEventFlags currentFlags = pKeyboardEvent->flags;
             CGEventFlags changedFlags = currentFlags ^ previousFlags;
 
-            // Determine which modifier key changed and map to virtual key code
-            // Based on Carbon HIToolbox/Events.h definitions
+            // Determine key-down or key-up based on which flag changed
+            // For Command/Shift/Option/Control: vkCode is already set from pKeyboardEvent->keyCode
+            // which correctly distinguishes between left/right variants
             if (changedFlags & kCGEventFlagMaskCommand)
             {
-                vkCode = kVK_Command;
                 eventTypeStr = (currentFlags & kCGEventFlagMaskCommand) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskShift)
             {
-                vkCode = kVK_Shift;
                 eventTypeStr = (currentFlags & kCGEventFlagMaskShift) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskAlternate)
             {
-                vkCode = kVK_Option;
                 eventTypeStr = (currentFlags & kCGEventFlagMaskAlternate) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskControl)
             {
-                vkCode = kVK_Control;
                 eventTypeStr = (currentFlags & kCGEventFlagMaskControl) ? "key-down" : "key-up";
             }
             else if (changedFlags & kCGEventFlagMaskSecondaryFn)

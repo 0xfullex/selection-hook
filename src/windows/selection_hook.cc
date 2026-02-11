@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Text Selection Hook for Windows
  *
  * A Node Native Module that captures text selection events across applications
@@ -34,6 +34,7 @@
 #include <shellapi.h>  // For SHQueryUserNotificationState
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <thread>
@@ -129,6 +130,21 @@ enum class CopyKeyType
     CtrlInsert = 0,
     CtrlC = 1
 };
+
+/**
+ * Remove UIA object replacement character (U+FFFC) from extracted text.
+ * Some providers return this marker for embedded objects (image/control).
+ */
+static void RemoveObjectReplacementChars(std::wstring &text)
+{
+    if (text.empty())
+    {
+        return;
+    }
+
+    constexpr wchar_t kObjectReplacementChar = 0xFFFC;
+    text.erase(std::remove(text.begin(), text.end(), kObjectReplacementChar), text.end());
+}
 
 /**
  * Structure to store text selection information
@@ -1446,6 +1462,7 @@ bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selecti
                         if (SUCCEEDED(pRange->GetText(-1, &bstr)) && bstr)
                         {
                             selectionInfo.text = std::wstring(bstr);
+                            RemoveObjectReplacementChars(selectionInfo.text);
                             if (!selectionInfo.text.empty())
                             {
                                 SetTextRangeCoordinates(pRange, selectionInfo);
@@ -1476,6 +1493,7 @@ bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selecti
                     if (SUCCEEDED(pDocRange->GetText(-1, &bstr)) && bstr)
                     {
                         selectionInfo.text = std::wstring(bstr);
+                        RemoveObjectReplacementChars(selectionInfo.text);
                         if (!selectionInfo.text.empty())
                         {
                             SetTextRangeCoordinates(pDocRange, selectionInfo);
@@ -1509,6 +1527,7 @@ bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selecti
                     if (varSel.vt == VT_BSTR && varSel.bstrVal)
                     {
                         selectionInfo.text = std::wstring(varSel.bstrVal);
+                        RemoveObjectReplacementChars(selectionInfo.text);
                     }
                     else if (varSel.vt == VT_DISPATCH && varSel.pdispVal)
                     {
@@ -1524,6 +1543,7 @@ bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selecti
                                 (SUCCEEDED(pSelAcc->get_accValue(childSelf, &bstr)) && bstr))
                             {
                                 selectionInfo.text = std::wstring(bstr);
+                                RemoveObjectReplacementChars(selectionInfo.text);
                                 SysFreeString(bstr);
                             }
                             pSelAcc->Release();
@@ -2313,10 +2333,10 @@ LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, L
  */
 void SelectionHook::EnableDpiAwareness()
 {
-    // 定义 SetProcessDpiAwareness 函数指针类型
+    // Define the SetProcessDpiAwareness function pointer type
     typedef HRESULT(WINAPI * SetProcessDpiAwareness_t)(PROCESS_DPI_AWARENESS);
 
-    // 尝试从 Shcore.dll 加载新函数
+    // Try loading the newer API from Shcore.dll
     HMODULE shcore = LoadLibraryA("Shcore.dll");
     if (shcore)
     {

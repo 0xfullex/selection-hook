@@ -320,17 +320,21 @@ declare class SelectionHook extends EventEmitter {
   /**
    * Write text to clipboard
    *
-   * On Linux, uses xclip/xsel as the primary mechanism due to X11's lazy clipboard model
-   * limitations. Host applications (e.g., Electron) should prefer their own clipboard API.
+   * Not supported on Linux. Host applications should use their own clipboard API
+   * (e.g., Electron clipboard).
    *
    * @param {string} text - Text to write to clipboard
-   * @returns {boolean} Success status
+   * @returns {boolean} Success status. Always returns false on Linux.
    */
   writeToClipboard(text: string): boolean;
 
   /**
    * Read text from clipboard
-   * @returns {string|null} Text from clipboard or null if empty or error
+   *
+   * Not supported on Linux. Host applications should use their own clipboard API
+   * (e.g., Electron clipboard).
+   *
+   * @returns {string|null} Text from clipboard or null if empty or error. Always returns null on Linux.
    */
   readFromClipboard(): string | null;
 

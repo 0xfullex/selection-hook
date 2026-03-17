@@ -393,10 +393,10 @@ class SelectionHook extends EventEmitter {
     }
 
     if (isLinux) {
-      // On Linux, native WriteClipboard has limited reliability due to X11's lazy clipboard model.
+      // Linux clipboard write/read is not implemented in native code.
       // Host applications should use their own clipboard API (e.g., Electron clipboard).
-      // Fallback: use xclip/xsel via child_process if available.
-      return this.#writeClipboardLinuxFallback(text);
+      this.#logDebug("writeToClipboard is not supported on Linux");
+      return false;
     }
 
     try {
@@ -413,6 +413,13 @@ class SelectionHook extends EventEmitter {
    */
   readFromClipboard() {
     if (!this.#checkRunning()) return null;
+
+    if (isLinux) {
+      // Linux clipboard write/read is not implemented in native code.
+      // Host applications should use their own clipboard API (e.g., Electron clipboard).
+      this.#logDebug("readFromClipboard is not supported on Linux");
+      return null;
+    }
 
     try {
       return this.#instance.readFromClipboard();
@@ -532,33 +539,6 @@ class SelectionHook extends EventEmitter {
     this.stop();
     this.removeAllListeners();
     this.#instance = null;
-  }
-
-  #writeClipboardLinuxFallback(text) {
-    try {
-      const { execSync } = require("child_process");
-      // Try xclip first, then xsel
-      try {
-        execSync("xclip -selection clipboard", { input: text, timeout: 3000 });
-        return true;
-      } catch {
-        try {
-          execSync("xsel --clipboard --input", { input: text, timeout: 3000 });
-          return true;
-        } catch {
-          // Both external tools failed, try native as last resort
-          try {
-            return this.#instance.writeToClipboard(text);
-          } catch (err) {
-            this.#handleError("Failed to write to clipboard (no xclip/xsel available)", err);
-            return false;
-          }
-        }
-      }
-    } catch (err) {
-      this.#handleError("Failed to write text to clipboard on Linux", err);
-      return false;
-    }
   }
 
   #getDefaultConfig() {

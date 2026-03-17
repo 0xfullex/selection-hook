@@ -28,7 +28,7 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - For Windows and macOS:
     - _Clipboard fallback_ (simulated `Ctrl + C`/`⌘ + C` with optimizations when all other methods fail)
 - **Clipboard**
-  - Read/write clipboard (Linux write uses `xclip`/`xsel` fallback due to X11's lazy clipboard model)
+  - Read/write clipboard (not supported on Linux, use host app's clipboard API)
 - **Compatibility**
   - Node.js `v10+` | Electron `v3+`
   - TypeScript support included.
@@ -224,7 +224,7 @@ Set passive mode for selection (only triggered by getCurrentSelection, `text-sel
 
 Write text to the system clipboard. This is useful for implementing custom copy functions.
 
-On Linux, uses `xclip`/`xsel` as the primary mechanism due to X11's lazy clipboard model limitations. Host applications (e.g., Electron) should prefer their own clipboard API.
+Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
 
 #### **`readFromClipboard(): string | null`**
 

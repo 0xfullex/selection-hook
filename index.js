@@ -2,7 +2,7 @@
  * Node Selection Hook
  *
  * This module provides a Node.js interface for monitoring text selections
- * across applications on Windows and macOS using UI Automation and Accessibility APIs.
+ * across applications on Windows, macOS, and Linux using UI Automation and Accessibility APIs.
  *
  * Copyright (c) 2025 0xfullex (https://github.com/0xfullex/selection-hook)
  * Licensed under the MIT License
@@ -14,14 +14,15 @@ const path = require("path");
 
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
+const isLinux = process.platform === "linux";
 
 let nativeModule = null;
 // Make debugFlag a private module variable to avoid global state issues
 let _debugFlag = false;
 
 try {
-  if (!isWindows && !isMac) {
-    throw new Error("[selection-hook] Only supports Windows and macOS platforms");
+  if (!isWindows && !isMac && !isLinux) {
+    throw new Error("[selection-hook] Only supports Windows, macOS, and Linux platforms");
   }
   nativeModule = gypBuild(path.resolve(__dirname));
 } catch (err) {
@@ -39,6 +40,8 @@ class SelectionHook extends EventEmitter {
     FOCUSCTL: 2,
     ACCESSIBLE: 3,
     AXAPI: 11,
+    ATSPI: 21,
+    PRIMARY: 22,
     CLIPBOARD: 99,
   };
 
@@ -61,10 +64,17 @@ class SelectionHook extends EventEmitter {
     INCLUDE_CLIPBOARD_DELAY_READ: 1,
   };
 
+  // Linux only
+  static DisplayProtocol = {
+    UNKNOWN: 0,
+    X11: 1,
+    WAYLAND: 2,
+  };
+
   constructor() {
     if (!nativeModule) {
       throw new Error(
-        "[selection-hook] Native module failed to load - only works on Windows and macOS"
+        "[selection-hook] Native module failed to load - only works on Windows, macOS, and Linux"
       );
     }
     super();
@@ -382,6 +392,13 @@ class SelectionHook extends EventEmitter {
       return false;
     }
 
+    if (isLinux) {
+      // On Linux, native WriteClipboard has limited reliability due to X11's lazy clipboard model.
+      // Host applications should use their own clipboard API (e.g., Electron clipboard).
+      // Fallback: use xclip/xsel via child_process if available.
+      return this.#writeClipboardLinuxFallback(text);
+    }
+
     try {
       return this.#instance.writeToClipboard(text);
     } catch (err) {
@@ -455,6 +472,52 @@ class SelectionHook extends EventEmitter {
   }
 
   /**
+   * Get current display protocol (Linux only)
+   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   */
+  linuxGetDisplayProtocol() {
+    if (!isLinux) {
+      this.#logDebug("linuxGetDisplayProtocol is only supported on Linux");
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+
+    try {
+      return this.#instance.linuxGetDisplayProtocol();
+    } catch (err) {
+      this.#handleError("Failed to get current display protocol", err);
+      return SelectionHook.DisplayProtocol.UNKNOWN;
+    }
+  }
+
+  /**
+   * Check if the current process is running as root (Linux only)
+   * @returns {boolean} True if the process is running as root, false otherwise
+   */
+  linuxIsRoot() {
+    if (!isLinux) {
+      this.#logDebug("linuxIsRoot is only supported on Linux");
+      return false;
+    }
+
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
+      return false;
+    }
+
+    try {
+      return this.#instance.linuxIsRoot();
+    } catch (err) {
+      this.#handleError("Failed to check root status", err);
+      return false;
+    }
+  }
+
+  /**
    * Check if hook is running
    * @returns {boolean} Running status
    */
@@ -469,6 +532,33 @@ class SelectionHook extends EventEmitter {
     this.stop();
     this.removeAllListeners();
     this.#instance = null;
+  }
+
+  #writeClipboardLinuxFallback(text) {
+    try {
+      const { execSync } = require("child_process");
+      // Try xclip first, then xsel
+      try {
+        execSync("xclip -selection clipboard", { input: text, timeout: 3000 });
+        return true;
+      } catch {
+        try {
+          execSync("xsel --clipboard --input", { input: text, timeout: 3000 });
+          return true;
+        } catch {
+          // Both external tools failed, try native as last resort
+          try {
+            return this.#instance.writeToClipboard(text);
+          } catch (err) {
+            this.#handleError("Failed to write to clipboard (no xclip/xsel available)", err);
+            return false;
+          }
+        }
+      }
+    } catch (err) {
+      this.#handleError("Failed to write text to clipboard on Linux", err);
+      return false;
+    }
   }
 
   #getDefaultConfig() {

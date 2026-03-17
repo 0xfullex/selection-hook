@@ -53,7 +53,31 @@
             ]
           }
         }],
-        ['OS!="win" and OS!="mac"', {
+        ['OS=="linux"', {
+          "sources": [
+            "src/linux/selection_hook.cc",
+            "src/linux/protocols/x11.cc",
+            "src/linux/protocols/wayland.cc",
+            "src/linux/lib/keyboard.cc"
+          ],
+          "libraries": [
+            "-levdev",
+            "-lX11",
+            "-lXext",
+            "-lXtst",
+            "-lXi",
+            "<!@(pkg-config --libs atspi-2 glib-2.0 gobject-2.0)"
+          ],
+          "cflags_cc": [
+            "-std=c++17",
+            "-fexceptions",
+            "<!@(pkg-config --cflags atspi-2 glib-2.0)"
+          ],
+          "include_dirs": [
+            "/usr/include/libevdev-1.0"
+          ]
+        }],
+        ['OS!="win" and OS!="mac" and OS!="linux"', {
           "defines": [
             "UNSUPPORTED_PLATFORM"
           ]

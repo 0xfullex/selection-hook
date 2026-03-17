@@ -2,7 +2,7 @@
  * Text Selection Hook - Test Application
  *
  * This test file demonstrates the functionality of the Node-API native module
- * for monitoring text selections across applications on Windows.
+ * for monitoring text selections across applications on Windows, macOS, and Linux.
  *
  * Features demonstrated:
  * - Text selection detection (drag and double-click)
@@ -248,15 +248,14 @@ function setupKeyboardEventListeners() {
       );
     }
 
-    // Handle Ctrl+C for exit
-    if (eventData.vkCode === 67 && eventData.flags & 0x0001) {
-      // 67 is 'C', 0x0001 is Ctrl flag
+    // Handle Ctrl+C for exit (cross-platform: uniKey is unified across platforms)
+    if (eventData.uniKey === "c" && eventData.sys) {
       cleanup();
       return;
     }
 
-    // Special handling for Ctrl key (vkCode 162) to get current selection in passive mode
-    if (eventData.vkCode === 162 && config.passiveModeEnabled) {
+    // Special handling for Ctrl key to get current selection in passive mode
+    if (eventData.uniKey === "Control" && config.passiveModeEnabled) {
       const currentTime = Date.now();
 
       // Initialize press time if not set
@@ -297,7 +296,7 @@ function setupKeyboardEventListeners() {
     }
 
     // Reset variables when Ctrl is released
-    if (eventData.vkCode === 162 && config.passiveModeEnabled) {
+    if (eventData.uniKey === "Control" && config.passiveModeEnabled) {
       ctrlKeyPressTime = null;
       ctrlKeyTriggered = false;
     }
@@ -675,6 +674,9 @@ function showSelection(selectionData) {
     1: "UI Automation",
     2: "Focus Control",
     3: "Accessibility",
+    11: "AXAPI",
+    21: "AT-SPI",
+    22: "Primary Selection",
     99: "Clipboard",
   };
 

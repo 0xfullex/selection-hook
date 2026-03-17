@@ -2,7 +2,8 @@
  * Node Selection Hook
  *
  * This module provides a Node.js interface for monitoring text selections
- * across applications on Windows using UI Automation and Accessibility APIs.
+ * across applications on Windows, macOS, and Linux using platform-specific
+ * accessibility and input APIs.
  */
 
 import { EventEmitter } from "events";
@@ -92,13 +93,17 @@ export interface KeyboardEventData {
    *
    * Windows: VK_* values of vkCode, refer to https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
    * macOS: kVK_* values of kCGKeyboardEventKeycode, defined in `HIToolbox/Events.h`
+   * Linux: KEY_* values from `<linux/input-event-codes.h>`, refer to https://github.com/torvalds/linux/blob/master/include/uapi/linux/input-event-codes.h
    */
   vkCode: number;
   /** Whether modifier keys (Alt/Ctrl/Win/⌘/⌥/Fn) are pressed simultaneously */
   sys: boolean;
   /** Keyboard scan code. Windows Only. */
   scanCode?: number;
-  /** Additional key flags. Varies on different platforms. */
+  /** Additional key flags. Varies on different platforms.
+   *
+   * Linux: Modifier bitmask — 0x01 Shift, 0x02 Ctrl, 0x04 Alt, 0x08 Meta(Super)
+   */
   flags: number;
   /** Internal event type identifier */
   type?: string;
@@ -131,7 +136,7 @@ export interface SelectionConfig {
  * SelectionHook - Main class for text selection monitoring
  *
  * This class provides methods to start/stop monitoring text selections
- * across applications on Windows and emits events when selections occur.
+ * across applications on Windows, macOS, and Linux, and emits events when selections occur.
  */
 declare class SelectionHook extends EventEmitter {
   static SelectionMethod: {
@@ -141,6 +146,8 @@ declare class SelectionHook extends EventEmitter {
     FOCUSCTL: 2;
     ACCESSIBLE: 3;
     AXAPI: 11;
+    ATSPI: 21;
+    PRIMARY: 22;
     CLIPBOARD: 99;
   };
 
@@ -161,6 +168,12 @@ declare class SelectionHook extends EventEmitter {
   static FineTunedListType: {
     EXCLUDE_CLIPBOARD_CURSOR_DETECT: 0;
     INCLUDE_CLIPBOARD_DELAY_READ: 1;
+  };
+
+  static DisplayProtocol: {
+    UNKNOWN: 0;
+    X11: 1;
+    WAYLAND: 2;
   };
 
   /**
@@ -306,6 +319,10 @@ declare class SelectionHook extends EventEmitter {
 
   /**
    * Write text to clipboard
+   *
+   * On Linux, uses xclip/xsel as the primary mechanism due to X11's lazy clipboard model
+   * limitations. Host applications (e.g., Electron) should prefer their own clipboard API.
+   *
    * @param {string} text - Text to write to clipboard
    * @returns {boolean} Success status
    */
@@ -335,6 +352,26 @@ declare class SelectionHook extends EventEmitter {
    * @returns {boolean} The current permission status, not the request result
    */
   macRequestProcessTrust(): boolean;
+
+  /**
+   * Get current display protocol (Linux only)
+   * 
+   * Returns the current display protocol being used by the selection hook.
+   * This is useful for debugging and understanding which protocol is being used.
+   * 
+   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   */
+  linuxGetDisplayProtocol(): (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
+
+  /**
+   * Check if the current process is running as root (Linux only)
+   * 
+   * Determines whether the current process has root privileges.
+   * This is useful for checking if the process has elevated permissions.
+   * 
+   * @returns {boolean} True if the process is running as root, false otherwise
+   */
+  linuxIsRoot(): boolean;
 
   /**
    * Release resources

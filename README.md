@@ -17,26 +17,31 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - Keyboard events: `keydown`/`keyup` with keys information
   - _No additional hooks required_ – works natively.
 - **Multi-method to get selected text** (automatic fallback):
-  - For Windows: 
+  - For Windows:
     - _UI Automation_ (modern apps)
     - _Accessibility API_ (legacy apps)
   - For macOS:
     - _Accessibility API (AXAPI)_
-  - For all platforms:
+  - For Linux:
+    - _AT-SPI_ (Assistive Technology Service Provider Interface, works on both X11 and Wayland, provides text + coordinates)
+    - _Primary Selection_ (X11 only, fast but no coordinates)
+  - For Windows and macOS:
     - _Clipboard fallback_ (simulated `Ctrl + C`/`⌘ + C` with optimizations when all other methods fail)
 - **Clipboard**
-  - Read/write clipboard
+  - Read/write clipboard (Linux write uses `xclip`/`xsel` fallback due to X11's lazy clipboard model)
 - **Compatibility**
   - Node.js `v10+` | Electron `v3+`
   - TypeScript support included.
 
 ## Supported Platforms
 
-| Platform | Status |
-|----------|--------|
-| Windows  | ✅ Fully supported. Windows 7+   |
-| macOS    | ✅ Fully supported. macOS 10.14+ |
-| Linux    | 🚧 Coming soon                   |
+| Platform | Status                                              |
+| -------- | --------------------------------------------------- |
+| Windows  | ✅ Fully supported. Windows 7+                        |
+| macOS    | ✅ Fully supported. macOS 10.14+                    |
+| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Partially supported           |
+
+**Wayland support details**: Text selection via AT-SPI and input monitoring via libevdev work on Wayland. However, active window detection, program name retrieval, and clipboard operations are not yet implemented due to Wayland's security model restrictions.
 
 ## Installation
 
@@ -54,12 +59,25 @@ npm run demo
 
 ### Use pre-built packages
 
-The npm package ships with pre-built `.node` files in `prebuilds/*` — no rebuilding needed. 
+The npm package ships with pre-built `.node` files in `prebuilds/*` — no rebuilding needed.
 
 ### Build from scratch
 
 - Use `npm run rebuild` to build your platform's specific package.
-- Use `npm run prebuild` to build packages for all the supported platforms. 
+- Use `npm run prebuild` to build packages for all the supported platforms.
+
+#### Linux build dependencies
+
+```bash
+# Ubuntu/Debian
+sudo apt install libatspi2.0-dev libglib2.0-dev libevdev-dev libxtst-dev libx11-dev libxext-dev libxi-dev
+
+# Fedora
+sudo dnf install at-spi2-core-devel glib2-devel libevdev-devel libXtst-devel libX11-devel libXext-devel libXi-devel
+
+# Arch
+sudo pacman -S at-spi2-core glib2 libevdev libxtst libx11 libxext libxi
+```
 
 #### Python setuptools
 
@@ -192,8 +210,9 @@ Configure fine-tuned lists for specific application behaviors. This allows you t
 For example, you can add `acrobat.exe` to those lists to enable text seleted in Acrobat.
 
 List types:
+
 - `EXCLUDE_CLIPBOARD_CURSOR_DETECT`: Exclude cursor detection for clipboard operations
-- `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content 
+- `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content
 
 See `SelectionHook.FineTunedListType` constants for details.
 
@@ -204,6 +223,8 @@ Set passive mode for selection (only triggered by getCurrentSelection, `text-sel
 #### **`writeToClipboard(text: string): boolean`**
 
 Write text to the system clipboard. This is useful for implementing custom copy functions.
+
+On Linux, uses `xclip`/`xsel` as the primary mechanism due to X11's lazy clipboard model limitations. Host applications (e.g., Electron) should prefer their own clipboard API.
 
 #### **`readFromClipboard(): string | null`**
 
@@ -219,9 +240,29 @@ Check if the process is trusted for accessibility. If the process is not trusted
 
 _macOS Only_
 
-Try to request accessibility permissions. This MAY show a dialog to the user if permissions are not granted. 
+Try to request accessibility permissions. This MAY show a dialog to the user if permissions are not granted.
 
 Note: The return value indicates the current permission status, not the request result.
+
+#### **`linuxGetDisplayProtocol(): number`**
+
+_Linux Only_
+
+Get the current display protocol being used by the selection hook. This method returns the protocol that was detected during initialization and is useful for debugging and understanding which protocol is being used.
+
+Returns one of the `SelectionHook.DisplayProtocol` constants:
+
+- `UNKNOWN`: No protocol detected
+- `X11`: X11 protocol is being used
+- `WAYLAND`: Wayland protocol is being used
+
+#### **`linuxIsRoot(): boolean`**
+
+_Linux Only_
+
+Check if the current process is running as root. This method determines whether the current process has root privileges, which is useful for checking if the process has elevated permissions.
+
+Returns `true` if the process is running as root, `false` otherwise.
 
 #### **`isRunning(): boolean`**
 
@@ -296,7 +337,7 @@ hook.on("error", (error: Error) => {
 
 ### Data Structure
 
-**Note**: All coordinates are in physical coordinates (virtual screen coordinates) in Windows. You can use `screen.screenToDipPoint(point)` in Electron to convert the point to logical coordinates. In macOS, you don't need to do extra work.
+**Note**: All coordinates are in physical coordinates (virtual screen coordinates) in Windows. You can use `screen.screenToDipPoint(point)` in Electron to convert the point to logical coordinates. In macOS and Linux, you don't need to do extra work.
 
 #### `TextSelectionData`
 
@@ -334,7 +375,7 @@ Contains mouse click/movement information in screen coordinates.
 | `y`      | `number` | Vertical pointer position (px)                                                                                                  |
 | `button` | `number` | Same as WebAPIs' MouseEvent.button <br /> `0`=Left, `1`=Middle, `2`=Right, `3`=Back, `4`=Forward <br /> `-1`=None, `99`=Unknown |
 
-If `button != -1` when `mouse-move`, which means it's dragging. 
+If `button != -1` when `mouse-move`, which means it's dragging.
 
 #### `MouseWheelEventData`
 
@@ -352,16 +393,18 @@ Represents keyboard key presses/releases.
 | Property   | Type      | Description                                                                 |
 | ---------- | --------- | --------------------------------------------------------------------------- |
 | `uniKey`   | `string`  | Unified key name, refer to MDN `KeyboardEvent.key`, converted from `vkCode` |
-| `vkCode`   | `number`  | Virtual key code. Definitions and values vary by platforms.                 |
-| `sys`      | `boolean` | Whether modifier keys (Alt/Ctrl/Win/⌘/⌥/Fn) are pressed simultaneously      |
-| `scanCode` | `number?` | Hardware scan code. _Windows Only_                                          |
-| `flags`    | `number`  | Additional state flags.                                                     |
+| `vkCode`   | `number`  | Virtual key code. Definitions and values vary by platform.                 |
+| `sys`      | `boolean` | Whether modifier keys (Ctrl/Alt/Win/⌘/⌥/Super/Fn) are pressed simultaneously |
+| `scanCode` | `number?` | Hardware scan code. (_Windows Only_)                                        |
+| `flags`    | `number`  | Additional state flags. On Linux: modifier bitmask (0x01=Shift, 0x02=Ctrl, 0x04=Alt, 0x08=Meta) |
 | `type`     | `string?` | Internal event type                                                         |
 | `action`   | `string?` | `"key-down"` or `"key-up"`                                                  |
 
 About vkCode:
-- Windows: VK_* values of vkCode
-- macOS: kVK_* values of kCGKeyboardEventKeycode
+
+- Windows: VK\_\* values of `vkCode`
+- macOS: kVK\_\* values of `kCGKeyboardEventKeycode`
+- Linux: KEY\_\* values from `<linux/input-event-codes.h>`
 
 ### Constants
 
@@ -370,9 +413,11 @@ About vkCode:
 Indicates which method was used to detect the text selection:
 
 - `NONE`: No selection detected
-- `UIA`: UI Automation (Windows)
-- `ACCESSIBLE`: Accessibility interface (Windows)
-- `AXAPI`: Accessibility API (macOS)
+- `UIA`: UI Automation (_Windows_)
+- `ACCESSIBLE`: Accessibility interface (_Windows_)
+- `AXAPI`: Accessibility API (_macOS_)
+- `ATSPI`: Assistive Technology Service Provider Interface (_Linux_)
+- `PRIMARY`: Primary Selection (_Linux_)
 - `CLIPBOARD`: Clipboard fallback
 
 #### **`SelectionHook.PositionLevel`**
@@ -395,10 +440,22 @@ Before version `v0.9.16`, this variable was named `ClipboardMode`
 
 #### **`SelectionHook.FineTunedListType`**
 
+_Windows Only_
+
 Defines types for fine-tuned application behavior lists:
 
 - `EXCLUDE_CLIPBOARD_CURSOR_DETECT`: Exclude cursor detection for clipboard operations. Useful for applications with custom cursors (e.g., Adobe Acrobat) where cursor shape detection may not work reliably.
 - `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content. Useful for applications that modify clipboard content multiple times in quick succession (e.g., Adobe Acrobat).
+
+#### **`SelectionHook.DisplayProtocol`**
+
+_Linux Only_
+
+Defines the display protocol types used on Linux systems:
+
+- `UNKNOWN`: No protocol detected or not applicable
+- `X11`: X11 windowing system protocol
+- `WAYLAND`: Wayland display server protocol
 
 ### TypeScript Support
 

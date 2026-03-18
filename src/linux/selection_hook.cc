@@ -6,7 +6,7 @@
  *
  * Main components:
  * - TextSelectionHook class: Core implementation of the module
- * - Text selection detection: AT-SPI (X11/Wayland), Primary Selection (X11)
+ * - Text selection detection: Primary Selection (X11)
  * - Event monitoring: XRecord (X11), libevdev (Wayland) for input monitoring
  * - Thread management: Background threads for hooks with thread-safe callbacks
  *
@@ -46,9 +46,6 @@
 
 // Include common definitions
 #include "common.h"
-
-// AT-SPI headers for accessibility-based text selection
-#include <atspi/atspi.h>
 
 // Keyboard utility for Linux key code conversion
 #include "lib/keyboard.h"
@@ -151,15 +148,11 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // Core functionality methods
     bool GetSelectedText(uint64_t window, TextSelectionInfo &selectionInfo);
-    bool GetTextViaATSPI(uint64_t window, TextSelectionInfo &selectionInfo);
     bool GetTextViaPrimary(uint64_t window, TextSelectionInfo &selectionInfo);
     bool GetTextViaClipboard(uint64_t window, TextSelectionInfo &selectionInfo);
     bool ShouldProcessGetSelection();
     bool ShouldProcessViaClipboard(const std::string &programName);
     Napi::Object CreateSelectionResultObject(Napi::Env env, const TextSelectionInfo &selectionInfo);
-
-    // AT-SPI initialization flag
-    static bool atspi_initialized;
 
     // Helper methods
     bool IsInFilterList(const std::string &programName, const std::vector<std::string> &filterList);
@@ -249,8 +242,6 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
 // Static member initialization
 Napi::FunctionReference SelectionHook::constructor;
-bool SelectionHook::atspi_initialized = false;
-
 // Static pointer for callbacks
 static SelectionHook *currentInstance = nullptr;
 
@@ -815,228 +806,10 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
         }
     }
 
-    // AT-SPI is experimental and disabled due to unreliable screen coordinate conversion
-    // across X11/Wayland, different toolkits, and multi-monitor/DPI configurations.
-    // Code retained in GetTextViaATSPI() but not called.
-
     // Clipboard fallback is intentionally not implemented for now.
 
     is_processing.store(false);
     return false;
-}
-
-/**
- * Helper: recursively find a focused accessible element with a text selection
- */
-static AtspiAccessible *FindFocusedAccessibleWithSelection(AtspiAccessible *root, int depth)
-{
-    if (!root || depth > 25)
-        return nullptr;
-
-    GError *error = nullptr;
-
-    // Check if this element is focused
-    AtspiStateSet *state_set = atspi_accessible_get_state_set(root);
-    if (state_set)
-    {
-        bool is_focused = atspi_state_set_contains(state_set, ATSPI_STATE_FOCUSED);
-        g_object_unref(state_set);
-
-        if (is_focused)
-        {
-            // Check if it has a text interface with selections
-            AtspiText *text_iface = atspi_accessible_get_text_iface(root);
-            if (text_iface)
-            {
-                int n_selections = atspi_text_get_n_selections(text_iface, &error);
-                if (error)
-                {
-                    g_error_free(error);
-                    error = nullptr;
-                }
-                g_object_unref(text_iface);
-
-                if (n_selections > 0)
-                {
-                    g_object_ref(root);
-                    return root;
-                }
-            }
-        }
-    }
-
-    // Recurse into children
-    int child_count = atspi_accessible_get_child_count(root, &error);
-    if (error)
-    {
-        g_error_free(error);
-        return nullptr;
-    }
-
-    for (int i = 0; i < child_count; i++)
-    {
-        error = nullptr;
-        AtspiAccessible *child = atspi_accessible_get_child_at_index(root, i, &error);
-        if (error)
-        {
-            g_error_free(error);
-            continue;
-        }
-        if (!child)
-            continue;
-
-        AtspiAccessible *found = FindFocusedAccessibleWithSelection(child, depth + 1);
-        g_object_unref(child);
-
-        if (found)
-            return found;
-    }
-
-    return nullptr;
-}
-
-/**
- * Get selected text via AT-SPI accessibility interface
- * Works on both X11 and Wayland, provides text + coordinates
- */
-bool SelectionHook::GetTextViaATSPI(uint64_t window, TextSelectionInfo &selectionInfo)
-{
-    // Initialize AT-SPI on first use
-    if (!atspi_initialized)
-    {
-        int rc = atspi_init();
-        if (rc != 0 && rc != 1)  // 0 = success, 1 = already initialized
-        {
-            printf("[AT-SPI] Failed to initialize (rc=%d)\n", rc);
-            return false;
-        }
-        atspi_initialized = true;
-    }
-
-    AtspiAccessible *desktop = atspi_get_desktop(0);
-    if (!desktop)
-        return false;
-
-    // Search through all applications for a focused element with text selection
-    GError *error = nullptr;
-    int app_count = atspi_accessible_get_child_count(desktop, &error);
-    if (error)
-    {
-        g_error_free(error);
-        g_object_unref(desktop);
-        return false;
-    }
-
-    AtspiAccessible *focused = nullptr;
-    for (int i = 0; i < app_count; i++)
-    {
-        error = nullptr;
-        AtspiAccessible *app = atspi_accessible_get_child_at_index(desktop, i, &error);
-        if (error)
-        {
-            g_error_free(error);
-            continue;
-        }
-        if (!app)
-            continue;
-
-        focused = FindFocusedAccessibleWithSelection(app, 0);
-        g_object_unref(app);
-
-        if (focused)
-            break;
-    }
-
-    g_object_unref(desktop);
-
-    if (!focused)
-        return false;
-
-    // Get text interface
-    AtspiText *text_iface = atspi_accessible_get_text_iface(focused);
-    if (!text_iface)
-    {
-        g_object_unref(focused);
-        return false;
-    }
-
-    // Get selection range
-    error = nullptr;
-    AtspiRange *range = atspi_text_get_selection(text_iface, 0, &error);
-    if (error || !range)
-    {
-        if (error)
-            g_error_free(error);
-        g_object_unref(text_iface);
-        g_object_unref(focused);
-        return false;
-    }
-
-    int start_offset = range->start_offset;
-    int end_offset = range->end_offset;
-    g_free(range);
-
-    if (start_offset == end_offset)
-    {
-        g_object_unref(text_iface);
-        g_object_unref(focused);
-        return false;
-    }
-
-    // Get selected text
-    error = nullptr;
-    char *selected_text = atspi_text_get_text(text_iface, start_offset, end_offset, &error);
-    if (error || !selected_text)
-    {
-        if (error)
-            g_error_free(error);
-        g_object_unref(text_iface);
-        g_object_unref(focused);
-        return false;
-    }
-
-    selectionInfo.text = std::string(selected_text);
-    g_free(selected_text);
-
-    if (selectionInfo.text.empty())
-    {
-        g_object_unref(text_iface);
-        g_object_unref(focused);
-        return false;
-    }
-
-    // Get text selection coordinates
-    error = nullptr;
-    AtspiRect *start_rect = atspi_text_get_character_extents(text_iface, start_offset,
-                                                              ATSPI_COORD_TYPE_SCREEN, &error);
-    if (!error && start_rect)
-    {
-        int last_char = (end_offset > start_offset) ? (end_offset - 1) : end_offset;
-        GError *error2 = nullptr;
-        AtspiRect *end_rect = atspi_text_get_character_extents(text_iface, last_char,
-                                                                ATSPI_COORD_TYPE_SCREEN, &error2);
-        if (!error2 && end_rect)
-        {
-            selectionInfo.startTop = Point(start_rect->x, start_rect->y);
-            selectionInfo.startBottom = Point(start_rect->x, start_rect->y + start_rect->height);
-            selectionInfo.endTop = Point(end_rect->x + end_rect->width, end_rect->y);
-            selectionInfo.endBottom = Point(end_rect->x + end_rect->width, end_rect->y + end_rect->height);
-            selectionInfo.posLevel = SelectionPositionLevel::Full;
-        }
-        if (error2)
-            g_error_free(error2);
-        if (end_rect)
-            g_free(end_rect);
-    }
-    if (error)
-        g_error_free(error);
-    if (start_rect)
-        g_free(start_rect);
-
-    g_object_unref(text_iface);
-    g_object_unref(focused);
-
-    return !selectionInfo.text.empty();
 }
 
 /**

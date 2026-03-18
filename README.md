@@ -20,13 +20,12 @@ Maybe the first-ever open-source, fully functional text selection tool.
   - For Windows:
     - _UI Automation_ (modern apps)
     - _Accessibility API_ (legacy apps)
+    - _Clipboard fallback_ (simulated `Ctrl + C` with optimizations when all other methods fail)
   - For macOS:
     - _Accessibility API (AXAPI)_
+    - _Clipboard fallback_ (simulated `⌘ + C` with optimizations when all other methods fail)
   - For Linux:
-    - _AT-SPI_ (Assistive Technology Service Provider Interface, works on both X11 and Wayland, provides text + coordinates)
-    - _Primary Selection_ (X11 only, fast but no coordinates)
-  - For Windows and macOS:
-    - _Clipboard fallback_ (simulated `Ctrl + C`/`⌘ + C` with optimizations when all other methods fail)
+    - _Primary Selection_ (X11 only)
 - **Clipboard**
   - Read/write clipboard (not supported on Linux, use host app's clipboard API)
 - **Compatibility**
@@ -39,9 +38,8 @@ Maybe the first-ever open-source, fully functional text selection tool.
 | -------- | --------------------------------------------------- |
 | Windows  | ✅ Fully supported. Windows 7+                        |
 | macOS    | ✅ Fully supported. macOS 10.14+                    |
-| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Partially supported           |
+| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Not supported  |
 
-**Wayland support details**: Text selection via AT-SPI and input monitoring via libevdev work on Wayland. However, active window detection, program name retrieval, and clipboard operations are not yet implemented due to Wayland's security model restrictions.
 
 ## Installation
 
@@ -70,13 +68,13 @@ The npm package ships with pre-built `.node` files in `prebuilds/*` — no rebui
 
 ```bash
 # Ubuntu/Debian
-sudo apt install libatspi2.0-dev libglib2.0-dev libevdev-dev libxtst-dev libx11-dev libxext-dev libxi-dev
+sudo apt install libevdev-dev libxtst-dev libx11-dev libxext-dev libxi-dev
 
 # Fedora
-sudo dnf install at-spi2-core-devel glib2-devel libevdev-devel libXtst-devel libX11-devel libXext-devel libXi-devel
+sudo dnf install libevdev-devel libXtst-devel libX11-devel libXext-devel libXi-devel
 
 # Arch
-sudo pacman -S at-spi2-core glib2 libevdev libxtst libx11 libxext libxi
+sudo pacman -S libevdev libxtst libx11 libxext libxi
 ```
 
 #### Python setuptools

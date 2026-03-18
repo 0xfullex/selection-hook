@@ -66,13 +66,11 @@
             "-lXext",
             "-lXtst",
             "-lXi",
-            "-lXfixes",
-            "<!@(pkg-config --libs atspi-2 glib-2.0 gobject-2.0)"
+            "-lXfixes"
           ],
           "cflags_cc": [
             "-std=c++17",
-            "-fexceptions",
-            "<!@(pkg-config --cflags atspi-2 glib-2.0)"
+            "-fexceptions"
           ],
           "include_dirs": [
             "/usr/include/libevdev-1.0"

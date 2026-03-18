@@ -795,8 +795,9 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
         }
     }
 
-    // Primary Selection (X11 only, the only active method)
-    if (current_display_protocol == DisplayProtocol::X11)
+    // Primary Selection (X11 and Wayland)
+    if (current_display_protocol == DisplayProtocol::X11 ||
+        current_display_protocol == DisplayProtocol::Wayland)
     {
         if (GetTextViaPrimary(window, selectionInfo))
         {

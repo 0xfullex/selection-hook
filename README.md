@@ -25,7 +25,7 @@ Maybe the first-ever open-source, fully functional text selection tool.
     - _Accessibility API (AXAPI)_
     - _Clipboard fallback_ (simulated `⌘ + C` with optimizations when all other methods fail)
   - For Linux:
-    - _Primary Selection_ (X11 only)
+    - _Primary Selection_ (X11 and Wayland)
 - **Clipboard**
   - Read/write clipboard (not supported on Linux, use host app's clipboard API)
 - **Compatibility**
@@ -38,8 +38,13 @@ Maybe the first-ever open-source, fully functional text selection tool.
 | -------- | --------------------------------------------------- |
 | Windows  | ✅ Fully supported. Windows 7+                        |
 | macOS    | ✅ Fully supported. macOS 10.14+                    |
-| Linux    | ✅ X11 - Fully supported. 🚧 Wayland - Not supported  |
+| Linux    | ✅ X11 - Fully supported. ✅ Wayland - Supported with limitations |
 
+**Linux Wayland known limitations:**
+- **Mouse coordinates**: Wayland security model does not expose global cursor position. `mousePosStart`/`mousePosEnd` contain device-relative coordinates (not screen coordinates).
+- **Program name**: `programName` is always empty under Linux Wayland.
+- **Input monitoring**: Requires `input` group membership (`sudo usermod -aG input $USER`, then re-login).
+- Core selection detection (drag / double-click / Shift+click with text reading) works normally.
 
 ## Installation
 
@@ -68,14 +73,16 @@ The npm package ships with pre-built `.node` files in `prebuilds/*` — no rebui
 
 ```bash
 # Ubuntu/Debian
-sudo apt install libevdev-dev libxtst-dev libx11-dev libxext-dev libxi-dev
+sudo apt install libevdev-dev libxtst-dev libx11-dev libxext-dev libxi-dev libwayland-dev
 
 # Fedora
-sudo dnf install libevdev-devel libXtst-devel libX11-devel libXext-devel libXi-devel
+sudo dnf install libevdev-devel libXtst-devel libX11-devel libXext-devel libXi-devel wayland-devel
 
 # Arch
-sudo pacman -S libevdev libxtst libx11 libxext libxi
+sudo pacman -S libevdev libxtst libx11 libxext libxi wayland
 ```
+
+The Wayland protocol C bindings are pre-generated and committed — see [`src/linux/protocols/wayland/README.md`](src/linux/protocols/wayland/README.md) for details.
 
 #### Python setuptools
 
@@ -185,19 +192,19 @@ Disable mouse move events. Disabled by default.
 
 #### **`enableClipboard(): boolean`**
 
-Enable clipboard fallback for text selection. Enabled by default.
+Enable clipboard fallback for text selection. Enabled by default. No effect on Linux (uses PRIMARY selection instead of clipboard fallback).
 
 #### **`disableClipboard(): boolean`**
 
-Disable clipboard fallback for text selection. Enabled by default.
+Disable clipboard fallback for text selection. Enabled by default. No effect on Linux.
 
 #### **`setClipboardMode(mode: ClipboardMode, programList?: string[]): boolean`**
 
-Configure how clipboard fallback works with different programs. See `SelectionHook.FilterMode` constants for details.
+Configure how clipboard fallback works with different programs. See `SelectionHook.FilterMode` constants for details. No effect on Linux.
 
 #### **`setGlobalFilterMode(mode: FilterMode, programList?: string[]): boolean`**
 
-Configure which applications should trigger text selection events. You can include or exclude specific applications from the selection monitoring. See `SelectionHook.FilterMode` constants for details.
+Configure which applications should trigger text selection events. You can include or exclude specific applications from the selection monitoring. See `SelectionHook.FilterMode` constants for details. On Linux Wayland, `programName` is always empty so program-based filtering will not work.
 
 #### **`setFineTunedList(listType: FineTunedListType, programList?: string[]): boolean`**
 
@@ -227,6 +234,8 @@ Not supported on Linux. Host applications should use their own clipboard API (e.
 #### **`readFromClipboard(): string | null`**
 
 Read text from the system clipboard. Returns clipboard text content as string, or null if clipboard is empty or contains non-text data.
+
+Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
 
 #### **`macIsProcessTrusted(): boolean`**
 
@@ -344,13 +353,13 @@ Represents text selection information including content, source application, and
 | Property        | Type              | Description                                                   |
 | --------------- | ----------------- | ------------------------------------------------------------- |
 | `text`          | `string`          | The selected text content                                     |
-| `programName`   | `string`          | Name of the application where selection occurred              |
+| `programName`   | `string`          | Name of the application where selection occurred. Always empty on Linux Wayland. |
 | `startTop`      | `Point`           | First paragraph's top-left coordinates (px)                   |
 | `startBottom`   | `Point`           | First paragraph's bottom-left coordinates (px)                |
 | `endTop`        | `Point`           | Last paragraph's top-right coordinates (px)                   |
 | `endBottom`     | `Point`           | Last paragraph's bottom-right coordinates (px)                |
-| `mousePosStart` | `Point`           | Mouse position when selection started (px)                    |
-| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px)                      |
+| `mousePosStart` | `Point`           | Mouse position when selection started (px). Device-relative on Linux Wayland. |
+| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px). Device-relative on Linux Wayland.   |
 | `method`        | `SelectionMethod` | Indicates which method was used to detect the text selection. |
 | `posLevel`      | `PositionLevel`   | Indicates which positional data is provided.                  |
 | `isFullscreen`  | `boolean`         | _macOS Only_ Whether the window is in fullscreen mode         |
@@ -365,7 +374,7 @@ When `PositionLevel` is:
 
 #### `MouseEventData`
 
-Contains mouse click/movement information in screen coordinates.
+Contains mouse click/movement information in screen coordinates. On Linux Wayland, coordinates are device-relative (not screen coordinates).
 
 | Property | Type     | Description                                                                                                                     |
 | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |

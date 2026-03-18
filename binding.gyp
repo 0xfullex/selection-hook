@@ -58,6 +58,8 @@
             "src/linux/selection_hook.cc",
             "src/linux/protocols/x11.cc",
             "src/linux/protocols/wayland.cc",
+            "src/linux/protocols/wayland/ext-data-control-v1-protocol.c",
+            "src/linux/protocols/wayland/wlr-data-control-unstable-v1-protocol.c",
             "src/linux/lib/keyboard.cc"
           ],
           "libraries": [
@@ -66,7 +68,8 @@
             "-lXext",
             "-lXtst",
             "-lXi",
-            "-lXfixes"
+            "-lXfixes",
+            "-lwayland-client"
           ],
           "cflags_cc": [
             "-std=c++17",

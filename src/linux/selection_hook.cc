@@ -116,6 +116,9 @@ constexpr uint64_t MAX_DRAG_TIME_MS = 8000;
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
 static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 
+// XFixes correlation window: max time between mouse gesture and XFixes event to be considered related
+constexpr uint64_t CORRELATION_WINDOW_MS = 500;
+
 //=============================================================================
 // TextSelectionHook Class Declaration
 //=============================================================================
@@ -165,10 +168,15 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Mouse and keyboard event handling methods
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
     static void ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *keyboardEvent);
+    static void ProcessSelectionEvent(Napi::Env env, Napi::Function function, SelectionChangeContext *pEvent);
 
     // Input monitoring callback methods
     static void OnMouseEventCallback(void *context, MouseEventContext *mouseEvent);
     static void OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent);
+    static void OnSelectionEventCallback(void *context, SelectionChangeContext *selectionEvent);
+
+    // Emit text selection event (shared by Path A and Path B)
+    void EmitSelectionEvent(SelectionDetectType type, Point start, Point end);
 
     // Protocol interface for X11/Wayland abstraction
     std::unique_ptr<ProtocolBase> protocol;
@@ -179,10 +187,36 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Mouse position tracking
     Point current_mouse_pos;
 
+    // Mouse state tracking (for selection gesture detection)
+    Point last_mouse_down_pos;
+    uint64_t last_mouse_down_time = 0;
+    Point last_mouse_up_pos;
+    uint64_t last_mouse_up_time = 0;
+    Point prev_mouse_up_pos;        // Previous mouse-up (for shift+click)
+    uint64_t prev_mouse_up_time = 0;
+    uint64_t last_window_handler = 0;
+    WindowRect last_window_rect;
+    bool is_last_valid_click = false;
+    int last_mouse_up_modifier_flags = 0;
+
+    // XFixes atomic timestamp - written by OnSelectionEventCallback (XFixes thread),
+    // read by ProcessMouseEvent (main thread)
+    std::atomic<uint64_t> last_xfixes_time{0};
+
+    // Pending gesture for Path B (XFixes arrives after mouse-up)
+    struct {
+        bool active = false;
+        SelectionDetectType type = SelectionDetectType::None;
+        Point mousePosStart;
+        Point mousePosEnd;
+        uint64_t timestamp = 0;
+    } pending_gesture;
+
     // Thread communication
     Napi::ThreadSafeFunction tsfn;
     Napi::ThreadSafeFunction mouse_tsfn;
     Napi::ThreadSafeFunction keyboard_tsfn;
+    Napi::ThreadSafeFunction selection_tsfn;  // For XFixes events (Path B)
 
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
@@ -284,6 +318,10 @@ SelectionHook::~SelectionHook()
     {
         keyboard_tsfn.Release();
     }
+    if (selection_tsfn)
+    {
+        selection_tsfn.Release();
+    }
 
     // Clear current instance if it's us
     if (currentInstance == this)
@@ -359,7 +397,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     }
 
     // Ensure ThreadSafeFunction objects are clean
-    if (tsfn || mouse_tsfn || keyboard_tsfn)
+    if (tsfn || mouse_tsfn || keyboard_tsfn || selection_tsfn)
     {
         Napi::Error::New(env, "ThreadSafeFunction objects are not clean").ThrowAsJavaScriptException();
         return;
@@ -380,10 +418,16 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         Napi::ThreadSafeFunction::New(env, callback, "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
                                       [this](Napi::Env) { mouse_keyboard_running = false; });
 
+    // Create thread-safe function for XFixes selection events (Path B)
+    selection_tsfn =
+        Napi::ThreadSafeFunction::New(env, callback, "SelectionEventCallback", 64, 1);
+
     // Initialize input monitoring via protocol
     if (!protocol->InitializeInputMonitoring(&SelectionHook::OnMouseEventCallback,
-                                             &SelectionHook::OnKeyboardEventCallback, this))
+                                             &SelectionHook::OnKeyboardEventCallback,
+                                             &SelectionHook::OnSelectionEventCallback, this))
     {
+        selection_tsfn.Release();
         mouse_tsfn.Release();
         keyboard_tsfn.Release();
         tsfn.Release();
@@ -406,6 +450,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     catch (const std::exception &e)
     {
         protocol->CleanupInputMonitoring();
+        selection_tsfn.Release();
         mouse_tsfn.Release();
         keyboard_tsfn.Release();
         tsfn.Release();
@@ -455,6 +500,11 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         {
             keyboard_tsfn.Release();
             keyboard_tsfn = nullptr;
+        }
+        if (selection_tsfn)
+        {
+            selection_tsfn.Release();
+            selection_tsfn = nullptr;
         }
     }
     catch (const std::exception &e)
@@ -754,15 +804,7 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
         }
     }
 
-    // 1. Try AT-SPI (works on both X11 and Wayland, provides text + coordinates)
-    if (GetTextViaATSPI(window, selectionInfo))
-    {
-        selectionInfo.method = SelectionMethod::ATSPI;
-        is_processing.store(false);
-        return true;
-    }
-
-    // 2. Primary Selection (X11 only, fast but no coordinates)
+    // Primary Selection (X11 only, the only active method)
     if (current_display_protocol == DisplayProtocol::X11)
     {
         if (GetTextViaPrimary(window, selectionInfo))
@@ -773,11 +815,11 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
         }
     }
 
-    // Clipboard fallback (Send Copy Key) is intentionally not implemented for now.
-    // Reason: X11's lazy clipboard model (selection ownership + SelectionRequest event handling)
-    // makes WriteClipboard (needed to restore original clipboard after Ctrl+Insert) complex.
-    // AT-SPI + Primary Selection already cover most use cases.
-    // Clipboard fallback will be added later if real-world testing shows it's needed.
+    // AT-SPI is experimental and disabled due to unreliable screen coordinate conversion
+    // across X11/Wayland, different toolkits, and multi-monitor/DPI configurations.
+    // Code retained in GetTextViaATSPI() but not called.
+
+    // Clipboard fallback is intentionally not implemented for now.
 
     is_processing.store(false);
     return false;
@@ -1231,7 +1273,7 @@ void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext 
 }
 
 /**
- * Process mouse event on main thread and detect text selection
+ * Process mouse event on main thread and detect text selection (bidirectional trigger with XFixes)
  */
 void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *pMouseEvent)
 {
@@ -1251,18 +1293,6 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     auto mouseValue = pMouseEvent->value;
     MouseButton mouseButton = static_cast<MouseButton>(pMouseEvent->button);
 
-    // Static variables for tracking mouse events
-    static Point lastLastMouseUpPos = Point(0, 0);
-    static Point lastMouseUpPos = Point(0, 0);
-    static uint64_t lastMouseUpTime = 0;
-    static Point lastMouseDownPos = Point(0, 0);
-    static uint64_t lastMouseDownTime = 0;
-    static bool isLastValidClick = false;
-    static uint64_t lastWindowHandler = 0;
-    static WindowRect lastWindowRect;
-
-    bool shouldDetectSelection = false;
-    auto detectionType = SelectionDetectType::None;
     std::string mouseTypeStr = "";
     int mouseFlagValue = 0;
 
@@ -1275,15 +1305,20 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 mouseTypeStr = "mouse-down";
                 mouseButton = MouseButton::Left;
 
-                lastMouseDownTime = currentTime;
-                lastMouseDownPos = currentPos;
-                currentInstance->clipboard_sequence = 0;  // TODO: Implement clipboard sequence
+                // Update mouse-down state
+                currentInstance->last_mouse_down_time = currentTime;
+                currentInstance->last_mouse_down_pos = currentPos;
+                currentInstance->clipboard_sequence = 0;
+
+                // Clear pending gesture (prevent old pending from being triggered by new action)
+                currentInstance->pending_gesture.active = false;
 
                 // Record window handle and position at mouse-down for movement detection
-                lastWindowHandler = currentInstance->protocol->GetActiveWindow();
-                if (lastWindowHandler)
+                currentInstance->last_window_handler = currentInstance->protocol->GetActiveWindow();
+                if (currentInstance->last_window_handler)
                 {
-                    currentInstance->protocol->GetWindowRect(lastWindowHandler, lastWindowRect);
+                    currentInstance->protocol->GetWindowRect(currentInstance->last_window_handler,
+                                                             currentInstance->last_window_rect);
                 }
             }
             else if (mouseValue == 0)  // Release
@@ -1291,82 +1326,130 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 mouseTypeStr = "mouse-up";
                 mouseButton = MouseButton::Left;
 
+                // Update mouse-up state (save previous values first)
+                Point prevUp = currentInstance->last_mouse_up_pos;
+                uint64_t prevUpTime = currentInstance->last_mouse_up_time;
+                currentInstance->last_mouse_up_time = currentTime;
+                currentInstance->last_mouse_up_pos = currentPos;
+                currentInstance->last_mouse_up_modifier_flags = currentInstance->protocol->GetModifierFlags();
+
                 if (!currentInstance->is_selection_passive_mode)
                 {
-                    // Calculate distance between current position and mouse down position
-                    double dx = currentPos.x - lastMouseDownPos.x;
-                    double dy = currentPos.y - lastMouseDownPos.y;
+                    // Gesture detection
+                    auto detectionType = SelectionDetectType::None;
+
+                    double dx = currentPos.x - currentInstance->last_mouse_down_pos.x;
+                    double dy = currentPos.y - currentInstance->last_mouse_down_pos.y;
                     double distance = sqrt(dx * dx + dy * dy);
 
-                    bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
+                    bool isCurrentValidClick =
+                        (currentTime - currentInstance->last_mouse_down_time) <= DOUBLE_CLICK_TIME_MS;
 
-                    if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
+                    if ((currentTime - currentInstance->last_mouse_down_time) > MAX_DRAG_TIME_MS)
                     {
-                        shouldDetectSelection = false;
+                        // Too long drag, skip
                     }
                     // Check for drag selection
                     else if (distance >= MIN_DRAG_DISTANCE)
                     {
                         uint64_t upWindow = currentInstance->protocol->GetActiveWindow();
-
-                        if (upWindow && upWindow == lastWindowHandler)
+                        if (upWindow && upWindow == currentInstance->last_window_handler)
                         {
                             WindowRect currentWindowRect;
                             currentInstance->protocol->GetWindowRect(upWindow, currentWindowRect);
-
-                            if (!HasWindowMoved(currentWindowRect, lastWindowRect))
+                            if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
                             {
-                                shouldDetectSelection = true;
                                 detectionType = SelectionDetectType::Drag;
                             }
                         }
                     }
                     // Check for double-click selection
-                    else if (isLastValidClick && isCurrentValidClick && distance <= DOUBLE_CLICK_MAX_DISTANCE)
+                    else if (currentInstance->is_last_valid_click && isCurrentValidClick &&
+                             distance <= DOUBLE_CLICK_MAX_DISTANCE)
                     {
-                        double dx2 = currentPos.x - lastMouseUpPos.x;
-                        double dy2 = currentPos.y - lastMouseUpPos.y;
+                        double dx2 = currentPos.x - prevUp.x;
+                        double dy2 = currentPos.y - prevUp.y;
                         double distance2 = sqrt(dx2 * dx2 + dy2 * dy2);
 
                         if (distance2 <= DOUBLE_CLICK_MAX_DISTANCE &&
-                            (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
+                            (currentInstance->last_mouse_down_time - prevUpTime) <= DOUBLE_CLICK_TIME_MS)
                         {
-                            // Check whether it's a maximized/restored behavior of the window
                             uint64_t upWindow = currentInstance->protocol->GetActiveWindow();
-                            if (upWindow && upWindow == lastWindowHandler)
+                            if (upWindow && upWindow == currentInstance->last_window_handler)
                             {
                                 WindowRect currentWindowRect;
                                 currentInstance->protocol->GetWindowRect(upWindow, currentWindowRect);
-
-                                if (!HasWindowMoved(currentWindowRect, lastWindowRect))
+                                if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
                                 {
-                                    shouldDetectSelection = true;
                                     detectionType = SelectionDetectType::DoubleClick;
                                 }
                             }
                         }
                     }
 
-                    // Check if shift key is pressed when mouse up, it's a way to select text
-                    if (!shouldDetectSelection)
+                    // Check shift+click selection
+                    if (detectionType == SelectionDetectType::None)
                     {
-                        int modifierFlags = currentInstance->protocol->GetModifierFlags();
-                        bool isShiftPressed = (modifierFlags & MODIFIER_SHIFT) != 0;
-                        bool isCtrlPressed = (modifierFlags & MODIFIER_CTRL) != 0;
-                        bool isAltPressed = (modifierFlags & MODIFIER_ALT) != 0;
+                        int modFlags = currentInstance->last_mouse_up_modifier_flags;
+                        bool isShiftPressed = (modFlags & MODIFIER_SHIFT) != 0;
+                        bool isCtrlPressed = (modFlags & MODIFIER_CTRL) != 0;
+                        bool isAltPressed = (modFlags & MODIFIER_ALT) != 0;
                         if (isShiftPressed && !isCtrlPressed && !isAltPressed)
                         {
-                            shouldDetectSelection = true;
                             detectionType = SelectionDetectType::ShiftClick;
                         }
                     }
 
-                    isLastValidClick = isCurrentValidClick;
+                    // Bidirectional trigger: correlate gesture with XFixes
+                    if (detectionType != SelectionDetectType::None)
+                    {
+                        uint64_t lastXfixes = currentInstance->last_xfixes_time.load();
+
+                        // Determine mouse coordinates for the event
+                        Point gestureStart, gestureEnd;
+                        switch (detectionType)
+                        {
+                            case SelectionDetectType::Drag:
+                                gestureStart = currentInstance->last_mouse_down_pos;
+                                gestureEnd = currentPos;
+                                break;
+                            case SelectionDetectType::DoubleClick:
+                                gestureStart = currentPos;
+                                gestureEnd = currentPos;
+                                break;
+                            case SelectionDetectType::ShiftClick:
+                                gestureStart = currentInstance->prev_mouse_up_pos;
+                                gestureEnd = currentPos;
+                                break;
+                            default:
+                                gestureStart = currentPos;
+                                gestureEnd = currentPos;
+                                break;
+                        }
+
+                        if (lastXfixes > 0 &&
+                            (static_cast<uint64_t>(currentTime) - lastXfixes) < CORRELATION_WINDOW_MS)
+                        {
+                            // Path A: XFixes already arrived, fast path
+                            currentInstance->last_xfixes_time.store(0);  // Consume
+                            currentInstance->EmitSelectionEvent(detectionType, gestureStart, gestureEnd);
+                        }
+                        else
+                        {
+                            // Path B: Set pending, wait for XFixes
+                            currentInstance->pending_gesture.active = true;
+                            currentInstance->pending_gesture.type = detectionType;
+                            currentInstance->pending_gesture.mousePosStart = gestureStart;
+                            currentInstance->pending_gesture.mousePosEnd = gestureEnd;
+                            currentInstance->pending_gesture.timestamp = currentTime;
+                        }
+                    }
+
+                    currentInstance->is_last_valid_click = isCurrentValidClick;
                 }
 
-                lastLastMouseUpPos = lastMouseUpPos;
-                lastMouseUpTime = currentTime;
-                lastMouseUpPos = currentPos;
+                currentInstance->prev_mouse_up_pos = prevUp;
+                currentInstance->prev_mouse_up_time = prevUpTime;
             }
             break;
 
@@ -1406,62 +1489,6 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             break;
     }
 
-    // Check for text selection
-    if (shouldDetectSelection)
-    {
-
-        TextSelectionInfo selectionInfo;
-        uint64_t activeWindow = currentInstance->protocol->GetActiveWindow();
-
-        if (currentInstance->GetSelectedText(activeWindow, selectionInfo) && !selectionInfo.text.empty())
-        {
-            switch (detectionType)
-            {
-                case SelectionDetectType::Drag:
-                {
-                    selectionInfo.mousePosStart = lastMouseDownPos;
-                    selectionInfo.mousePosEnd = lastMouseUpPos;
-
-                    if (selectionInfo.posLevel == SelectionPositionLevel::None)
-                        selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
-                    break;
-                }
-                case SelectionDetectType::DoubleClick:
-                {
-                    selectionInfo.mousePosStart = lastMouseUpPos;
-                    selectionInfo.mousePosEnd = lastMouseUpPos;
-
-                    if (selectionInfo.posLevel == SelectionPositionLevel::None)
-                        selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
-                    break;
-                }
-                case SelectionDetectType::ShiftClick:
-                {
-                    selectionInfo.mousePosStart = lastLastMouseUpPos;
-                    selectionInfo.mousePosEnd = lastMouseUpPos;
-
-                    if (selectionInfo.posLevel == SelectionPositionLevel::None)
-                        selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
-                    break;
-                }
-                default:
-                    break;
-            }
-
-            auto callback = [selectionInfo](Napi::Env env, Napi::Function jsCallback)
-            {
-                Napi::Object resultObj = currentInstance->CreateSelectionResultObject(env, selectionInfo);
-                jsCallback.Call({resultObj});
-            };
-
-            // Check if still running before calling ThreadSafeFunction
-            if (currentInstance->running.load() && currentInstance->tsfn)
-            {
-                currentInstance->tsfn.NonBlockingCall(callback);
-            }
-        }
-    }
-
     // Create and emit mouse event object
     if (!mouseTypeStr.empty())
     {
@@ -1483,6 +1510,120 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     }
 
     delete pMouseEvent;
+}
+
+/**
+ * XFixes selection event callback (called from XFixes thread)
+ */
+void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeContext *event)
+{
+    SelectionHook *instance = static_cast<SelectionHook *>(context);
+    if (!instance || !event)
+    {
+        delete event;
+        return;
+    }
+
+    // Atomic write - executed in XFixes thread, read by Path A in main thread
+    instance->last_xfixes_time.store(event->timestamp_ms);
+
+    // Dispatch to main thread for Path B processing
+    if (instance->running.load() && instance->selection_tsfn)
+    {
+        instance->selection_tsfn.NonBlockingCall(event, ProcessSelectionEvent);
+    }
+    else
+    {
+        delete event;
+    }
+}
+
+/**
+ * Process selection event on main thread (Path B: XFixes arrives after mouse-up)
+ */
+void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function, SelectionChangeContext *pEvent)
+{
+    if (!pEvent || !currentInstance)
+    {
+        delete pEvent;
+        return;
+    }
+
+    if (currentInstance->pending_gesture.active)
+    {
+        // Use XFixes event timestamp (not wall clock "now") to avoid false expiry
+        // under main-thread load when ThreadSafeFunction callback is delayed
+        if ((pEvent->timestamp_ms - currentInstance->pending_gesture.timestamp) < CORRELATION_WINDOW_MS)
+        {
+            // Path B: pending gesture confirmed by XFixes
+            currentInstance->last_xfixes_time.store(0);  // Consume
+            currentInstance->EmitSelectionEvent(currentInstance->pending_gesture.type,
+                                                currentInstance->pending_gesture.mousePosStart,
+                                                currentInstance->pending_gesture.mousePosEnd);
+            currentInstance->pending_gesture.active = false;
+        }
+        else
+        {
+            // Pending expired, clear it
+            currentInstance->pending_gesture.active = false;
+        }
+    }
+    // else: no pending gesture, skip (keyboard selection or external PRIMARY change)
+
+    delete pEvent;
+}
+
+/**
+ * Emit text selection event (shared by Path A and Path B)
+ */
+void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Point end)
+{
+    if (is_selection_passive_mode || is_processing.load())
+        return;
+
+    uint64_t activeWindow = protocol->GetActiveWindow();
+    if (!activeWindow)
+        return;
+
+    TextSelectionInfo selectionInfo;
+    if (!GetSelectedText(activeWindow, selectionInfo) || selectionInfo.text.empty())
+        return;
+
+    // Set coordinates and posLevel based on detection type
+    switch (type)
+    {
+        case SelectionDetectType::Drag:
+            selectionInfo.mousePosStart = start;
+            selectionInfo.mousePosEnd = end;
+            if (selectionInfo.posLevel == SelectionPositionLevel::None)
+                selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
+            break;
+        case SelectionDetectType::DoubleClick:
+            selectionInfo.mousePosStart = start;
+            selectionInfo.mousePosEnd = end;
+            if (selectionInfo.posLevel == SelectionPositionLevel::None)
+                selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
+            break;
+        case SelectionDetectType::ShiftClick:
+            selectionInfo.mousePosStart = start;
+            selectionInfo.mousePosEnd = end;
+            if (selectionInfo.posLevel == SelectionPositionLevel::None)
+                selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
+            break;
+        default:
+            break;
+    }
+
+    auto callback = [selectionInfo](Napi::Env env, Napi::Function jsCallback)
+    {
+        Napi::Object resultObj = currentInstance->CreateSelectionResultObject(env, selectionInfo);
+        jsCallback.Call({resultObj});
+    };
+
+    if (running.load() && tsfn)
+    {
+        tsfn.NonBlockingCall(callback);
+    }
 }
 
 /**

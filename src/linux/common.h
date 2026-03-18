@@ -175,9 +175,16 @@ struct KeyboardEventContext
     int flags;  ///< Modifier bitmask (MODIFIER_SHIFT/CTRL/ALT/META)
 };
 
+// Structure for selection change event (from XFixes PRIMARY selection monitoring)
+struct SelectionChangeContext
+{
+    uint64_t timestamp_ms;
+};
+
 // Input monitoring callback function types
 typedef void (*MouseEventCallback)(void* context, MouseEventContext* mouseEvent);
 typedef void (*KeyboardEventCallback)(void* context, KeyboardEventContext* keyboardEvent);
+typedef void (*SelectionEventCallback)(void* context, SelectionChangeContext* selectionEvent);
 
 // Protocol abstraction base class
 // Abstract base class for protocol-specific implementations
@@ -215,7 +222,7 @@ class ProtocolBase
 
     // Input monitoring (for mouse and keyboard events)
     virtual bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
-                                           void* context) = 0;
+                                           SelectionEventCallback selectionCallback, void* context) = 0;
     virtual void CleanupInputMonitoring() = 0;
     virtual bool StartInputMonitoring() = 0;
     virtual void StopInputMonitoring() = 0;

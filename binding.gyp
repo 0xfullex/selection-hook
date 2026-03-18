@@ -66,6 +66,7 @@
             "-lXext",
             "-lXtst",
             "-lXi",
+            "-lXfixes",
             "<!@(pkg-config --libs atspi-2 glib-2.0 gobject-2.0)"
           ],
           "cflags_cc": [

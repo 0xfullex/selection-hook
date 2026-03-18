@@ -56,6 +56,7 @@ class WaylandProtocol : public ProtocolBase
     // Callback functions
     MouseEventCallback mouse_callback;
     KeyboardEventCallback keyboard_callback;
+    SelectionEventCallback selection_callback;
     void *callback_context;
 
     // Modifier key state tracking
@@ -80,6 +81,7 @@ class WaylandProtocol : public ProtocolBase
           epoll_fd(-1),
           mouse_callback(nullptr),
           keyboard_callback(nullptr),
+          selection_callback(nullptr),
           callback_context(nullptr)
     {
         current_mouse_pos = Point(0, 0);
@@ -213,13 +215,14 @@ class WaylandProtocol : public ProtocolBase
 
     // Input monitoring implementation
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
-                                   void *context) override
+                                   SelectionEventCallback selectionCb, void *context) override
     {
         if (!initialized)
             return false;
 
         mouse_callback = mouseCallback;
         keyboard_callback = keyboardCallback;
+        selection_callback = selectionCb;  // Store but not used for Wayland yet
         callback_context = context;
 
         return InitializeInputDevices();
@@ -233,6 +236,7 @@ class WaylandProtocol : public ProtocolBase
         CleanupInputDevices();
         mouse_callback = nullptr;
         keyboard_callback = nullptr;
+        selection_callback = nullptr;
         callback_context = nullptr;
     }
 

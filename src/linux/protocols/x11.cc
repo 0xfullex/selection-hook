@@ -16,12 +16,15 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/Xfixes.h>
 #include <X11/extensions/XTest.h>
 #include <X11/extensions/record.h>
 #include <X11/keysym.h>
 
-// epoll headers
+// System headers
+#include <cerrno>
 #include <sys/epoll.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -79,6 +82,15 @@ class X11Protocol : public ProtocolBase
         bool super = false;
     } modifier_state;
 
+    // XFixes related
+    Display* xfixes_display;
+    int xfixes_event_base;
+    int xfixes_error_base;
+    bool xfixes_initialized;
+    std::atomic<bool> xfixes_monitoring_running;
+    std::thread xfixes_monitoring_thread;
+    SelectionEventCallback selection_callback;
+
     // Helper methods
     bool InitializeXRecord();
     void CleanupXRecord();
@@ -86,6 +98,11 @@ class X11Protocol : public ProtocolBase
     void XRecordMonitoringThreadProc();
     static void XRecordDataCallback(XPointer closure, XRecordInterceptData* data);
     void ProcessXRecordData(XRecordInterceptData* data);
+
+    // XFixes helper methods
+    bool InitializeXFixes();
+    void CleanupXFixes();
+    void XFixesMonitoringThreadProc();
 
   public:
     X11Protocol()
@@ -100,7 +117,13 @@ class X11Protocol : public ProtocolBase
           input_monitoring_running(false),
           mouse_callback(nullptr),
           keyboard_callback(nullptr),
-          callback_context(nullptr)
+          callback_context(nullptr),
+          xfixes_display(nullptr),
+          xfixes_event_base(0),
+          xfixes_error_base(0),
+          xfixes_initialized(false),
+          xfixes_monitoring_running(false),
+          selection_callback(nullptr)
     {
     }
 
@@ -423,9 +446,9 @@ class X11Protocol : public ProtocolBase
     //     return false;
     // }
 
-    // Input monitoring implementation using XRecord
+    // Input monitoring implementation using XRecord + XFixes
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
-                                   void* context) override
+                                   SelectionEventCallback selectionCb, void* context) override
     {
         if (!display)
             return false;
@@ -433,6 +456,7 @@ class X11Protocol : public ProtocolBase
         // Store callback functions
         mouse_callback = mouseCallback;
         keyboard_callback = keyboardCallback;
+        selection_callback = selectionCb;
         callback_context = context;
 
         // Initialize XRecord
@@ -446,6 +470,14 @@ class X11Protocol : public ProtocolBase
             return false;
         }
 
+        // Initialize XFixes for PRIMARY selection monitoring
+        // If XFixes fails, print warning but don't block startup
+        if (!InitializeXFixes())
+        {
+            printf("[XFixes] WARNING: Failed to initialize XFixes extension. "
+                   "Selection change detection will not work.\n");
+        }
+
         return true;
     }
 
@@ -454,12 +486,16 @@ class X11Protocol : public ProtocolBase
         // Stop monitoring first
         StopInputMonitoring();
 
+        // Cleanup XFixes
+        CleanupXFixes();
+
         // Cleanup XRecord
         CleanupXRecord();
 
         // Reset callback functions
         mouse_callback = nullptr;
         keyboard_callback = nullptr;
+        selection_callback = nullptr;
         callback_context = nullptr;
     }
 
@@ -468,16 +504,30 @@ class X11Protocol : public ProtocolBase
         if (!display || !record_initialized || input_monitoring_running)
             return false;
 
-        // Start monitoring thread
+        // Start XRecord monitoring thread
         input_monitoring_running = true;
         input_monitoring_thread = std::thread(&X11Protocol::XRecordMonitoringThreadProc, this);
+
+        // Start XFixes monitoring thread if initialized
+        if (xfixes_initialized)
+        {
+            xfixes_monitoring_running = true;
+            xfixes_monitoring_thread = std::thread(&X11Protocol::XFixesMonitoringThreadProc, this);
+        }
 
         return true;
     }
 
     void StopInputMonitoring() override
     {
-        // Signal the thread to stop
+        // Stop XFixes thread first (non-blocking select loop, joins quickly)
+        xfixes_monitoring_running = false;
+        if (xfixes_monitoring_thread.joinable())
+        {
+            xfixes_monitoring_thread.join();
+        }
+
+        // Signal the XRecord thread to stop
         input_monitoring_running = false;
 
         // Disable the XRecord context using the control display to unblock the monitoring thread
@@ -856,6 +906,125 @@ void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
 
     // Free the data
     XRecordFreeData(data);
+}
+
+// XFixes helper methods implementation
+bool X11Protocol::InitializeXFixes()
+{
+    // Open a dedicated Display connection for XFixes (separate from XRecord)
+    xfixes_display = XOpenDisplay(nullptr);
+    if (!xfixes_display)
+    {
+        printf("[XFixes] Failed to open dedicated Display connection\n");
+        return false;
+    }
+
+    // Check if XFixes extension is available
+    if (!XFixesQueryExtension(xfixes_display, &xfixes_event_base, &xfixes_error_base))
+    {
+        printf("[XFixes] XFixes extension not available\n");
+        XCloseDisplay(xfixes_display);
+        xfixes_display = nullptr;
+        return false;
+    }
+
+    // Query XFixes version (need >= 2.0 for selection events)
+    int major = 0, minor = 0;
+    XFixesQueryVersion(xfixes_display, &major, &minor);
+    if (major < 2)
+    {
+        printf("[XFixes] XFixes version %d.%d too old (need >= 2.0)\n", major, minor);
+        XCloseDisplay(xfixes_display);
+        xfixes_display = nullptr;
+        return false;
+    }
+
+    // Subscribe to PRIMARY selection owner changes on root window
+    Window xfixes_root = DefaultRootWindow(xfixes_display);
+    Atom primary = XInternAtom(xfixes_display, "PRIMARY", False);
+    XFixesSelectSelectionInput(xfixes_display, xfixes_root, primary,
+                               XFixesSetSelectionOwnerNotifyMask);
+    XFlush(xfixes_display);
+
+    xfixes_initialized = true;
+    return true;
+}
+
+void X11Protocol::CleanupXFixes()
+{
+    if (xfixes_display)
+    {
+        XCloseDisplay(xfixes_display);
+        xfixes_display = nullptr;
+    }
+    xfixes_initialized = false;
+}
+
+void X11Protocol::XFixesMonitoringThreadProc()
+{
+    if (!xfixes_display || !xfixes_initialized)
+        return;
+
+    int x11_fd = ConnectionNumber(xfixes_display);
+
+    while (xfixes_monitoring_running)
+    {
+        // Use select() with 200ms timeout for shutdown check
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(x11_fd, &read_fds);
+
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 200000;  // 200ms
+
+        int ret = select(x11_fd + 1, &read_fds, nullptr, nullptr, &timeout);
+        if (ret < 0)
+        {
+            // Error
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+
+        if (ret == 0)
+            continue;  // Timeout, check running flag
+
+        // Process all pending X events
+        while (XPending(xfixes_display))
+        {
+            XEvent event;
+            XNextEvent(xfixes_display, &event);
+
+            // Check if this is an XFixes SelectionNotify event
+            if (event.type == xfixes_event_base + XFixesSelectionNotify)
+            {
+                XFixesSelectionNotifyEvent* sel_event = (XFixesSelectionNotifyEvent*)&event;
+
+                // Only handle SetSelectionOwner notifications
+                if (sel_event->subtype == XFixesSetSelectionOwnerNotify)
+                {
+                    // Get current time in milliseconds
+                    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+
+                    // Create selection change context and dispatch via callback
+                    SelectionChangeContext* ctx = new SelectionChangeContext();
+                    ctx->timestamp_ms = static_cast<uint64_t>(now);
+
+                    if (selection_callback && callback_context)
+                    {
+                        selection_callback(callback_context, ctx);
+                    }
+                    else
+                    {
+                        delete ctx;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Factory function to create X11Protocol instance

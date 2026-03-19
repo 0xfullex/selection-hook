@@ -18,27 +18,27 @@
 
 Detect when users select text in **any application** — and get the selected text, screen coordinates, and source program name **in real time**. Works across **Windows, macOS, and Linux** using native accessibility APIs that rarely touch the clipboard. Built as a native **Node.js/Electron** addon for production use.
 
-## Key Features
+## ✨ Key Features
 
-- **Real-time detection** — automatically captures text selections as they happen, no polling needed
-- **Rich metadata** — selected text, screen coordinates, mouse positions, and source program name
-- **Cross-platform** — Windows, macOS, and Linux (X11 & Wayland) from a single API
-- **Clipboard-friendly** — prioritizes native OS accessibility APIs; clipboard fallback is enabled by default as a last resort but rarely triggers, and can be disabled entirely
-- **Input events** — mouse (`down`/`up`/`wheel`/`move`) and keyboard (`keydown`/`keyup`) events with full detail, no additional hooks required
-- **Configurable** — clipboard fallback on/off, per-app filtering, passive mode, and more
+- ⚡ **Real-time detection** — automatically captures text selections as they happen, no polling needed
+- 📋 **Rich metadata** — selected text, screen coordinates, mouse positions, and source program name
+- 🌍 **Cross-platform** — Windows, macOS, and Linux (X11 & Wayland) from a single API
+- 🛡️ **Clipboard-friendly** — prioritizes native OS accessibility APIs; clipboard fallback is enabled by default as a last resort but rarely triggers, and can be disabled entirely
+- 🖱️ **Input events** — mouse (`down`/`up`/`wheel`/`move`) and keyboard (`keydown`/`keyup`) events with full detail, no additional hooks required
+- ⚙️ **Configurable** — clipboard fallback on/off, per-app filtering, passive mode, and more
 
-## Use Cases
+## 💡 Use Cases
 
-- **AI assistants** — select text in any app to trigger AI actions, like [Cherry Studio](https://github.com/CherryHQ/cherry-studio)'s Selection Assistant or Doubao
-- **Selection action tools** — popup actions on text selection, like PopClip
-- **Dictionary / translation tools** — instant lookup on selection, like Eudic, GoldenDict, or Bob
-- **Clipboard managers** — capture selections without polluting the clipboard, like Ditto or Paste
-- **Accessibility tools** — read-aloud or magnify selected text
-- **Developer tools** — inspect or transform selected content on the fly
+- 🤖 **AI assistants** — select text in any app to trigger AI actions, like [Cherry Studio](https://github.com/CherryHQ/cherry-studio)'s Selection Assistant or Doubao
+- 💬 **Selection action tools** — popup actions on text selection, like PopClip
+- 📖 **Dictionary / translation tools** — instant lookup on selection, like Eudic, GoldenDict, or Bob
+- 📎 **Clipboard managers** — capture selections without polluting the clipboard, like Ditto or Paste
+- ♿ **Accessibility tools** — read-aloud or magnify selected text
+- 🛠️ **Developer tools** — inspect or transform selected content on the fly
 
 Most similar tools only work on a single platform. selection-hook gives you one unified API across Windows, macOS, and Linux.
 
-## Supported Platforms
+## 🖥️ Supported Platforms
 
 | Platform | Status |
 | -------- | ------ |
@@ -48,7 +48,7 @@ Most similar tools only work on a single platform. selection-hook gives you one 
 
 Linux has platform-level limitations compared to Windows/macOS due to the display server architecture. See [Linux Platform docs](docs/LINUX.md) for details.
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Install
 
@@ -109,7 +109,7 @@ The `text-selection` event emits an object like:
 
 See [`examples/node-demo.js`](https://github.com/0xfullex/selection-hook/blob/main/examples/node-demo.js) for detailed usage.
 
-## How It Works
+## 🔧 How It Works
 
 | Platform | Primary Method | Fallback |
 | -------- | -------------- | -------- |
@@ -119,11 +119,11 @@ See [`examples/node-demo.js`](https://github.com/0xfullex/selection-hook/blob/ma
 
 Selection Hook uses native OS accessibility APIs to read selected text directly from the focused application — no polling required. The clipboard fallback is enabled by default but only kicks in as a last resort when accessibility APIs can't retrieve the text, so in the vast majority of cases the clipboard remains untouched. If you need to guarantee zero clipboard interference, you can disable the fallback entirely via `disableClipboard()` or `{ enableClipboard: false }` in the start config.
 
-## API Reference
+## 📚 API Reference
 
 For full API documentation — methods, events, data structures, and constants — see [docs/API.md](docs/API.md).
 
-## Building from Source
+## 🏗️ Building from Source
 
 Pre-built binaries ship with npm — build only if you are modifying the native code.
 
@@ -180,7 +180,7 @@ rebuildConfig: {
 - Node.js 12.22+ | Electron 14+
 - TypeScript support included
 
-## Used By
+## 💎 Used By
 
 This project is used by:
 
@@ -188,6 +188,6 @@ This project is used by:
 
 Using selection-hook in your project? [Let us know!](https://github.com/0xfullex/selection-hook/issues)
 
-## License
+## 📄 License
 
 [MIT](LICENSE)

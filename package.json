@@ -12,13 +12,16 @@
   "scripts": {
     "install": "node-gyp-build",
     "rebuild": "node-gyp rebuild",
-    "prebuild": "npm run prebuild:win && npm run prebuild:mac",
+    "prebuild": "npm run prebuild:win && npm run prebuild:mac && npm run prebuild:linux",
     "prebuild:win": "npm run prebuild:win:x64 && npm run prebuild:win:arm64",
     "prebuild:win:x64": "prebuildify --napi --platform=win32 --arch=x64",
     "prebuild:win:arm64": "prebuildify --napi --platform=win32 --arch=arm64",
     "prebuild:mac": "npm run prebuild:mac:x64 && npm run prebuild:mac:arm64",
     "prebuild:mac:x64": "prebuildify --napi --platform=darwin --arch=x64",
     "prebuild:mac:arm64": "prebuildify --napi --platform=darwin --arch=arm64",
+    "prebuild:linux": "npm run prebuild:linux:x64 && npm run prebuild:linux:arm64",
+    "prebuild:linux:x64": "prebuildify --napi --platform=linux --arch=x64",
+    "prebuild:linux:arm64": "prebuildify --napi --platform=linux --arch=arm64",
     "demo": "node --trace-deprecation --force-node-api-uncaught-exceptions-policy=true examples/node-demo.js"
   },
   "keywords": [

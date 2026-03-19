@@ -13,6 +13,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
+          cache: 'npm'
       - uses: ilammy/msvc-dev-cmd@v1
       - run: npm ci
       - run: npm run prebuild:win
@@ -47,6 +48,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
+          cache: 'npm'
       - name: Install Python setuptools
         run: brew install python-setuptools
       - run: npm ci
@@ -75,8 +77,45 @@ jobs:
           name: macos-release-assets
           path: build/release-assets/*
 
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          cache: 'npm'
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevdev-dev libx11-dev libxtst-dev libxfixes-dev libwayland-dev
+      - run: npm ci
+      - run: npm run prebuild:linux:${{ matrix.arch }}
+      - name: Prepare Linux release assets
+        run: |
+          mkdir -p build/release-assets
+          if [ -f "prebuilds/linux-${{ matrix.arch }}/selection-hook.node" ]; then
+            cp "prebuilds/linux-${{ matrix.arch }}/selection-hook.node" "build/release-assets/selection-hook-linux-${{ matrix.arch }}.node"
+          else
+            echo "${{ matrix.arch }} binary not found!"
+            exit 1
+          fi
+      - name: Upload Linux Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets-${{ matrix.arch }}
+          path: build/release-assets/*
+
   publish:
-    needs: [build-windows, build-macos]
+    needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     permissions:
       id-token: write # Required for OIDC trusted publishing
@@ -87,7 +126,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
-      - run: npm ci
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
 
       # Download all release assets
       - name: Download Windows release assets
@@ -102,6 +142,18 @@ jobs:
           name: macos-release-assets
           path: build/release-assets/
 
+      - name: Download Linux x64 release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets-x64
+          path: build/release-assets/
+
+      - name: Download Linux arm64 release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets-arm64
+          path: build/release-assets/
+
       # Restore prebuilds directory structure for npm publish
       - name: Restore prebuilds for npm publish
         run: |
@@ -111,6 +163,8 @@ jobs:
           mkdir -p prebuilds/win32-arm64
           mkdir -p prebuilds/darwin-x64
           mkdir -p prebuilds/darwin-arm64
+          mkdir -p prebuilds/linux-x64
+          mkdir -p prebuilds/linux-arm64
 
           # Copy Windows binaries back to prebuilds directory
           cp build/release-assets/selection-hook-win32-x64.node prebuilds/win32-x64/selection-hook.node
@@ -120,6 +174,10 @@ jobs:
           cp build/release-assets/selection-hook-darwin-x64.node prebuilds/darwin-x64/selection-hook.node
           cp build/release-assets/selection-hook-darwin-arm64.node prebuilds/darwin-arm64/selection-hook.node
 
+          # Copy Linux binaries back to prebuilds directory
+          cp build/release-assets/selection-hook-linux-x64.node prebuilds/linux-x64/selection-hook.node
+          cp build/release-assets/selection-hook-linux-arm64.node prebuilds/linux-arm64/selection-hook.node
+
           # Verify all files are in place
           echo "Prebuilds directory contents:"
           ls -la prebuilds/*/
@@ -128,16 +186,17 @@ jobs:
 
       # Upload all release assets to GitHub release
       - name: Upload Release Assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.PAT_TOKEN }}
           files: |
             build/release-assets/selection-hook-win32-x64.node
             build/release-assets/selection-hook-win32-arm64.node
             build/release-assets/selection-hook-darwin-x64.node
             build/release-assets/selection-hook-darwin-arm64.node
+            build/release-assets/selection-hook-linux-x64.node
+            build/release-assets/selection-hook-linux-arm64.node
           fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
       # Publish to NPM using OIDC trusted publishing (no token required)
       - run: npm publish

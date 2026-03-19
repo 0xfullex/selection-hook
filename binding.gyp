@@ -65,9 +65,7 @@
           "libraries": [
             "-levdev",
             "-lX11",
-            "-lXext",
             "-lXtst",
-            "-lXi",
             "-lXfixes",
             "-lwayland-client"
           ],

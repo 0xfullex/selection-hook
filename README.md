@@ -136,13 +136,13 @@ Pre-built binaries ship with npm — build only if you are modifying the native 
 
 ```bash
 # Ubuntu/Debian
-sudo apt install libevdev-dev libxtst-dev libx11-dev libxext-dev libxi-dev libwayland-dev
+sudo apt install libevdev-dev libxtst-dev libx11-dev libxfixes-dev libwayland-dev
 
 # Fedora
-sudo dnf install libevdev-devel libXtst-devel libX11-devel libXext-devel libXi-devel wayland-devel
+sudo dnf install libevdev-devel libXtst-devel libX11-devel libXfixes-devel wayland-devel
 
 # Arch
-sudo pacman -S libevdev libxtst libx11 libxext libxi wayland
+sudo pacman -S libevdev libxtst libx11 libxfixes wayland
 ```
 
 The Wayland protocol C bindings are pre-generated and committed — see [`src/linux/protocols/wayland/README.md`](src/linux/protocols/wayland/README.md) for details.

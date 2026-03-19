@@ -13,7 +13,7 @@
 </div>
 
 <div align="center">
-<img src="docs/images/selection-hook.gif" alt="Get Text Selection Anywhere" style="max-width: 426px; width: 100%;">
+<img src="docs/images/selection-hook.gif" alt="Get Text Selection Anywhere" style="max-width: 640px; width: 100%;">
 </div>
 
 Detect when users select text in **any application** — and get the selected text, screen coordinates, and source program name **in real time**. Works across **Windows, macOS, and Linux** using native accessibility APIs that rarely touch the clipboard. Built as a native **Node.js/Electron** addon for production use.

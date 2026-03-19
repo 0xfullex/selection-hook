@@ -170,12 +170,7 @@ class WaylandProtocol : public ProtocolBase
     void *callback_context;
 
     // Modifier key state tracking
-    struct {
-        bool ctrl = false;
-        bool shift = false;
-        bool alt = false;
-        bool super = false;
-    } modifier_state;
+    ModifierState modifier_state;
 
     // === Wayland connection ===
     struct wl_display *wl_display_monitor;
@@ -322,12 +317,7 @@ class WaylandProtocol : public ProtocolBase
     // Modifier key state query
     int GetModifierFlags() override
     {
-        int flags = 0;
-        if (modifier_state.shift) flags |= MODIFIER_SHIFT;
-        if (modifier_state.ctrl)  flags |= MODIFIER_CTRL;
-        if (modifier_state.alt)   flags |= MODIFIER_ALT;
-        if (modifier_state.super) flags |= MODIFIER_META;
-        return flags;
+        return modifier_state.GetFlags();
     }
 
     // Get accurate cursor position from compositor
@@ -340,8 +330,8 @@ class WaylandProtocol : public ProtocolBase
 
         if (!InitializeWaylandConnection())
         {
-            printf("[Wayland] WARNING: Failed to initialize Wayland connection. "
-                   "Selection monitoring will not be available.\n");
+            fprintf(stderr, "[Wayland] WARNING: Failed to initialize Wayland connection. "
+                    "Selection monitoring will not be available.\n");
             // Don't fail - input monitoring via libevdev can still work
         }
 
@@ -464,9 +454,9 @@ class WaylandProtocol : public ProtocolBase
 
         if (!InitializeInputDevices())
         {
-            printf("[Wayland] WARNING: Failed to initialize input devices "
-                   "(try adding user to 'input' group: sudo usermod -aG input $USER). "
-                   "Mouse/keyboard events will not be available.\n");
+            fprintf(stderr, "[Wayland] WARNING: Failed to initialize input devices "
+                    "(try adding user to 'input' group: sudo usermod -aG input $USER). "
+                    "Mouse/keyboard events will not be available.\n");
             // Don't fail — Wayland data-control selection monitoring can still work
         }
 
@@ -577,14 +567,14 @@ bool WaylandProtocol::InitializeWaylandConnection()
     wl_display_monitor = wl_display_connect(nullptr);
     if (!wl_display_monitor)
     {
-        printf("[Wayland] Failed to connect to Wayland display\n");
+        fprintf(stderr, "[Wayland] Failed to connect to Wayland display\n");
         return false;
     }
 
     wl_registry_monitor = wl_display_get_registry(wl_display_monitor);
     if (!wl_registry_monitor)
     {
-        printf("[Wayland] Failed to get registry\n");
+        fprintf(stderr, "[Wayland] Failed to get registry\n");
         wl_display_disconnect(wl_display_monitor);
         wl_display_monitor = nullptr;
         return false;
@@ -597,16 +587,16 @@ bool WaylandProtocol::InitializeWaylandConnection()
 
     if (!wl_seat_monitor)
     {
-        printf("[Wayland] WARNING: No wl_seat found\n");
+        fprintf(stderr, "[Wayland] WARNING: No wl_seat found\n");
         CleanupWaylandConnection();
         return false;
     }
 
     if (dc_type == DataControlType::None)
     {
-        printf("[Wayland] WARNING: No data-control protocol available "
-               "(ext-data-control-v1 or wlr-data-control-unstable-v1 v2+). "
-               "Selection monitoring will not work.\n");
+        fprintf(stderr, "[Wayland] WARNING: No data-control protocol available "
+                "(ext-data-control-v1 or wlr-data-control-unstable-v1 v2+). "
+                "Selection monitoring will not work.\n");
         CleanupWaylandConnection();
         return false;
     }
@@ -618,7 +608,6 @@ bool WaylandProtocol::InitializeWaylandConnection()
         if (ext_dc_device)
         {
             ext_data_control_device_v1_add_listener(ext_dc_device, &ext_device_listener, this);
-            printf("[Wayland] Using ext-data-control-v1 protocol\n");
         }
     }
     else if (dc_type == DataControlType::Wlr)
@@ -627,7 +616,6 @@ bool WaylandProtocol::InitializeWaylandConnection()
         if (wlr_dc_device)
         {
             zwlr_data_control_device_v1_add_listener(wlr_dc_device, &wlr_device_listener, this);
-            printf("[Wayland] Using wlr-data-control-unstable-v1 protocol\n");
         }
     }
 
@@ -1041,7 +1029,7 @@ void WaylandProtocol::WaylandMonitoringThreadProc()
             wl_display_cancel_read(wl_display_monitor);
             if (errno == EINTR)
                 continue;
-            printf("[Wayland] select() error: %s\n", strerror(errno));
+            fprintf(stderr, "[Wayland] select() error: %s\n", strerror(errno));
             break;
         }
 
@@ -1055,14 +1043,14 @@ void WaylandProtocol::WaylandMonitoringThreadProc()
         // Data available, read events
         if (wl_display_read_events(wl_display_monitor) < 0)
         {
-            printf("[Wayland] wl_display_read_events() failed: %s\n", strerror(errno));
+            fprintf(stderr, "[Wayland] wl_display_read_events() failed: %s\n", strerror(errno));
             break;
         }
 
         // Dispatch pending events
         if (wl_display_dispatch_pending(wl_display_monitor) < 0)
         {
-            printf("[Wayland] wl_display_dispatch_pending() failed: %s\n", strerror(errno));
+            fprintf(stderr, "[Wayland] wl_display_dispatch_pending() failed: %s\n", strerror(errno));
             break;
         }
     }
@@ -1526,32 +1514,10 @@ void WaylandProtocol::ProcessLibevdevEvent(const struct input_event &ev, const I
         bool is_press = (ev.value == 1);
 
         // Update modifier key state
-        switch (ev.code)
-        {
-            case KEY_LEFTCTRL:
-            case KEY_RIGHTCTRL:
-                modifier_state.ctrl = is_press;
-                break;
-            case KEY_LEFTSHIFT:
-            case KEY_RIGHTSHIFT:
-                modifier_state.shift = is_press;
-                break;
-            case KEY_LEFTALT:
-            case KEY_RIGHTALT:
-                modifier_state.alt = is_press;
-                break;
-            case KEY_LEFTMETA:
-            case KEY_RIGHTMETA:
-                modifier_state.super = is_press;
-                break;
-        }
+        modifier_state.UpdateFromKeyCode(ev.code, is_press);
 
         // Build modifier flags bitmask
-        int flags = 0;
-        if (modifier_state.shift) flags |= MODIFIER_SHIFT;
-        if (modifier_state.ctrl)  flags |= MODIFIER_CTRL;
-        if (modifier_state.alt)   flags |= MODIFIER_ALT;
-        if (modifier_state.super) flags |= MODIFIER_META;
+        int flags = modifier_state.GetFlags();
 
         KeyboardEventContext *keyboardEvent = new KeyboardEventContext();
         keyboardEvent->type = ev.type;
@@ -1577,12 +1543,10 @@ void WaylandProtocol::DetectCompositor()
     if (getenv("HYPRLAND_INSTANCE_SIGNATURE"))
     {
         compositor_type = CompositorType::Hyprland;
-        printf("[Wayland] Detected compositor: Hyprland\n");
     }
     else if (getenv("SWAYSOCK"))
     {
         compositor_type = CompositorType::Sway;
-        printf("[Wayland] Detected compositor: Sway\n");
     }
     else
     {
@@ -1596,33 +1560,27 @@ void WaylandProtocol::DetectCompositor()
             if (desktop_str.find("kde") != std::string::npos)
             {
                 compositor_type = CompositorType::KDE;
-                printf("[Wayland] Detected compositor: KDE\n");
             }
             else if (desktop_str.find("gnome") != std::string::npos)
             {
                 compositor_type = CompositorType::GNOME;
-                printf("[Wayland] Detected compositor: GNOME\n");
             }
             else if (desktop_str.find("cosmic") != std::string::npos)
             {
                 compositor_type = CompositorType::COSMIC;
-                printf("[Wayland] Detected compositor: COSMIC\n");
             }
             else if (desktop_str.find("wlroots") != std::string::npos)
             {
                 compositor_type = CompositorType::Wlroots;
-                printf("[Wayland] Detected compositor: wlroots-based\n");
             }
             else
             {
                 compositor_type = CompositorType::Unknown;
-                printf("[Wayland] Detected compositor: Unknown (XDG_CURRENT_DESKTOP=%s)\n", desktop);
             }
         }
         else
         {
             compositor_type = CompositorType::Unknown;
-            printf("[Wayland] Detected compositor: Unknown (no XDG_CURRENT_DESKTOP)\n");
         }
     }
 }
@@ -1753,7 +1711,7 @@ bool WaylandProtocol::LoadDBusFunctions()
     void *lib = dlopen("libdbus-1.so.3", RTLD_LAZY);
     if (!lib)
     {
-        printf("[Wayland] KDE: Failed to load libdbus-1.so.3: %s\n", dlerror());
+        fprintf(stderr, "[Wayland] KDE: Failed to load libdbus-1.so.3: %s\n", dlerror());
         return false;
     }
 
@@ -1762,7 +1720,7 @@ bool WaylandProtocol::LoadDBusFunctions()
     // Load all required function pointers
     #define LOAD_DBUS_FN(name, field) \
         dbus_fn.field = reinterpret_cast<decltype(dbus_fn.field)>(dlsym(lib, "dbus_" #name)); \
-        if (!dbus_fn.field) { printf("[Wayland] KDE: Missing dbus_%s\n", #name); goto fail; }
+        if (!dbus_fn.field) { fprintf(stderr, "[Wayland] KDE: Missing dbus_%s\n", #name); goto fail; }
 
     LOAD_DBUS_FN(error_init, error_init);
     LOAD_DBUS_FN(error_free, error_free);
@@ -1790,8 +1748,8 @@ bool WaylandProtocol::LoadDBusFunctions()
         dbus_fn.session_bus = dbus_fn.bus_get(0 /* DBUS_BUS_SESSION */, &err);
         if (!dbus_fn.session_bus)
         {
-            printf("[Wayland] KDE: Failed to connect to session bus: %s\n",
-                   err.name ? err.name : "unknown");
+            fprintf(stderr, "[Wayland] KDE: Failed to connect to session bus: %s\n",
+                    err.name ? err.name : "unknown");
             dbus_fn.error_free(&err);
             goto fail;
         }
@@ -1803,7 +1761,7 @@ bool WaylandProtocol::LoadDBusFunctions()
         const char *name = dbus_fn.bus_get_unique_name(dbus_fn.session_bus);
         if (!name)
         {
-            printf("[Wayland] KDE: Failed to get unique bus name\n");
+            fprintf(stderr, "[Wayland] KDE: Failed to get unique bus name\n");
             goto fail;
         }
         kde_bus_name = name;
@@ -1815,7 +1773,7 @@ bool WaylandProtocol::LoadDBusFunctions()
         FILE *f = fopen(kde_script_path.c_str(), "w");
         if (!f)
         {
-            printf("[Wayland] KDE: Failed to write KWin script to %s\n", kde_script_path.c_str());
+            fprintf(stderr, "[Wayland] KDE: Failed to write KWin script to %s\n", kde_script_path.c_str());
             kde_script_path.clear();
             goto fail;
         }
@@ -1826,7 +1784,6 @@ bool WaylandProtocol::LoadDBusFunctions()
         fclose(f);
     }
 
-    printf("[Wayland] KDE: DBus functions loaded successfully (bus=%s)\n", kde_bus_name.c_str());
     return true;
 
 fail:
@@ -2053,18 +2010,14 @@ bool WaylandProtocol::GetCursorPositionXWayland(Point& pos)
         if (display_env)
         {
             xwayland_display = XOpenDisplay(display_env);
-            if (xwayland_display)
+            if (!xwayland_display)
             {
-                printf("[Wayland] XWayland fallback display opened (%s)\n", display_env);
-            }
-            else
-            {
-                printf("[Wayland] XWayland: Failed to open display %s\n", display_env);
+                fprintf(stderr, "[Wayland] XWayland: Failed to open display %s\n", display_env);
             }
         }
         else
         {
-            printf("[Wayland] XWayland: DISPLAY not set, fallback unavailable\n");
+            fprintf(stderr, "[Wayland] XWayland: DISPLAY not set, fallback unavailable\n");
         }
     }
 

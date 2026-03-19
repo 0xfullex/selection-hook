@@ -50,20 +50,6 @@
 // Keyboard utility for Linux key code conversion
 #include "lib/keyboard.h"
 
-// Headers for input monitoring - now handled by protocol layer
-
-// Linux input constants for event processing
-#include <linux/input.h>
-
-// Undefine X11 None macro that conflicts with our enum
-// #ifdef None
-// #undef None
-// #endif
-
-// External function declarations from protocol implementations
-extern std::unique_ptr<ProtocolBase> CreateX11Protocol();
-extern std::unique_ptr<ProtocolBase> CreateWaylandProtocol();
-
 /**
  * Factory function to create protocol instances
  */
@@ -149,9 +135,6 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Core functionality methods
     bool GetSelectedText(uint64_t window, TextSelectionInfo &selectionInfo);
     bool GetTextViaPrimary(uint64_t window, TextSelectionInfo &selectionInfo);
-    bool GetTextViaClipboard(uint64_t window, TextSelectionInfo &selectionInfo);
-    bool ShouldProcessGetSelection();
-    bool ShouldProcessViaClipboard(const std::string &programName);
     Napi::Object CreateSelectionResultObject(Napi::Env env, const TextSelectionInfo &selectionInfo);
 
     // Helper methods
@@ -223,21 +206,10 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // passive mode: only trigger when user call GetSelectionText
     bool is_selection_passive_mode = false;
-    bool is_enabled_clipboard = true;  // Enable by default
-    // Store clipboard sequence number when mouse down
-    int64_t clipboard_sequence = 0;
-
-    // clipboard filter mode
-    FilterMode clipboard_filter_mode = FilterMode::Default;
-    std::vector<std::string> clipboard_filter_list;
 
     // global filter mode
     FilterMode global_filter_mode = FilterMode::Default;
     std::vector<std::string> global_filter_list;
-
-    // fine-tuned lists (ftl) for some apps
-    std::vector<std::string> ftl_exclude_clipboard_cursor_detect;
-    std::vector<std::string> ftl_include_clipboard_delay_read;
 };
 
 // Static member initialization
@@ -501,7 +473,7 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
     catch (const std::exception &e)
     {
         // Log error but don't throw to prevent further issues
-        printf("Error releasing ThreadSafeFunction: %s\n", e.what());
+        fprintf(stderr, "Error releasing ThreadSafeFunction: %s\n", e.what());
     }
 }
 
@@ -522,42 +494,27 @@ void SelectionHook::DisableMouseMoveEvent(const Napi::CallbackInfo &info)
 }
 
 /**
- * NAPI: Enable clipboard fallback
+ * NAPI: Enable clipboard fallback (no-op on Linux)
  */
 void SelectionHook::EnableClipboard(const Napi::CallbackInfo &info)
 {
-    is_enabled_clipboard = true;
+    return;
 }
 
 /**
- * NAPI: Disable clipboard fallback
+ * NAPI: Disable clipboard fallback (no-op on Linux)
  */
 void SelectionHook::DisableClipboard(const Napi::CallbackInfo &info)
 {
-    is_enabled_clipboard = false;
+    return;
 }
 
 /**
- * NAPI: Set the clipboard filter mode & list
+ * NAPI: Set the clipboard filter mode & list (no-op on Linux)
  */
 void SelectionHook::SetClipboardMode(const Napi::CallbackInfo &info)
 {
-    Napi::Env env = info.Env();
-    // Validate arguments
-    if (info.Length() < 2 || !info[0u].IsNumber() || !info[1u].IsArray())
-    {
-        Napi::TypeError::New(env, "Number and Array expected as arguments").ThrowAsJavaScriptException();
-        return;
-    }
-
-    // Get clipboard mode from first argument
-    int mode = info[0u].As<Napi::Number>().Int32Value();
-    clipboard_filter_mode = static_cast<FilterMode>(mode);
-
-    Napi::Array listArray = info[1u].As<Napi::Array>();
-
-    // Use helper method to process the array
-    ProcessStringArrayToList(listArray, clipboard_filter_list);
+    return;
 }
 
 /**
@@ -617,11 +574,6 @@ Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
 
     try
     {
-        if (!ShouldProcessGetSelection())
-        {
-            return env.Null();
-        }
-
         // Get the currently active window
         uint64_t activeWindow = protocol->GetActiveWindow();
         if (!activeWindow)
@@ -795,16 +747,12 @@ bool SelectionHook::GetSelectedText(uint64_t window, TextSelectionInfo &selectio
         }
     }
 
-    // Primary Selection (X11 and Wayland)
-    if (current_display_protocol == DisplayProtocol::X11 ||
-        current_display_protocol == DisplayProtocol::Wayland)
+    // Primary Selection (covers both X11 and Wayland)
+    if (GetTextViaPrimary(window, selectionInfo))
     {
-        if (GetTextViaPrimary(window, selectionInfo))
-        {
-            selectionInfo.method = SelectionMethod::Primary;
-            is_processing.store(false);
-            return true;
-        }
+        selectionInfo.method = SelectionMethod::Primary;
+        is_processing.store(false);
+        return true;
     }
 
     // Clipboard fallback is intentionally not implemented for now.
@@ -826,99 +774,10 @@ bool SelectionHook::GetTextViaPrimary(uint64_t window, TextSelectionInfo &select
     if (protocol->GetTextViaPrimary(selectedText) && !selectedText.empty())
     {
         selectionInfo.text = selectedText;
-
-        // Try to get coordinates
-        // if (protocol->SetTextRangeCoordinates(window, selectionInfo))
-        // {
-        //     selectionInfo.posLevel = SelectionPositionLevel::Full;
-        // }
-        // else
-        // {
-        //     selectionInfo.posLevel = SelectionPositionLevel::None;
-        // }
-
         return true;
     }
 
     return false;
-}
-
-/**
- * Get text using clipboard and Ctrl+C as a last resort
- */
-bool SelectionHook::GetTextViaClipboard(uint64_t window, TextSelectionInfo &selectionInfo)
-{
-    if (!window)
-        return false;
-
-    // // Store current clipboard content to restore later
-    // std::string originalContent;
-    // bool hasOriginalContent = protocol->ReadClipboard(originalContent);
-
-    // // Send Ctrl+C to copy selected text
-    // protocol->SendCopyKey(CopyKeyType::CtrlC);
-
-    // // Wait a bit for the copy operation to complete
-    // std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // // Read the new clipboard content
-    // std::string newContent;
-    // if (!protocol->ReadClipboard(newContent) || newContent.empty())
-    // {
-    //     // Restore original clipboard if possible
-    //     if (hasOriginalContent)
-    //     {
-    //         protocol->WriteClipboard(originalContent);
-    //     }
-    //     return false;
-    // }
-
-    // // Store the copied text
-    // selectionInfo.text = newContent;
-
-    // // Restore original clipboard content
-    // if (hasOriginalContent && originalContent != newContent)
-    // {
-    //     protocol->WriteClipboard(originalContent);
-    // }
-
-    // return true;
-    return false;
-}
-
-/**
- * Check if current system state allows text selection
- */
-bool SelectionHook::ShouldProcessGetSelection()
-{
-    // TODO: Implement Linux-specific logic to check system state
-    // For now, always return true
-    return true;
-}
-
-/**
- * Check if we should process GetTextViaClipboard
- */
-bool SelectionHook::ShouldProcessViaClipboard(const std::string &programName)
-{
-    if (!is_enabled_clipboard)
-        return false;
-
-    bool result = false;
-    switch (clipboard_filter_mode)
-    {
-        case FilterMode::Default:
-            result = true;
-            break;
-        case FilterMode::IncludeList:
-            result = IsInFilterList(programName, clipboard_filter_list);
-            break;
-        case FilterMode::ExcludeList:
-            result = !IsInFilterList(programName, clipboard_filter_list);
-            break;
-    }
-
-    return result;
 }
 
 /**
@@ -1082,7 +941,6 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Update mouse-down state
                 currentInstance->last_mouse_down_time = currentTime;
                 currentInstance->last_mouse_down_pos = currentPos;
-                currentInstance->clipboard_sequence = 0;
 
                 // Clear pending gesture (prevent old pending from being triggered by new action)
                 currentInstance->pending_gesture.active = false;

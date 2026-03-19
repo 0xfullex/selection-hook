@@ -46,7 +46,6 @@ constexpr long X11_None = None;
 #include "../common.h"
 
 // Forward declaration for SelectionHook from selection_hook.cc
-// class SelectionHook;
 
 /**
  * X11 Protocol Class Implementation
@@ -75,12 +74,7 @@ class X11Protocol : public ProtocolBase
     void* callback_context;
 
     // Modifier key state tracking
-    struct {
-        bool ctrl = false;
-        bool shift = false;
-        bool alt = false;
-        bool super = false;
-    } modifier_state;
+    ModifierState modifier_state;
 
     // XFixes related
     Display* xfixes_display;
@@ -94,7 +88,6 @@ class X11Protocol : public ProtocolBase
     // Helper methods
     bool InitializeXRecord();
     void CleanupXRecord();
-    bool SetupXRecordMonitoring();
     void XRecordMonitoringThreadProc();
     static void XRecordDataCallback(XPointer closure, XRecordInterceptData* data);
     void ProcessXRecordData(XRecordInterceptData* data);
@@ -135,12 +128,7 @@ class X11Protocol : public ProtocolBase
     // Modifier key state query
     int GetModifierFlags() override
     {
-        int flags = 0;
-        if (modifier_state.shift) flags |= MODIFIER_SHIFT;
-        if (modifier_state.ctrl)  flags |= MODIFIER_CTRL;
-        if (modifier_state.alt)   flags |= MODIFIER_ALT;
-        if (modifier_state.super) flags |= MODIFIER_META;
-        return flags;
+        return modifier_state.GetFlags();
     }
 
     // Initialization and cleanup
@@ -253,37 +241,31 @@ class X11Protocol : public ProtocolBase
         return false;
     }
 
-    // Text selection
-    bool GetTextViaPrimary(std::string& text) override
+    // Shared helper: read a named X11 selection into text
+    bool ReadSelection(const char* selectionName, const char* propertyName, std::string& text)
     {
         if (!display)
             return false;
 
-        // Create a window to receive the selection
         Window window = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
 
-        // Request the primary selection
-        Atom selection = XInternAtom(display, "PRIMARY", False);
+        Atom selection = XInternAtom(display, selectionName, False);
         Atom utf8_string = XInternAtom(display, "UTF8_STRING", False);
-        // Atom targets = XInternAtom(display, "TARGETS", False);
-        Atom property = XInternAtom(display, "SELECTION_DATA", False);
+        Atom property = XInternAtom(display, propertyName, False);
 
         XConvertSelection(display, selection, utf8_string, property, window, CurrentTime);
         XFlush(display);
 
-        // Wait for the selection notification
         XEvent event;
         bool success = false;
 
-        // Wait up to 1 second for the selection
         auto start_time = std::chrono::steady_clock::now();
         while (std::chrono::steady_clock::now() - start_time < std::chrono::milliseconds(1000))
         {
             if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event))
             {
-                if (event.xselection.property != X11_None)  // X11 None constant
+                if (event.xselection.property != X11_None)
                 {
-                    // Get the selection data
                     Atom actual_type;
                     int actual_format;
                     unsigned long nitems, bytes_after;
@@ -310,16 +292,11 @@ class X11Protocol : public ProtocolBase
         return success;
     }
 
-    // bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo& selectionInfo) override
-    // {
-    //     if (!display || !window)
-    //         return false;
-
-    //     // TODO: Implement X11-specific coordinate retrieval
-    //     // This would involve getting the selection bounds from the X11 server
-    //     // For now, return false to indicate no coordinates available
-    //     return false;
-    // }
+    // Text selection
+    bool GetTextViaPrimary(std::string& text) override
+    {
+        return ReadSelection("PRIMARY", "SELECTION_DATA", text);
+    }
 
     // Clipboard operations
     bool WriteClipboard(const std::string& text) override
@@ -358,93 +335,8 @@ class X11Protocol : public ProtocolBase
 
     bool ReadClipboard(std::string& text) override
     {
-        if (!display)
-            return false;
-
-        // Create a window to receive the selection
-        Window window = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
-
-        // Request the clipboard selection
-        Atom clipboard = XInternAtom(display, "CLIPBOARD", False);
-        Atom utf8_string = XInternAtom(display, "UTF8_STRING", False);
-        Atom property = XInternAtom(display, "CLIPBOARD_DATA", False);
-
-        XConvertSelection(display, clipboard, utf8_string, property, window, CurrentTime);
-        XFlush(display);
-
-        // Wait for the selection notification
-        XEvent event;
-        bool success = false;
-
-        // Wait up to 1 second for the selection
-        auto start_time = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - start_time < std::chrono::milliseconds(1000))
-        {
-            if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event))
-            {
-                if (event.xselection.property != X11_None)  // X11 None constant
-                {
-                    // Get the selection data
-                    Atom actual_type;
-                    int actual_format;
-                    unsigned long nitems, bytes_after;
-                    unsigned char* data = nullptr;
-
-                    if (XGetWindowProperty(display, window, property, 0, LONG_MAX, False, AnyPropertyType, &actual_type,
-                                           &actual_format, &nitems, &bytes_after, &data) == Success)
-                    {
-                        if (actual_type == utf8_string && data && nitems > 0)
-                        {
-                            text = std::string(reinterpret_cast<char*>(data), nitems);
-                            success = true;
-                        }
-                        if (data)
-                            XFree(data);
-                    }
-                }
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-
-        XDestroyWindow(display, window);
-        return success;
+        return ReadSelection("CLIPBOARD", "CLIPBOARD_DATA", text);
     }
-
-    // // Key operations
-    // void SendCopyKey(CopyKeyType type) override
-    // {
-    //     if (!display)
-    //         return;
-
-    //     KeySym keysym = (type == CopyKeyType::CtrlInsert) ? XK_Insert : XK_c;
-    //     KeyCode keycode = XKeysymToKeycode(display, keysym);
-    //     KeyCode ctrl_keycode = XKeysymToKeycode(display, XK_Control_L);
-
-    //     if (keycode != 0 && ctrl_keycode != 0)
-    //     {
-    //         // Press Ctrl
-    //         XTestFakeKeyEvent(display, ctrl_keycode, True, 0);
-    //         // Press key
-    //         XTestFakeKeyEvent(display, keycode, True, 0);
-    //         // Release key
-    //         XTestFakeKeyEvent(display, keycode, False, 0);
-    //         // Release Ctrl
-    //         XTestFakeKeyEvent(display, ctrl_keycode, False, 0);
-    //         XFlush(display);
-    //     }
-    // }
-
-    // bool ShouldKeyInterruptViaClipboard() override
-    // {
-    //     if (!display)
-    //         return false;
-
-    //     // TODO: Implement X11-specific key state checking
-    //     // This would involve checking modifier keys and other key states
-    //     // For now, return false
-    //     return false;
-    // }
 
     // Input monitoring implementation using XRecord + XFixes
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
@@ -463,19 +355,12 @@ class X11Protocol : public ProtocolBase
         if (!InitializeXRecord())
             return false;
 
-        // Setup XRecord monitoring
-        if (!SetupXRecordMonitoring())
-        {
-            CleanupXRecord();
-            return false;
-        }
-
         // Initialize XFixes for PRIMARY selection monitoring
         // If XFixes fails, print warning but don't block startup
         if (!InitializeXFixes())
         {
-            printf("[XFixes] WARNING: Failed to initialize XFixes extension. "
-                   "Selection change detection will not work.\n");
+            fprintf(stderr, "[XFixes] WARNING: Failed to initialize XFixes extension. "
+                    "Selection change detection will not work.\n");
         }
 
         return true;
@@ -570,20 +455,6 @@ class X11Protocol : public ProtocolBase
         return Point(0, 0);
     }
 
-    // X11-specific key sending functionality
-    bool SendXTestKey(KeySym keysym, bool press = true)
-    {
-        if (!display)
-            return false;
-
-        KeyCode keycode = XKeysymToKeycode(display, keysym);
-        if (keycode == 0)
-            return false;
-
-        XTestFakeKeyEvent(display, keycode, press ? True : False, 0);
-        XFlush(display);
-        return true;
-    }
 };
 
 // XRecord helper methods implementation
@@ -688,14 +559,6 @@ void X11Protocol::CleanupXRecord()
 
         record_initialized = false;
     }
-}
-
-bool X11Protocol::SetupXRecordMonitoring()
-{
-    if (!record_display || !record_initialized)
-        return false;
-
-    return true;
 }
 
 void X11Protocol::XRecordMonitoringThreadProc()
@@ -862,32 +725,10 @@ void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
                     bool is_press = (event_type == KeyPress);
 
                     // Update modifier key state
-                    switch (linux_keycode)
-                    {
-                        case KEY_LEFTCTRL:
-                        case KEY_RIGHTCTRL:
-                            modifier_state.ctrl = is_press;
-                            break;
-                        case KEY_LEFTSHIFT:
-                        case KEY_RIGHTSHIFT:
-                            modifier_state.shift = is_press;
-                            break;
-                        case KEY_LEFTALT:
-                        case KEY_RIGHTALT:
-                            modifier_state.alt = is_press;
-                            break;
-                        case KEY_LEFTMETA:
-                        case KEY_RIGHTMETA:
-                            modifier_state.super = is_press;
-                            break;
-                    }
+                    modifier_state.UpdateFromKeyCode(linux_keycode, is_press);
 
                     // Build modifier flags bitmask
-                    int flags = 0;
-                    if (modifier_state.shift) flags |= MODIFIER_SHIFT;
-                    if (modifier_state.ctrl)  flags |= MODIFIER_CTRL;
-                    if (modifier_state.alt)   flags |= MODIFIER_ALT;
-                    if (modifier_state.super) flags |= MODIFIER_META;
+                    int flags = modifier_state.GetFlags();
 
                     KeyboardEventContext* keyboardEvent = new KeyboardEventContext();
                     keyboardEvent->type = EV_KEY;
@@ -915,14 +756,14 @@ bool X11Protocol::InitializeXFixes()
     xfixes_display = XOpenDisplay(nullptr);
     if (!xfixes_display)
     {
-        printf("[XFixes] Failed to open dedicated Display connection\n");
+        fprintf(stderr, "[XFixes] Failed to open dedicated Display connection\n");
         return false;
     }
 
     // Check if XFixes extension is available
     if (!XFixesQueryExtension(xfixes_display, &xfixes_event_base, &xfixes_error_base))
     {
-        printf("[XFixes] XFixes extension not available\n");
+        fprintf(stderr, "[XFixes] XFixes extension not available\n");
         XCloseDisplay(xfixes_display);
         xfixes_display = nullptr;
         return false;
@@ -933,7 +774,7 @@ bool X11Protocol::InitializeXFixes()
     XFixesQueryVersion(xfixes_display, &major, &minor);
     if (major < 2)
     {
-        printf("[XFixes] XFixes version %d.%d too old (need >= 2.0)\n", major, minor);
+        fprintf(stderr, "[XFixes] XFixes version %d.%d too old (need >= 2.0)\n", major, minor);
         XCloseDisplay(xfixes_display);
         xfixes_display = nullptr;
         return false;

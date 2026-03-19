@@ -287,7 +287,7 @@ Indicates which method was used to detect the text selection:
 - `UIA`: UI Automation (_Windows_)
 - `ACCESSIBLE`: Accessibility interface (_Windows_)
 - `AXAPI`: Accessibility API (_macOS_)
-- `ATSPI`: Assistive Technology Service Provider Interface (_Linux_)
+- `ATSPI`: Assistive Technology Service Provider Interface (_Linux_, reserved — not currently used, reserved for future implementation)
 - `PRIMARY`: Primary Selection (_Linux_)
 - `CLIPBOARD`: Clipboard fallback
 

@@ -11,10 +11,8 @@
 #include <memory>
 #include <string>
 
-// Undefine X11 None macro that conflicts with our enum
-// #ifdef None
-// #undef None
-// #endif
+// Linux input constants for ModifierState
+#include <linux/input.h>
 
 // Common Point structure for coordinates
 struct Point
@@ -64,7 +62,6 @@ enum class SelectionDetectType
 enum class SelectionMethod
 {
     None = 0,
-    ATSPI = 21,
     Primary = 22,  // primary selection
     Clipboard = 99
 };
@@ -79,13 +76,6 @@ enum class SelectionPositionLevel
     Detailed = 4      // Detailed selection coordinates including all needed corner points
 };
 
-// Copy key type enum for SendCopyKey function
-enum class CopyKeyType
-{
-    CtrlInsert = 0,
-    CtrlC = 1
-};
-
 // Filter mode enum
 enum class FilterMode
 {
@@ -94,18 +84,41 @@ enum class FilterMode
     ExcludeList = 2   // only trigger when the program name is not in the exclude list
 };
 
-// Fine-tuned list type enum
-enum class FineTunedListType
-{
-    ExcludeClipboardCursorDetect = 0,
-    IncludeClipboardDelayRead = 1
-};
-
 // Keyboard modifier flags (bitmask for KeyboardEventContext::flags)
 constexpr int MODIFIER_SHIFT = 0x01;
 constexpr int MODIFIER_CTRL  = 0x02;
 constexpr int MODIFIER_ALT   = 0x04;
 constexpr int MODIFIER_META  = 0x08;
+
+// Shared modifier key state tracking for X11 and Wayland protocols
+struct ModifierState
+{
+    bool ctrl = false;
+    bool shift = false;
+    bool alt = false;
+    bool super = false;
+
+    int GetFlags() const
+    {
+        int flags = 0;
+        if (shift) flags |= MODIFIER_SHIFT;
+        if (ctrl)  flags |= MODIFIER_CTRL;
+        if (alt)   flags |= MODIFIER_ALT;
+        if (super) flags |= MODIFIER_META;
+        return flags;
+    }
+
+    void UpdateFromKeyCode(unsigned int code, bool is_press)
+    {
+        switch (code)
+        {
+            case KEY_LEFTCTRL: case KEY_RIGHTCTRL: ctrl = is_press; break;
+            case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT: shift = is_press; break;
+            case KEY_LEFTALT: case KEY_RIGHTALT: alt = is_press; break;
+            case KEY_LEFTMETA: case KEY_RIGHTMETA: super = is_press; break;
+        }
+    }
+};
 
 // Mouse button enum
 enum class MouseButton
@@ -207,15 +220,10 @@ class ProtocolBase
 
     // Text selection
     virtual bool GetTextViaPrimary(std::string& text) = 0;
-    // virtual bool SetTextRangeCoordinates(uint64_t window, TextSelectionInfo& selectionInfo) = 0;
 
     // Clipboard operations
     virtual bool WriteClipboard(const std::string& text) = 0;
     virtual bool ReadClipboard(std::string& text) = 0;
-
-    // // Key operations
-    // virtual void SendCopyKey(CopyKeyType type) = 0;
-    // virtual bool ShouldKeyInterruptViaClipboard() = 0;
 
     // Modifier key state query (for Shift+Click detection etc.)
     virtual int GetModifierFlags() = 0;

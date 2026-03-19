@@ -146,6 +146,7 @@ declare class SelectionHook extends EventEmitter {
     FOCUSCTL: 2;
     ACCESSIBLE: 3;
     AXAPI: 11;
+    /** @reserved AT-SPI method is reserved for future use */
     ATSPI: 21;
     PRIMARY: 22;
     CLIPBOARD: 99;

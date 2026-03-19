@@ -220,6 +220,9 @@ class ProtocolBase
     // Modifier key state query (for Shift+Click detection etc.)
     virtual int GetModifierFlags() = 0;
 
+    // Get current mouse cursor position (screen coordinates)
+    virtual Point GetCurrentMousePosition() { return Point(0, 0); }
+
     // Input monitoring (for mouse and keyboard events)
     virtual bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
                                            SelectionEventCallback selectionCallback, void* context) = 0;

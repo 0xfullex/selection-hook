@@ -553,7 +553,7 @@ class X11Protocol : public ProtocolBase
     int GetScreen() const { return screen; }
 
     // Get current mouse position
-    Point GetCurrentMousePosition()
+    Point GetCurrentMousePosition() override
     {
         if (!display)
             return Point(0, 0);

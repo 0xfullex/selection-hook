@@ -1388,6 +1388,33 @@ void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
             break;
     }
 
+    // Wayland: query compositor for accurate cursor position
+    if (current_display_protocol == DisplayProtocol::Wayland)
+    {
+        Point accuratePos = protocol->GetCurrentMousePosition();
+        if (accuratePos.x != 0 || accuratePos.y != 0)
+        {
+            selectionInfo.mousePosEnd = accuratePos;
+            switch (type)
+            {
+                case SelectionDetectType::Drag:
+                    // start is mouse-down time, cannot be retroactively corrected, downgrade to Single
+                    selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
+                    break;
+                case SelectionDetectType::DoubleClick:
+                    // Both coordinates are essentially the same point, calibrate start too
+                    selectionInfo.mousePosStart = accuratePos;
+                    break;
+                case SelectionDetectType::ShiftClick:
+                    // start is previous click position (libevdev), inaccurate, downgrade to Single
+                    selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     auto callback = [selectionInfo](Napi::Env env, Napi::Function jsCallback)
     {
         Napi::Object resultObj = currentInstance->CreateSelectionResultObject(env, selectionInfo);

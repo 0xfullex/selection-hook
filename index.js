@@ -72,6 +72,26 @@ class SelectionHook extends EventEmitter {
     WAYLAND: 2,
   };
 
+  /**
+   * Compositor type constants (Linux only).
+   *
+   * Values represent the compositor, not the desktop environment (DE).
+   * DE-bundled compositors are detected via XDG_CURRENT_DESKTOP:
+   *   KDE Plasma → KWin, GNOME → mutter, COSMIC → cosmic-comp.
+   * Standalone compositors are detected via their own environment variables:
+   *   Hyprland → HYPRLAND_INSTANCE_SIGNATURE, sway → SWAYSOCK.
+   * WLROOTS is a catch-all for generic wlroots-based compositors (labwc, river, etc.).
+   */
+  static CompositorType = {
+    UNKNOWN: 0,
+    KWIN: 1,
+    MUTTER: 2,
+    HYPRLAND: 3,
+    SWAY: 4,
+    WLROOTS: 5,
+    COSMIC_COMP: 6,
+  };
+
   constructor() {
     if (!nativeModule) {
       throw new Error(
@@ -480,48 +500,25 @@ class SelectionHook extends EventEmitter {
   }
 
   /**
-   * Get current display protocol (Linux only)
-   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   * Get Linux environment information (Linux only)
+   * @returns {object|null} Linux environment info object or null on non-Linux
    */
-  linuxGetDisplayProtocol() {
+  linuxGetEnvInfo() {
     if (!isLinux) {
-      this.#logDebug("linuxGetDisplayProtocol is only supported on Linux");
-      return SelectionHook.DisplayProtocol.UNKNOWN;
+      this.#logDebug("linuxGetEnvInfo is only supported on Linux");
+      return null;
     }
 
     if (!this.#instance) {
       this.#logDebug("Text selection hook instance not created");
-      return SelectionHook.DisplayProtocol.UNKNOWN;
+      return null;
     }
 
     try {
-      return this.#instance.linuxGetDisplayProtocol();
+      return this.#instance.linuxGetEnvInfo();
     } catch (err) {
-      this.#handleError("Failed to get current display protocol", err);
-      return SelectionHook.DisplayProtocol.UNKNOWN;
-    }
-  }
-
-  /**
-   * Check if the current process is running as root (Linux only)
-   * @returns {boolean} True if the process is running as root, false otherwise
-   */
-  linuxIsRoot() {
-    if (!isLinux) {
-      this.#logDebug("linuxIsRoot is only supported on Linux");
-      return false;
-    }
-
-    if (!this.#instance) {
-      this.#logDebug("Text selection hook instance not created");
-      return false;
-    }
-
-    try {
-      return this.#instance.linuxIsRoot();
-    } catch (err) {
-      this.#handleError("Failed to check root status", err);
-      return false;
+      this.#handleError("Failed to get Linux environment info", err);
+      return null;
     }
   }
 

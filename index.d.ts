@@ -133,6 +133,20 @@ export interface SelectionConfig {
 }
 
 /**
+ * Linux environment information returned by linuxGetEnvInfo()
+ */
+export interface LinuxEnvInfo {
+  /** Display protocol: 0=Unknown, 1=X11, 2=Wayland */
+  displayProtocol: (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
+  /** Compositor type: 0=Unknown, 1=KWin, 2=Mutter, 3=Hyprland, 4=Sway, 5=Wlroots, 6=CosmicComp */
+  compositorType: (typeof SelectionHook.CompositorType)[keyof typeof SelectionHook.CompositorType];
+  /** Whether the user has 'input' group access (needed for Wayland input monitoring) */
+  hasInputGroupAccess: boolean;
+  /** Whether the process is running as root */
+  isRoot: boolean;
+}
+
+/**
  * SelectionHook - Main class for text selection monitoring
  *
  * This class provides methods to start/stop monitoring text selections
@@ -175,6 +189,32 @@ declare class SelectionHook extends EventEmitter {
     UNKNOWN: 0;
     X11: 1;
     WAYLAND: 2;
+  };
+
+  /**
+   * Compositor type constants (Linux only).
+   *
+   * Values represent the compositor, not the desktop environment (DE).
+   * DE-bundled compositors are detected via XDG_CURRENT_DESKTOP:
+   *   KDE Plasma → KWin, GNOME → mutter, COSMIC → cosmic-comp.
+   * Standalone compositors are detected via their own env vars:
+   *   Hyprland → HYPRLAND_INSTANCE_SIGNATURE, sway → SWAYSOCK.
+   * WLROOTS is a catch-all for generic wlroots-based compositors.
+   */
+  static CompositorType: {
+    UNKNOWN: 0;
+    /** KWin — KDE Plasma's compositor (kwin_wayland) */
+    KWIN: 1;
+    /** mutter — GNOME's compositor (mutter / gnome-shell) */
+    MUTTER: 2;
+    /** Hyprland — standalone tiling compositor */
+    HYPRLAND: 3;
+    /** sway — standalone i3-compatible compositor */
+    SWAY: 4;
+    /** wlroots-based compositors (labwc, river, etc.) */
+    WLROOTS: 5;
+    /** cosmic-comp — System76 COSMIC's compositor */
+    COSMIC_COMP: 6;
   };
 
   /**
@@ -359,24 +399,15 @@ declare class SelectionHook extends EventEmitter {
   macRequestProcessTrust(): boolean;
 
   /**
-   * Get current display protocol (Linux only)
-   * 
-   * Returns the current display protocol being used by the selection hook.
-   * This is useful for debugging and understanding which protocol is being used.
-   * 
-   * @returns {number} Current display protocol (SelectionHook.DisplayProtocol)
+   * Get Linux environment information (Linux only)
+   *
+   * Returns an object containing display protocol, compositor type,
+   * input group access status, and root status. All values are detected
+   * once at construction time and cached.
+   *
+   * @returns {LinuxEnvInfo | null} Linux environment info or null on non-Linux
    */
-  linuxGetDisplayProtocol(): (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
-
-  /**
-   * Check if the current process is running as root (Linux only)
-   * 
-   * Determines whether the current process has root privileges.
-   * This is useful for checking if the process has elevated permissions.
-   * 
-   * @returns {boolean} True if the process is running as root, false otherwise
-   */
-  linuxIsRoot(): boolean;
+  linuxGetEnvInfo(): LinuxEnvInfo | null;
 
   /**
    * Release resources
@@ -426,6 +457,8 @@ declare class SelectionHook extends EventEmitter {
  * Instance type for the SelectionHook class
  */
 export type SelectionHookInstance = InstanceType<typeof SelectionHook>;
+
+// LinuxEnvInfo is already exported via its interface declaration above
 
 /**
  * Constructor type for the SelectionHook class

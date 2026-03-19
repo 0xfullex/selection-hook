@@ -52,6 +52,15 @@ sudo usermod -aG input $USER
 # Then re-login for the change to take effect
 ```
 
+You can check whether the current user has `input` group access programmatically:
+
+```javascript
+const info = hook.linuxGetEnvInfo();
+if (info && !info.hasInputGroupAccess) {
+  console.warn('User does not have input group access. Run: sudo usermod -aG input $USER');
+}
+```
+
 ### Wayland Compositor Compatibility
 
 #### Selection Monitoring
@@ -97,6 +106,7 @@ The following APIs have different behavior on Linux compared to Windows/macOS:
 
 | API | X11 | Wayland | Notes |
 |---|---|---|---|
+| `linuxGetEnvInfo()` | ✅ Returns env info | ✅ Returns env info | Returns `null` on non-Linux. Includes `displayProtocol`, `compositorType`, `hasInputGroupAccess`, `isRoot` |
 | `writeToClipboard()` | Returns `false` | Returns `false` | Blocked at JS layer. Use host app's clipboard API. |
 | `readFromClipboard()` | Returns `null` | Returns `null` | Blocked at JS layer. Use host app's clipboard API. |
 | `enableClipboard()` / `disableClipboard()` | No effect | No effect | Clipboard fallback not implemented on Linux |

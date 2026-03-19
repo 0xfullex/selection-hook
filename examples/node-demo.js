@@ -112,6 +112,7 @@ function printWelcomeMessage() {
   console.log("  F - Toggle global filter mode (DEFAULT → EXCLUDE_LIST → INCLUDE_LIST)");
   console.log("  P - Toggle passive mode (default: OFF)");
   console.log("  T - Toggle fine-tuned list (default: OFF)");
+  console.log("  I - Show Linux environment info");
   console.log("  W - Write text 'Test clipboard write from selection-hook' to clipboard");
   console.log("  R - Read text from clipboard");
   console.log("  A - Check accessibility permissions (macOS only)");
@@ -400,6 +401,26 @@ function handleKeyPress(key) {
     case "t": // Toggle fine-tuned list
       toggleFineTunedList();
       break;
+
+    case "i": {
+      // Show Linux environment info
+      const envInfo = hook.linuxGetEnvInfo();
+      if (envInfo) {
+        const protocolNames = { 0: "Unknown", 1: "X11", 2: "Wayland" };
+        const compositorNames = {
+          0: "Unknown", 1: "KWin", 2: "Mutter", 3: "Hyprland",
+          4: "Sway", 5: "Wlroots", 6: "CosmicComp",
+        };
+        console.log(colors.info, "=== Linux Environment Info ===");
+        console.log(colors.info, `  Display Protocol: ${protocolNames[envInfo.displayProtocol] || envInfo.displayProtocol}`);
+        console.log(colors.info, `  Compositor Type:  ${compositorNames[envInfo.compositorType] || envInfo.compositorType}`);
+        console.log(colors.info, `  Input Group Access: ${envInfo.hasInputGroupAccess}`);
+        console.log(colors.info, `  Is Root: ${envInfo.isRoot}`);
+      } else {
+        console.log(colors.warning, "Linux environment info is only available on Linux");
+      }
+      break;
+    }
 
     case "w":
       // Write test text to clipboard

@@ -35,14 +35,16 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 // Standard C headers
 #include <cstdlib>
 #include <cstring>
 
-// Linux system headers for root detection
+// Linux system headers
 #include <sys/types.h>
 #include <unistd.h>
+#include <grp.h>
 
 // Include common definitions
 #include "common.h"
@@ -89,6 +91,83 @@ DisplayProtocol DetectDisplayProtocol()
     return DisplayProtocol::X11;
 }
 
+/**
+ * Detect the running Wayland compositor type.
+ *
+ * Standalone compositors (Hyprland, sway) set their own environment variables,
+ * so we check those first. DE-bundled compositors (KWin, mutter, cosmic-comp)
+ * are inferred from XDG_CURRENT_DESKTOP because each DE uses exactly one
+ * compositor: KDE→KWin, GNOME→mutter, COSMIC→cosmic-comp.
+ */
+CompositorType DetectCompositorType()
+{
+    // 1. Standalone compositors — detected via compositor-specific env vars
+    if (std::getenv("HYPRLAND_INSTANCE_SIGNATURE"))
+        return CompositorType::Hyprland;
+    if (std::getenv("SWAYSOCK"))
+        return CompositorType::Sway;
+
+    // 2. DE-bundled compositors — inferred from XDG_CURRENT_DESKTOP
+    //    (each DE has a 1:1 relationship with its compositor)
+    const char *desktop = std::getenv("XDG_CURRENT_DESKTOP");
+    if (desktop)
+    {
+        std::string desktop_str(desktop);
+        std::transform(desktop_str.begin(), desktop_str.end(), desktop_str.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+
+        if (desktop_str.find("kde") != std::string::npos)
+            return CompositorType::KWin;        // KDE Plasma → KWin
+        if (desktop_str.find("gnome") != std::string::npos)
+            return CompositorType::Mutter;       // GNOME → mutter
+        if (desktop_str.find("cosmic") != std::string::npos)
+            return CompositorType::CosmicComp;   // COSMIC → cosmic-comp
+        if (desktop_str.find("wlroots") != std::string::npos)
+            return CompositorType::Wlroots;      // Generic wlroots-based
+    }
+
+    return CompositorType::Unknown;
+}
+
+/**
+ * Check if the current user has 'input' group access.
+ * Root users always have access.
+ */
+bool CheckInputGroupAccess()
+{
+    // Root always has access
+    if (geteuid() == 0)
+        return true;
+
+    // Get the 'input' group
+    struct group *grp = getgrnam("input");
+    if (!grp)
+        return false;
+
+    gid_t input_gid = grp->gr_gid;
+
+    // Check effective group ID
+    if (getegid() == input_gid)
+        return true;
+
+    // Check supplementary groups
+    int ngroups = getgroups(0, nullptr);
+    if (ngroups <= 0)
+        return false;
+
+    std::vector<gid_t> groups(ngroups);
+    if (getgroups(ngroups, groups.data()) < 0)
+        return false;
+
+    for (int i = 0; i < ngroups; i++)
+    {
+        if (groups[i] == input_gid)
+            return true;
+    }
+
+    return false;
+}
+
 // Mouse&Keyboard hook constants
 constexpr int DEFAULT_MOUSE_EVENT_QUEUE_SIZE = 512;
 constexpr int DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE = 128;
@@ -129,8 +208,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::Value GetCurrentSelection(const Napi::CallbackInfo &info);
     Napi::Value WriteToClipboard(const Napi::CallbackInfo &info);
     Napi::Value ReadFromClipboard(const Napi::CallbackInfo &info);
-    Napi::Value LinuxGetDisplayProtocol(const Napi::CallbackInfo &info);
-    Napi::Value LinuxIsRoot(const Napi::CallbackInfo &info);
+    Napi::Value LinuxGetEnvInfo(const Napi::CallbackInfo &info);
 
     // Core functionality methods
     bool GetSelectedText(uint64_t window, TextSelectionInfo &selectionInfo);
@@ -157,8 +235,8 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Protocol interface for X11/Wayland abstraction
     std::unique_ptr<ProtocolBase> protocol;
 
-    // Current display protocol (X11 or Wayland)
-    DisplayProtocol current_display_protocol;
+    // Cached Linux environment information
+    LinuxEnvInfo env_info;
 
     // Mouse position tracking
     Point current_mouse_pos;
@@ -227,15 +305,21 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
 
     currentInstance = this;
 
-    // Detect and initialize display protocol
-    current_display_protocol = DetectDisplayProtocol();
+    // Detect all environment information once at construction time
+    env_info.displayProtocol = DetectDisplayProtocol();
+    env_info.compositorType = DetectCompositorType();
+    env_info.hasInputGroupAccess = CheckInputGroupAccess();
+    env_info.isRoot = (geteuid() == 0);
 
-    protocol = CreateProtocol(current_display_protocol);
+    protocol = CreateProtocol(env_info.displayProtocol);
     if (!protocol)
     {
         Napi::Error::New(env, "Failed to create protocol interface").ThrowAsJavaScriptException();
         return;
     }
+
+    // Pass environment info to protocol layer
+    protocol->SetEnvInfo(env_info);
 
     if (!protocol->Initialize())
     {
@@ -321,8 +405,7 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
                      InstanceMethod("getCurrentSelection", &SelectionHook::GetCurrentSelection),
                      InstanceMethod("writeToClipboard", &SelectionHook::WriteToClipboard),
                      InstanceMethod("readFromClipboard", &SelectionHook::ReadFromClipboard),
-                     InstanceMethod("linuxGetDisplayProtocol", &SelectionHook::LinuxGetDisplayProtocol),
-                     InstanceMethod("linuxIsRoot", &SelectionHook::LinuxIsRoot)});
+                     InstanceMethod("linuxGetEnvInfo", &SelectionHook::LinuxGetEnvInfo)});
 
     constructor = Napi::Persistent(func);
     constructor.SuppressDestruct();
@@ -668,36 +751,20 @@ Napi::Value SelectionHook::ReadFromClipboard(const Napi::CallbackInfo &info)
 }
 
 /**
- * NAPI: Get current display protocol
+ * NAPI: Get Linux environment information (cached at construction time)
  */
-Napi::Value SelectionHook::LinuxGetDisplayProtocol(const Napi::CallbackInfo &info)
+Napi::Value SelectionHook::LinuxGetEnvInfo(const Napi::CallbackInfo &info)
 {
     Napi::Env env = info.Env();
 
     try
     {
-        // Return the current display protocol as a number
-        return Napi::Number::New(env, static_cast<int>(current_display_protocol));
-    }
-    catch (const std::exception &e)
-    {
-        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
-        return env.Null();
-    }
-}
-
-/**
- * NAPI: Check if the current process is running as root
- */
-Napi::Value SelectionHook::LinuxIsRoot(const Napi::CallbackInfo &info)
-{
-    Napi::Env env = info.Env();
-
-    try
-    {
-        // Check if the effective user ID is 0 (root)
-        bool isRoot = (geteuid() == 0);
-        return Napi::Boolean::New(env, isRoot);
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("displayProtocol", Napi::Number::New(env, static_cast<int>(env_info.displayProtocol)));
+        obj.Set("compositorType", Napi::Number::New(env, static_cast<int>(env_info.compositorType)));
+        obj.Set("hasInputGroupAccess", Napi::Boolean::New(env, env_info.hasInputGroupAccess));
+        obj.Set("isRoot", Napi::Boolean::New(env, env_info.isRoot));
+        return obj;
     }
     catch (const std::exception &e)
     {
@@ -1247,7 +1314,7 @@ void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
     }
 
     // Wayland: query compositor for accurate cursor position
-    if (current_display_protocol == DisplayProtocol::Wayland)
+    if (env_info.displayProtocol == DisplayProtocol::Wayland)
     {
         Point accuratePos = protocol->GetCurrentMousePosition();
         if (accuratePos.x != 0 || accuratePos.y != 0)

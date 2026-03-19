@@ -49,6 +49,45 @@ enum class DisplayProtocol
     Wayland = 2
 };
 
+// Compositor type enum for cursor position query strategy.
+//
+// Values represent the compositor, not the desktop environment.
+// Some compositors are bundled with a desktop environment (DE) and detected
+// via XDG_CURRENT_DESKTOP; others are standalone and detected via their own
+// environment variables.
+//
+//   Enum value     Compositor    DE             Detected via
+//   ──────────     ──────────    ──────────     ────────────────────────────
+//   KWin           KWin          KDE Plasma     XDG_CURRENT_DESKTOP="KDE"
+//   Mutter         mutter        GNOME          XDG_CURRENT_DESKTOP="GNOME"
+//   Hyprland       Hyprland      (standalone)   HYPRLAND_INSTANCE_SIGNATURE
+//   Sway           sway          (standalone)   SWAYSOCK
+//   Wlroots        (various)     (standalone)   XDG_CURRENT_DESKTOP="wlroots"
+//   CosmicComp     cosmic-comp   COSMIC         XDG_CURRENT_DESKTOP="COSMIC"
+//
+// "Wlroots" is a catch-all for wlroots-based compositors (labwc, river, etc.)
+// that identify themselves via XDG_CURRENT_DESKTOP but don't have a dedicated
+// detection path.
+enum class CompositorType
+{
+    Unknown = 0,
+    KWin = 1,        // KDE Plasma's compositor (kwin_wayland)
+    Mutter = 2,      // GNOME's compositor (mutter / gnome-shell)
+    Hyprland = 3,    // Standalone tiling compositor
+    Sway = 4,        // Standalone i3-compatible compositor
+    Wlroots = 5,     // Generic wlroots-based compositors (labwc, river, etc.)
+    CosmicComp = 6   // System76 COSMIC's compositor (cosmic-comp)
+};
+
+// Linux environment information (cached at construction time)
+struct LinuxEnvInfo
+{
+    DisplayProtocol displayProtocol = DisplayProtocol::Unknown;
+    CompositorType compositorType = CompositorType::Unknown;
+    bool hasInputGroupAccess = false;
+    bool isRoot = false;
+};
+
 // Text selection detection type enum
 enum class SelectionDetectType
 {
@@ -230,6 +269,9 @@ class ProtocolBase
 
     // Get current mouse cursor position (screen coordinates)
     virtual Point GetCurrentMousePosition() { return Point(0, 0); }
+
+    // Set environment info from top-level detection
+    virtual void SetEnvInfo(const LinuxEnvInfo& info) { (void)info; }
 
     // Input monitoring (for mouse and keyboard events)
     virtual bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,

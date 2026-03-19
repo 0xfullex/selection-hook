@@ -115,25 +115,23 @@ Try to request accessibility permissions. This MAY show a dialog to the user if 
 
 Note: The return value indicates the current permission status, not the request result.
 
-#### **`linuxGetDisplayProtocol(): number`**
+#### **`linuxGetEnvInfo(): LinuxEnvInfo | null`**
 
 _Linux Only_
 
-Get the current display protocol being used by the selection hook. This method returns the protocol that was detected during initialization and is useful for debugging and understanding which protocol is being used.
+Get Linux environment information. Returns an object with display protocol, compositor type, input group access status, and root status. All values are detected once at construction time and cached. Returns `null` on non-Linux platforms.
 
-Returns one of the `SelectionHook.DisplayProtocol` constants:
+```javascript
+const info = hook.linuxGetEnvInfo();
+// info = {
+//   displayProtocol: 2,       // SelectionHook.DisplayProtocol.WAYLAND
+//   compositorType: 1,        // SelectionHook.CompositorType.KWIN
+//   hasInputGroupAccess: true, // user is in the 'input' group
+//   isRoot: false
+// }
+```
 
-- `UNKNOWN`: No protocol detected
-- `X11`: X11 protocol is being used
-- `WAYLAND`: Wayland protocol is being used
-
-#### **`linuxIsRoot(): boolean`**
-
-_Linux Only_
-
-Check if the current process is running as root. This method determines whether the current process has root privileges, which is useful for checking if the process has elevated permissions.
-
-Returns `true` if the process is running as root, `false` otherwise.
+See [`LinuxEnvInfo`](#linuxenvinfo) for the full structure, and [`SelectionHook.CompositorType`](#selectionhookcompositortype) for compositor constants.
 
 #### **`isRunning(): boolean`**
 
@@ -328,6 +326,35 @@ Defines the display protocol types used on Linux systems:
 - `X11`: X11 windowing system protocol
 - `WAYLAND`: Wayland display server protocol
 
+#### **`SelectionHook.CompositorType`**
+
+_Linux Only_
+
+Identifies the compositor. Values represent the **compositor**, not the desktop environment (DE). DE-bundled compositors are detected via `XDG_CURRENT_DESKTOP` (each DE uses exactly one compositor); standalone compositors are detected via their own environment variables.
+
+| Constant | Compositor | Desktop Environment | Detected via | Cursor method |
+|---|---|---|---|---|
+| `UNKNOWN` | — | — | — | XWayland fallback |
+| `KWIN` | KWin (`kwin_wayland`) | KDE Plasma | `XDG_CURRENT_DESKTOP` contains "KDE" | KWin Scripting DBus |
+| `MUTTER` | mutter (`gnome-shell`) | GNOME | `XDG_CURRENT_DESKTOP` contains "GNOME" | XWayland fallback |
+| `HYPRLAND` | Hyprland | (standalone) | `HYPRLAND_INSTANCE_SIGNATURE` env var | Native IPC socket |
+| `SWAY` | sway | (standalone) | `SWAYSOCK` env var | XWayland fallback |
+| `WLROOTS` | various (labwc, river, …) | (standalone) | `XDG_CURRENT_DESKTOP` contains "wlroots" | XWayland fallback |
+| `COSMIC_COMP` | cosmic-comp | COSMIC (System76) | `XDG_CURRENT_DESKTOP` contains "COSMIC" | XWayland fallback |
+
+#### `LinuxEnvInfo`
+
+_Linux Only_
+
+Returned by `linuxGetEnvInfo()`. Contains cached Linux environment information detected at construction time.
+
+| Property | Type | Description |
+|---|---|---|
+| `displayProtocol` | `number` | Display protocol (`SelectionHook.DisplayProtocol`) |
+| `compositorType` | `number` | Compositor type (`SelectionHook.CompositorType`) |
+| `hasInputGroupAccess` | `boolean` | Whether the user has `input` group access (needed for Wayland libevdev input monitoring) |
+| `isRoot` | `boolean` | Whether the process is running as root |
+
 ### TypeScript Support
 
 This module includes TypeScript definitions. Import the module in TypeScript as:
@@ -341,6 +368,7 @@ import {
   MouseEventData,
   MouseWheelEventData,
   KeyboardEventData,
+  LinuxEnvInfo,
 } from "selection-hook";
 
 // use `SelectionHookConstructor` for SelectionHook Class

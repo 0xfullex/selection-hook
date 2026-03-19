@@ -75,18 +75,6 @@ enum class DataControlType
     Wlr
 };
 
-// Compositor type for cursor position query strategy
-enum class CompositorType
-{
-    Unknown,
-    Hyprland,  // hyprctl cursorpos via IPC socket
-    KDE,       // KWin cursorPos via DBus
-    Sway,      // no cursor IPC, fall back to XWayland
-    GNOME,     // needs Shell extension, fall back to XWayland
-    Wlroots,   // labwc, river etc., fall back to XWayland
-    COSMIC     // System76, fall back to XWayland
-};
-
 // DBus ABI-stable types for dlopen-based KDE cursor position query
 // These match the libdbus-1 public ABI and are safe to use with dlsym'd functions
 struct DBusError_ABI
@@ -203,8 +191,8 @@ class WaylandProtocol : public ProtocolBase
     std::condition_variable read_request_cv;
     ReadRequest read_request;
 
-    // Compositor type detection for cursor position
-    CompositorType compositor_type = CompositorType::Unknown;
+    // Environment info (set by top-level detection via SetEnvInfo)
+    LinuxEnvInfo env_info;
 
     // XWayland fallback for cursor position
     Display* xwayland_display = nullptr;
@@ -241,8 +229,7 @@ class WaylandProtocol : public ProtocolBase
     // MIME type matching helper
     static bool IsTextMimeType(const char *mime_type);
 
-    // Compositor detection and cursor position methods
-    void DetectCompositor();
+    // Cursor position methods
     bool GetCursorPositionHyprland(Point& pos);
     bool LoadDBusFunctions();
     bool GetCursorPositionKDE(Point& pos);
@@ -320,6 +307,9 @@ class WaylandProtocol : public ProtocolBase
         return modifier_state.GetFlags();
     }
 
+    // Set environment info from top-level detection
+    void SetEnvInfo(const LinuxEnvInfo& info) override { env_info = info; }
+
     // Get accurate cursor position from compositor
     Point GetCurrentMousePosition() override;
 
@@ -334,9 +324,6 @@ class WaylandProtocol : public ProtocolBase
                     "Selection monitoring will not be available.\n");
             // Don't fail - input monitoring via libevdev can still work
         }
-
-        // Detect compositor for cursor position queries
-        DetectCompositor();
 
         return true;
     }
@@ -1530,60 +1517,8 @@ void WaylandProtocol::ProcessLibevdevEvent(const struct input_event &ev, const I
 }
 
 // ============================================================================
-// Compositor detection and cursor position query
+// Cursor position query
 // ============================================================================
-
-/**
- * Detect the running Wayland compositor for cursor position query strategy.
- * Checks compositor-specific environment variables first, then XDG_CURRENT_DESKTOP.
- */
-void WaylandProtocol::DetectCompositor()
-{
-    // Check compositor-specific environment variables first
-    if (getenv("HYPRLAND_INSTANCE_SIGNATURE"))
-    {
-        compositor_type = CompositorType::Hyprland;
-    }
-    else if (getenv("SWAYSOCK"))
-    {
-        compositor_type = CompositorType::Sway;
-    }
-    else
-    {
-        const char *desktop = getenv("XDG_CURRENT_DESKTOP");
-        if (desktop)
-        {
-            std::string desktop_str(desktop);
-            // Convert to lowercase for case-insensitive comparison
-            for (auto &c : desktop_str) c = std::tolower(static_cast<unsigned char>(c));
-
-            if (desktop_str.find("kde") != std::string::npos)
-            {
-                compositor_type = CompositorType::KDE;
-            }
-            else if (desktop_str.find("gnome") != std::string::npos)
-            {
-                compositor_type = CompositorType::GNOME;
-            }
-            else if (desktop_str.find("cosmic") != std::string::npos)
-            {
-                compositor_type = CompositorType::COSMIC;
-            }
-            else if (desktop_str.find("wlroots") != std::string::npos)
-            {
-                compositor_type = CompositorType::Wlroots;
-            }
-            else
-            {
-                compositor_type = CompositorType::Unknown;
-            }
-        }
-        else
-        {
-            compositor_type = CompositorType::Unknown;
-        }
-    }
-}
 
 /**
  * Get cursor position via Hyprland IPC socket.
@@ -2048,17 +1983,17 @@ Point WaylandProtocol::GetCurrentMousePosition()
     Point pos;
 
     // 1. Compositor-specific IPC (for compositors that support direct cursor query)
-    switch (compositor_type)
+    switch (env_info.compositorType)
     {
         case CompositorType::Hyprland:
             if (GetCursorPositionHyprland(pos))
                 return pos;
             break;
-        case CompositorType::KDE:
+        case CompositorType::KWin:
             if (GetCursorPositionKDE(pos))
                 return pos;
             break;
-        // Sway, GNOME, Wlroots, COSMIC, Unknown → fall through to XWayland
+        // Sway, Mutter, Wlroots, CosmicComp, Unknown → fall through to XWayland
         default:
             break;
     }

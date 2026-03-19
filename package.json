@@ -1,7 +1,7 @@
 {
   "name": "selection-hook",
   "version": "1.0.13",
-  "description": "Text selection monitoring of native Node.js module with N-API across applications",
+  "description": "Cross-application text selection monitoring for Node.js and Electron",
   "author": "0xfullex",
   "repository": {
     "type": "git",
@@ -24,16 +24,19 @@
   "keywords": [
     "node",
     "electron",
-    "text",
+    "text-selection",
     "selection",
+    "accessibility",
+    "cross-platform",
     "napi",
-    "highlight",
-    "hooks",
     "native",
     "mouse",
     "keyboard",
     "clipboard",
-    "uiautomation"
+    "input-events",
+    "windows",
+    "macos",
+    "linux"
   ],
   "license": "MIT",
   "dependencies": {

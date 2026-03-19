@@ -99,6 +99,11 @@ class SelectionHook extends EventEmitter {
       );
     }
     super();
+    try {
+      this.#instance = new nativeModule.TextSelectionHook();
+    } catch (err) {
+      throw new Error(`[selection-hook] Failed to create native instance: ${err.message}`);
+    }
   }
 
   /**
@@ -215,7 +220,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   enableMouseMoveEvent() {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     try {
       this.#instance.enableMouseMoveEvent();
@@ -231,7 +236,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   disableMouseMoveEvent() {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     try {
       this.#instance.disableMouseMoveEvent();
@@ -248,7 +253,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   enableClipboard() {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     try {
       this.#instance.enableClipboard();
@@ -265,7 +270,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   disableClipboard() {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     try {
       this.#instance.disableClipboard();
@@ -290,7 +295,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   setClipboardMode(mode, programList = []) {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     const validModes = Object.values(SelectionHook.FilterMode);
     if (!validModes.includes(mode)) {
@@ -326,7 +331,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   setGlobalFilterMode(mode, programList = []) {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     const validModes = Object.values(SelectionHook.FilterMode);
     if (!validModes.includes(mode)) {
@@ -361,7 +366,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   setFineTunedList(listType, programList = []) {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     const validTypes = Object.values(SelectionHook.FineTunedListType);
     if (!validTypes.includes(listType)) {
@@ -389,7 +394,7 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   setSelectionPassiveMode(passive) {
-    if (!this.#checkRunning()) return false;
+    if (!this.#checkInstance()) return false;
 
     try {
       this.#instance.setSelectionPassiveMode(passive);
@@ -406,17 +411,17 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   writeToClipboard(text) {
-    if (!this.#checkRunning()) return false;
-
-    if (typeof text !== "string") {
-      this.#handleError("Text must be a string", new Error("Invalid argument"));
-      return false;
-    }
-
     if (isLinux) {
       // Linux clipboard write/read is not implemented in native code.
       // Host applications should use their own clipboard API (e.g., Electron clipboard).
       this.#logDebug("writeToClipboard is not supported on Linux");
+      return false;
+    }
+
+    if (!this.#checkInstance()) return false;
+
+    if (typeof text !== "string") {
+      this.#handleError("Text must be a string", new Error("Invalid argument"));
       return false;
     }
 
@@ -433,14 +438,14 @@ class SelectionHook extends EventEmitter {
    * @returns {string|null} Text from clipboard or null if empty or error
    */
   readFromClipboard() {
-    if (!this.#checkRunning()) return null;
-
     if (isLinux) {
       // Linux clipboard write/read is not implemented in native code.
       // Host applications should use their own clipboard API (e.g., Electron clipboard).
       this.#logDebug("readFromClipboard is not supported on Linux");
       return null;
     }
+
+    if (!this.#checkInstance()) return null;
 
     try {
       return this.#instance.readFromClipboard();
@@ -460,11 +465,7 @@ class SelectionHook extends EventEmitter {
       return false;
     }
 
-    //don't need to be running
-    if (!this.#instance) {
-      this.#logDebug("Text selection hook instance not created");
-      return false;
-    }
+    if (!this.#checkInstance()) return false;
 
     try {
       return this.#instance.macIsProcessTrusted();
@@ -485,11 +486,7 @@ class SelectionHook extends EventEmitter {
       return false;
     }
 
-    //don't need to be running
-    if (!this.#instance) {
-      this.#logDebug("Text selection hook instance not created");
-      return false;
-    }
+    if (!this.#checkInstance()) return false;
 
     try {
       return this.#instance.macRequestProcessTrust();
@@ -509,10 +506,7 @@ class SelectionHook extends EventEmitter {
       return null;
     }
 
-    if (!this.#instance) {
-      this.#logDebug("Text selection hook instance not created");
-      return null;
-    }
+    if (!this.#checkInstance()) return null;
 
     try {
       return this.#instance.linuxGetEnvInfo();
@@ -622,9 +616,9 @@ class SelectionHook extends EventEmitter {
   }
 
   // Private helper methods
-  #checkRunning() {
-    if (!this.#instance || !this.#running) {
-      this.#logDebug("Text selection hook not running");
+  #checkInstance() {
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
       return false;
     }
     return true;

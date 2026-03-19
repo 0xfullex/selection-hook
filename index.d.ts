@@ -224,7 +224,11 @@ declare class SelectionHook extends EventEmitter {
    * across all applications. This must be called before any events
    * will be emitted.
    *
-   * @param debug Enable console debug logging (warnings and errors)
+   * Configuration methods (e.g., enableClipboard, setGlobalFilterMode) can be
+   * called before start(). If start() is called with a config object, the config
+   * values will override any pre-start settings.
+   *
+   * @param config Optional configuration object
    * @returns Success status (true if started successfully)
    */
   start(config?: SelectionConfig | null): boolean;
@@ -263,6 +267,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Enables "mouse-move" events to be emitted when the mouse moves.
    * Note: This can cause high CPU usage due to frequent event firing.
+   * Can be called before start().
    *
    * @returns Success status (true if enabled successfully)
    */
@@ -273,6 +278,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Stops emitting "mouse-move" events to reduce CPU usage.
    * This is the default state after starting the hook.
+   * Can be called before start().
    *
    * @returns Success status (true if disabled successfully)
    */
@@ -283,6 +289,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Uses Ctrl+C as a last resort to get selected text when other methods fail.
    * This might modify clipboard contents.
+   * Can be called before start().
    *
    * @returns Success status (true if enabled successfully)
    */
@@ -293,6 +300,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Will not use Ctrl+C to get selected text.
    * This preserves clipboard contents.
+   * Can be called before start().
    *
    * @returns Success status (true if disabled successfully)
    */
@@ -302,6 +310,7 @@ declare class SelectionHook extends EventEmitter {
    * Set clipboard mode and program list for text selection
    *
    * Configures how the clipboard fallback mechanism works for different programs.
+   * Can be called before start().
    * Mode can be:
    * - DEFAULT: Use clipboard for all programs
    * - INCLUDE_LIST: Only use clipboard for programs in the list
@@ -320,6 +329,7 @@ declare class SelectionHook extends EventEmitter {
    * Set global filter mode for text selection
    *
    * Configures how the global filter mechanism works for different programs.
+   * Can be called before start().
    * Mode can be:
    * - DEFAULT: disable global filter
    * - INCLUDE_LIST: Only use global filter for programs in the list
@@ -338,6 +348,7 @@ declare class SelectionHook extends EventEmitter {
    * Set fine-tuned list for specific behaviors
    *
    * Configures fine-tuned lists for specific application behaviors.
+   * Can be called before start().
    * List types:
    * - EXCLUDE_CLIPBOARD_CURSOR_DETECT: Exclude cursor detection for clipboard operations
    * - INCLUDE_CLIPBOARD_DELAY_READ: Include delay when reading clipboard content
@@ -353,6 +364,9 @@ declare class SelectionHook extends EventEmitter {
 
   /**
    * Set selection passive mode
+   *
+   * Can be called before start().
+   *
    * @param {boolean} passive - Passive mode
    * @returns {boolean} Success status
    */
@@ -363,6 +377,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Not supported on Linux. Host applications should use their own clipboard API
    * (e.g., Electron clipboard).
+   * Can be called before start() (Windows/macOS only).
    *
    * @param {string} text - Text to write to clipboard
    * @returns {boolean} Success status. Always returns false on Linux.
@@ -374,6 +389,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Not supported on Linux. Host applications should use their own clipboard API
    * (e.g., Electron clipboard).
+   * Can be called before start() (Windows/macOS only).
    *
    * @returns {string|null} Text from clipboard or null if empty or error. Always returns null on Linux.
    */
@@ -384,6 +400,7 @@ declare class SelectionHook extends EventEmitter {
    *
    * Checks whether the current process has accessibility permissions
    * required for text selection monitoring on macOS.
+   * Can be called before start().
    *
    * @returns {boolean} True if the process is trusted for accessibility, false otherwise
    */
@@ -393,6 +410,7 @@ declare class SelectionHook extends EventEmitter {
    * Try to request accessibility permissions (macOS only)
    *
    * This MAY show a dialog to the user if permissions are not granted.
+   * Can be called before start().
    *
    * @returns {boolean} The current permission status, not the request result
    */
@@ -404,6 +422,7 @@ declare class SelectionHook extends EventEmitter {
    * Returns an object containing display protocol, compositor type,
    * input group access status, and root status. All values are detected
    * once at construction time and cached.
+   * Can be called before start().
    *
    * @returns {LinuxEnvInfo | null} Linux environment info or null on non-Linux
    */

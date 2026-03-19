@@ -6,11 +6,15 @@
 const hook = new SelectionHook();
 ```
 
+Creates a new SelectionHook instance and initializes the native module. The native instance is created immediately in the constructor, so query methods (e.g., `linuxGetEnvInfo()`, `macIsProcessTrusted()`) and configuration methods (e.g., `enableClipboard()`, `setGlobalFilterMode()`) can be called before `start()`.
+
 ### Methods
 
 #### **`start(config?: SelectionConfig): boolean`**
 
 Start monitoring text selections.
+
+Configuration methods can be called before `start()` to pre-configure the hook. If `start()` is called with a config object, the config values will override any pre-start settings that differ from defaults.
 
 Config options (with default values):
 
@@ -48,33 +52,33 @@ Get the current text selection if any exists.
 
 #### **`enableMouseMoveEvent(): boolean`**
 
-Enable mouse move events (high CPU usage). Disabled by default.
+Enable mouse move events (high CPU usage). Disabled by default. Can be called before `start()`.
 
 #### **`disableMouseMoveEvent(): boolean`**
 
-Disable mouse move events. Disabled by default.
+Disable mouse move events. Disabled by default. Can be called before `start()`.
 
 #### **`enableClipboard(): boolean`**
 
-Enable clipboard fallback for text selection. Enabled by default. No effect on Linux (uses PRIMARY selection instead of clipboard fallback).
+Enable clipboard fallback for text selection. Enabled by default. No effect on Linux (uses PRIMARY selection instead of clipboard fallback). Can be called before `start()`.
 
 #### **`disableClipboard(): boolean`**
 
-Disable clipboard fallback for text selection. Enabled by default. No effect on Linux.
+Disable clipboard fallback for text selection. Enabled by default. No effect on Linux. Can be called before `start()`.
 
 #### **`setClipboardMode(mode: ClipboardMode, programList?: string[]): boolean`**
 
-Configure how clipboard fallback works with different programs. See `SelectionHook.FilterMode` constants for details. No effect on Linux.
+Configure how clipboard fallback works with different programs. See `SelectionHook.FilterMode` constants for details. No effect on Linux. Can be called before `start()`.
 
 #### **`setGlobalFilterMode(mode: FilterMode, programList?: string[]): boolean`**
 
-Configure which applications should trigger text selection events. You can include or exclude specific applications from the selection monitoring. See `SelectionHook.FilterMode` constants for details. On Linux Wayland, `programName` is always empty so program-based filtering will not work.
+Configure which applications should trigger text selection events. You can include or exclude specific applications from the selection monitoring. See `SelectionHook.FilterMode` constants for details. On Linux Wayland, `programName` is always empty so program-based filtering will not work. Can be called before `start()`.
 
 #### **`setFineTunedList(listType: FineTunedListType, programList?: string[]): boolean`**
 
 _Windows Only_
 
-Configure fine-tuned lists for specific application behaviors. This allows you to customize how the selection hook behaves with certain applications that may have unique characteristics.
+Configure fine-tuned lists for specific application behaviors. Can be called before `start()`. This allows you to customize how the selection hook behaves with certain applications that may have unique characteristics.
 
 For example, you can add `acrobat.exe` to those lists to enable text seleted in Acrobat.
 
@@ -87,17 +91,17 @@ See `SelectionHook.FineTunedListType` constants for details.
 
 #### **`setSelectionPassiveMode(passive: boolean): boolean`**
 
-Set passive mode for selection (only triggered by getCurrentSelection, `text-selection` event will not be emitted).
+Set passive mode for selection (only triggered by getCurrentSelection, `text-selection` event will not be emitted). Can be called before `start()`.
 
 #### **`writeToClipboard(text: string): boolean`**
 
-Write text to the system clipboard. This is useful for implementing custom copy functions.
+Write text to the system clipboard. This is useful for implementing custom copy functions. Can be called before `start()`.
 
 Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
 
 #### **`readFromClipboard(): string | null`**
 
-Read text from the system clipboard. Returns clipboard text content as string, or null if clipboard is empty or contains non-text data.
+Read text from the system clipboard. Returns clipboard text content as string, or null if clipboard is empty or contains non-text data. Can be called before `start()`.
 
 Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
 
@@ -105,13 +109,13 @@ Not supported on Linux. Host applications should use their own clipboard API (e.
 
 _macOS Only_
 
-Check if the process is trusted for accessibility. If the process is not trusted, selection-hook will still run, but it won't respond to any events. Make sure to guide the user through the authorization process before calling start().
+Check if the process is trusted for accessibility. Can be called before `start()`. If the process is not trusted, selection-hook will still run, but it won't respond to any events. Make sure to guide the user through the authorization process before calling start().
 
 #### **`macRequestProcessTrust(): boolean`**
 
 _macOS Only_
 
-Try to request accessibility permissions. This MAY show a dialog to the user if permissions are not granted.
+Try to request accessibility permissions. Can be called before `start()`. This MAY show a dialog to the user if permissions are not granted.
 
 Note: The return value indicates the current permission status, not the request result.
 
@@ -119,7 +123,7 @@ Note: The return value indicates the current permission status, not the request 
 
 _Linux Only_
 
-Get Linux environment information. Returns an object with display protocol, compositor type, input group access status, and root status. All values are detected once at construction time and cached. Returns `null` on non-Linux platforms.
+Get Linux environment information. Can be called before `start()`. Returns an object with display protocol, compositor type, input group access status, and root status. All values are detected once at construction time and cached. Returns `null` on non-Linux platforms.
 
 ```javascript
 const info = hook.linuxGetEnvInfo();

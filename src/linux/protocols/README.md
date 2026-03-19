@@ -117,15 +117,25 @@ When using selection-hook in an **Electron** application on Wayland, it is recom
 
 These Electron-level restrictions make it difficult to implement features like positioning popup windows near selected text. Running under XWayland avoids these issues and also gives selection-hook accurate cursor coordinates via `XQueryPointer`.
 
-```javascript
-// In your Electron main process, before app.whenReady()
-app.commandLine.appendSwitch('ozone-platform', 'x11');
-```
+> **Important:** `app.commandLine.appendSwitch('ozone-platform', 'x11')` does **NOT** work — ozone platform initialization occurs in Chromium's early startup, before the application JavaScript entry point executes. You must set this flag externally.
 
-Or launch from the command line:
+**Option 1** — Command line argument (recommended):
 
 ```bash
 your-electron-app --ozone-platform=x11
 ```
 
-> **Note:** Starting from Electron 38, the default `--ozone-platform` value is `auto`, meaning Electron will run as a native Wayland app in Wayland sessions. Explicitly setting `x11` forces XWayland mode for better compatibility.
+**Option 2** — Wrapper script or `.desktop` file:
+
+```ini
+# In your .desktop file
+Exec=your-electron-app --ozone-platform=x11 %U
+```
+
+**Option 3** — Environment variable (Electron < 38 only):
+
+```bash
+ELECTRON_OZONE_PLATFORM_HINT=x11 your-electron-app
+```
+
+> **Note:** Starting from Electron 38, the default `--ozone-platform` value is `auto`, meaning Electron will run as a native Wayland app in Wayland sessions. The `ELECTRON_OZONE_PLATFORM_HINT` environment variable has been removed in Electron 38 and will be ignored in Electron 39+. Use the `--ozone-platform=x11` command line flag instead.

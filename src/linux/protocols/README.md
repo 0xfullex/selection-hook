@@ -107,3 +107,25 @@ The following APIs have different behavior on Linux compared to Windows/macOS:
 | `startTop/startBottom/endTop/endBottom` | Always `(0,0)` | Always `(0,0)` | Selection bounding rectangles not implemented |
 | `posLevel` | `MOUSE_SINGLE` or `MOUSE_DUAL` | `MOUSE_SINGLE` or `MOUSE_DUAL` | Never reaches `SEL_FULL` on Linux |
 | `mousePosStart` / `mousePosEnd` | ✅ Screen coordinates | Compositor-dependent | See compositor compatibility table |
+
+## Hint for Electron Applications
+
+When using selection-hook in an **Electron** application on Wayland, it is recommended to run Electron in XWayland mode by adding the `--ozone-platform=x11` command line flag. This is because Electron itself has significant limitations under native Wayland:
+
+- **`BrowserWindow.setPosition()` / `setBounds()`** — Not functional on Wayland. The Wayland protocol prohibits programmatically changing global window coordinates.
+- **`BrowserWindow.getPosition()` / `getBounds()`** — Returns `[0, 0]` / `{x: 0, y: 0, ...}` on Wayland, as global window coordinates cannot be introspected.
+
+These Electron-level restrictions make it difficult to implement features like positioning popup windows near selected text. Running under XWayland avoids these issues and also gives selection-hook accurate cursor coordinates via `XQueryPointer`.
+
+```javascript
+// In your Electron main process, before app.whenReady()
+app.commandLine.appendSwitch('ozone-platform', 'x11');
+```
+
+Or launch from the command line:
+
+```bash
+your-electron-app --ozone-platform=x11
+```
+
+> **Note:** Starting from Electron 38, the default `--ozone-platform` value is `auto`, meaning Electron will run as a native Wayland app in Wayland sessions. Explicitly setting `x11` forces XWayland mode for better compatibility.

@@ -38,13 +38,9 @@ Maybe the first-ever open-source, fully functional text selection tool.
 | -------- | --------------------------------------------------- |
 | Windows  | ✅ Fully supported. Windows 7+                        |
 | macOS    | ✅ Fully supported. macOS 10.14+                    |
-| Linux    | ✅ X11 - Fully supported. ✅ Wayland - Supported with limitations |
+| Linux    | ✅ X11 - Well supported. ⚠️ Wayland - Supported with limitations |
 
-**Linux Wayland known limitations:**
-- **Mouse coordinates**: Wayland security model does not expose global cursor position. `mousePosStart`/`mousePosEnd` contain device-relative coordinates (not screen coordinates).
-- **Program name**: `programName` is always empty under Linux Wayland.
-- **Input monitoring**: Requires `input` group membership (`sudo usermod -aG input $USER`, then re-login).
-- Core selection detection (drag / double-click / Shift+click with text reading) works normally.
+Linux has platform-level limitations compared to Windows/macOS, especially under Wayland where some APIs are unavailable due to the security model. See [`src/linux/protocols/README.md`](src/linux/protocols/README.md) for details.
 
 ## Installation
 
@@ -167,6 +163,9 @@ Config options (with default values):
 ```
 
 see [`SelectionHook.FilterMode`](#selectionhookfiltermode) for details
+
+**For _Linux_**:
+`enableClipboard`, `clipboardMode`, and `clipboardFilterList` have no effect on Linux (clipboard fallback is not implemented). On Wayland, `globalFilterMode`/`globalFilterList` are ineffective because `programName` is always empty. See [`src/linux/protocols/README.md`](src/linux/protocols/README.md) for full details.
 
 **For _macOS_**:
 macOS requires accessibility permissions for the selection-hook to function properly. Please ensure that the user has enabled accessibility permissions before calling start().
@@ -344,7 +343,7 @@ hook.on("error", (error: Error) => {
 
 ### Data Structure
 
-**Note**: All coordinates are in physical coordinates (virtual screen coordinates) in Windows. You can use `screen.screenToDipPoint(point)` in Electron to convert the point to logical coordinates. In macOS and Linux, you don't need to do extra work.
+**Note**: All coordinates are in physical coordinates (virtual screen coordinates) in Windows. You can use `screen.screenToDipPoint(point)` in Electron to convert the point to logical coordinates. In macOS and Linux X11, you don't need to do extra work. On Linux Wayland, coordinate accuracy depends on the compositor (see [Linux platform details](src/linux/protocols/README.md)).
 
 #### `TextSelectionData`
 
@@ -354,12 +353,12 @@ Represents text selection information including content, source application, and
 | --------------- | ----------------- | ------------------------------------------------------------- |
 | `text`          | `string`          | The selected text content                                     |
 | `programName`   | `string`          | Name of the application where selection occurred. Always empty on Linux Wayland. |
-| `startTop`      | `Point`           | First paragraph's top-left coordinates (px)                   |
-| `startBottom`   | `Point`           | First paragraph's bottom-left coordinates (px)                |
-| `endTop`        | `Point`           | Last paragraph's top-right coordinates (px)                   |
-| `endBottom`     | `Point`           | Last paragraph's bottom-right coordinates (px)                |
-| `mousePosStart` | `Point`           | Mouse position when selection started (px). Device-relative on Linux Wayland. |
-| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px). Device-relative on Linux Wayland.   |
+| `startTop`      | `Point`           | First paragraph's top-left coordinates (px). Always `(0,0)` on Linux. |
+| `startBottom`   | `Point`           | First paragraph's bottom-left coordinates (px). Always `(0,0)` on Linux. |
+| `endTop`        | `Point`           | Last paragraph's top-right coordinates (px). Always `(0,0)` on Linux. |
+| `endBottom`     | `Point`           | Last paragraph's bottom-right coordinates (px). Always `(0,0)` on Linux. |
+| `mousePosStart` | `Point`           | Mouse position when selection started (px). Accuracy varies on Linux Wayland (see [details](src/linux/protocols/README.md)). |
+| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px). Accuracy varies on Linux Wayland (see [details](src/linux/protocols/README.md)).   |
 | `method`        | `SelectionMethod` | Indicates which method was used to detect the text selection. |
 | `posLevel`      | `PositionLevel`   | Indicates which positional data is provided.                  |
 | `isFullscreen`  | `boolean`         | _macOS Only_ Whether the window is in fullscreen mode         |
@@ -374,7 +373,7 @@ When `PositionLevel` is:
 
 #### `MouseEventData`
 
-Contains mouse click/movement information in screen coordinates. On Linux Wayland, coordinates are device-relative (not screen coordinates).
+Contains mouse click/movement information in screen coordinates. On Linux Wayland, coordinate accuracy depends on compositor (see [Linux platform details](src/linux/protocols/README.md)).
 
 | Property | Type     | Description                                                                                                                     |
 | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -434,7 +433,7 @@ Indicates which positional data is provided:
 - `NONE`: No position information
 - `MOUSE_SINGLE`: Only single mouse position
 - `MOUSE_DUAL`: Mouse start and end positions (when dragging to select)
-- `SEL_FULL`: Full selection coordinates (see [`TextSelectionData`](#textselectiondata) structure for details)
+- `SEL_FULL`: Full selection coordinates (see [`TextSelectionData`](#textselectiondata) structure for details). Not available on Linux.
 - `SEL_DETAILED`: Detailed selection coordinates (reserved for future use)
 
 #### **`SelectionHook.FilterMode`**

@@ -36,6 +36,24 @@
 #include "wayland/ext-data-control-v1-client.h"
 #include "wayland/wlr-data-control-unstable-v1-client.h"
 
+// X11 headers for XWayland cursor position fallback
+#include <X11/Xlib.h>
+
+// Unix socket headers for Hyprland IPC
+#include <sys/socket.h>
+#include <sys/un.h>
+
+// Dynamic loading for KDE DBus cursor position query
+#include <dlfcn.h>
+
+// Character classification for tolower
+#include <cctype>
+
+// Undefine X11 None macro that conflicts with our SelectionDetectType::None enum
+#ifdef None
+#undef None
+#endif
+
 // Include common definitions
 #include "../common.h"
 
@@ -55,6 +73,67 @@ enum class DataControlType
     None,
     Ext,
     Wlr
+};
+
+// Compositor type for cursor position query strategy
+enum class CompositorType
+{
+    Unknown,
+    Hyprland,  // hyprctl cursorpos via IPC socket
+    KDE,       // KWin cursorPos via DBus
+    Sway,      // no cursor IPC, fall back to XWayland
+    GNOME,     // needs Shell extension, fall back to XWayland
+    Wlroots,   // labwc, river etc., fall back to XWayland
+    COSMIC     // System76, fall back to XWayland
+};
+
+// DBus ABI-stable types for dlopen-based KDE cursor position query
+// These match the libdbus-1 public ABI and are safe to use with dlsym'd functions
+struct DBusError_ABI
+{
+    const char *name;
+    const char *message;
+    unsigned int dummy1 : 1;
+    unsigned int dummy2 : 1;
+    unsigned int dummy3 : 1;
+    unsigned int dummy4 : 1;
+    unsigned int dummy5 : 1;
+    void *padding1;
+};
+
+struct DBusMessageIter_ABI
+{
+    void *dummy1;
+    void *dummy2;
+    uint32_t dummy3;
+    int dummy4, dummy5, dummy6, dummy7, dummy8, dummy9, dummy10, dummy11;
+    int pad1;
+    void *pad2;
+    void *pad3;
+};
+
+// DBus function pointers (loaded via dlopen at runtime to avoid build dependency)
+struct DBusFunctions
+{
+    void *lib_handle = nullptr;
+    void *session_bus = nullptr;  // DBusConnection*
+
+    void (*error_init)(DBusError_ABI *) = nullptr;
+    void (*error_free)(DBusError_ABI *) = nullptr;
+    void* (*bus_get)(int, DBusError_ABI *) = nullptr;
+    void* (*message_new_method_call)(const char*, const char*, const char*, const char*) = nullptr;
+    void* (*connection_send_with_reply_and_block)(void*, void*, int, DBusError_ABI*) = nullptr;
+    int (*message_iter_init)(void*, DBusMessageIter_ABI*) = nullptr;
+    void (*message_iter_recurse)(DBusMessageIter_ABI*, DBusMessageIter_ABI*) = nullptr;
+    int (*message_iter_get_arg_type)(DBusMessageIter_ABI*) = nullptr;
+    void (*message_iter_get_basic)(DBusMessageIter_ABI*, void*) = nullptr;
+    int (*message_iter_next)(DBusMessageIter_ABI*) = nullptr;
+    void (*message_unref)(void*) = nullptr;
+    const char* (*bus_get_unique_name)(void*) = nullptr;          // Get our DBus unique name
+    int (*message_append_args)(void*, int, ...) = nullptr;        // Append method arguments
+    int (*connection_read_write)(void*, int) = nullptr;           // Read/write poll
+    void* (*connection_pop_message)(void*) = nullptr;             // Pop pending message
+    const char* (*message_get_member)(void*) = nullptr;           // Get message method name
 };
 
 // Read request for proxying receive() through the monitoring thread
@@ -129,6 +208,28 @@ class WaylandProtocol : public ProtocolBase
     std::condition_variable read_request_cv;
     ReadRequest read_request;
 
+    // Compositor type detection for cursor position
+    CompositorType compositor_type = CompositorType::Unknown;
+
+    // XWayland fallback for cursor position
+    Display* xwayland_display = nullptr;
+    bool xwayland_tried = false;
+
+    // KDE DBus for cursor position (dlopen'd libdbus-1.so.3)
+    DBusFunctions dbus_fn;
+    bool dbus_tried = false;
+    std::string kde_script_path;    // Temporary KWin script file path
+    std::string kde_bus_name;       // Our DBus unique name (e.g. ":1.234")
+
+    // KWin script execution method, auto-detected on first call:
+    //   PerScript  — standard KWin: run() on /Scripting/Script{id}
+    //                (Plasma 5 & 6 source code both register per-script DBus objects)
+    //   ManagerStart — fallback: start() on /Scripting manager
+    //                (some Plasma 6 builds don't expose per-script objects)
+    //   Unknown    — not yet probed
+    enum class KWinRunMethod { Unknown, PerScript, ManagerStart };
+    KWinRunMethod kde_run_method = KWinRunMethod::Unknown;
+
     // libevdev helper methods
     bool InitializeInputDevices();
     void CleanupInputDevices();
@@ -144,6 +245,13 @@ class WaylandProtocol : public ProtocolBase
 
     // MIME type matching helper
     static bool IsTextMimeType(const char *mime_type);
+
+    // Compositor detection and cursor position methods
+    void DetectCompositor();
+    bool GetCursorPositionHyprland(Point& pos);
+    bool LoadDBusFunctions();
+    bool GetCursorPositionKDE(Point& pos);
+    bool GetCursorPositionXWayland(Point& pos);
 
     // Handle primary selection change (common for both protocols)
     void HandlePrimarySelectionChange();
@@ -222,6 +330,9 @@ class WaylandProtocol : public ProtocolBase
         return flags;
     }
 
+    // Get accurate cursor position from compositor
+    Point GetCurrentMousePosition() override;
+
     // Initialization and cleanup
     bool Initialize() override
     {
@@ -234,6 +345,9 @@ class WaylandProtocol : public ProtocolBase
             // Don't fail - input monitoring via libevdev can still work
         }
 
+        // Detect compositor for cursor position queries
+        DetectCompositor();
+
         return true;
     }
 
@@ -245,6 +359,45 @@ class WaylandProtocol : public ProtocolBase
 
         // Cleanup Wayland resources
         CleanupWaylandConnection();
+
+        // Cleanup XWayland connection
+        if (xwayland_display)
+        {
+            XCloseDisplay(xwayland_display);
+            xwayland_display = nullptr;
+        }
+
+        // Unload KWin script from compositor and delete temporary file
+        if (!kde_script_path.empty())
+        {
+            if (dbus_fn.session_bus && dbus_fn.message_new_method_call)
+            {
+                const char *sname = "selectionhook_cursor";
+                void *umsg = dbus_fn.message_new_method_call(
+                    "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
+                if (umsg)
+                {
+                    dbus_fn.message_append_args(umsg, 's', &sname, '\0');
+                    DBusError_ABI uerr;
+                    dbus_fn.error_init(&uerr);
+                    void *ureply = dbus_fn.connection_send_with_reply_and_block(
+                        dbus_fn.session_bus, umsg, 200, &uerr);
+                    dbus_fn.message_unref(umsg);
+                    if (ureply)
+                        dbus_fn.message_unref(ureply);
+                    dbus_fn.error_free(&uerr);
+                }
+            }
+            unlink(kde_script_path.c_str());
+            kde_script_path.clear();
+        }
+
+        // Cleanup DBus (session bus is shared, don't close it)
+        if (dbus_fn.lib_handle)
+        {
+            dlclose(dbus_fn.lib_handle);
+            dbus_fn = DBusFunctions{};
+        }
 
         initialized = false;
     }
@@ -1408,6 +1561,561 @@ void WaylandProtocol::ProcessLibevdevEvent(const struct input_event &ev, const I
 
         keyboard_callback(callback_context, keyboardEvent);
     }
+}
+
+// ============================================================================
+// Compositor detection and cursor position query
+// ============================================================================
+
+/**
+ * Detect the running Wayland compositor for cursor position query strategy.
+ * Checks compositor-specific environment variables first, then XDG_CURRENT_DESKTOP.
+ */
+void WaylandProtocol::DetectCompositor()
+{
+    // Check compositor-specific environment variables first
+    if (getenv("HYPRLAND_INSTANCE_SIGNATURE"))
+    {
+        compositor_type = CompositorType::Hyprland;
+        printf("[Wayland] Detected compositor: Hyprland\n");
+    }
+    else if (getenv("SWAYSOCK"))
+    {
+        compositor_type = CompositorType::Sway;
+        printf("[Wayland] Detected compositor: Sway\n");
+    }
+    else
+    {
+        const char *desktop = getenv("XDG_CURRENT_DESKTOP");
+        if (desktop)
+        {
+            std::string desktop_str(desktop);
+            // Convert to lowercase for case-insensitive comparison
+            for (auto &c : desktop_str) c = std::tolower(static_cast<unsigned char>(c));
+
+            if (desktop_str.find("kde") != std::string::npos)
+            {
+                compositor_type = CompositorType::KDE;
+                printf("[Wayland] Detected compositor: KDE\n");
+            }
+            else if (desktop_str.find("gnome") != std::string::npos)
+            {
+                compositor_type = CompositorType::GNOME;
+                printf("[Wayland] Detected compositor: GNOME\n");
+            }
+            else if (desktop_str.find("cosmic") != std::string::npos)
+            {
+                compositor_type = CompositorType::COSMIC;
+                printf("[Wayland] Detected compositor: COSMIC\n");
+            }
+            else if (desktop_str.find("wlroots") != std::string::npos)
+            {
+                compositor_type = CompositorType::Wlroots;
+                printf("[Wayland] Detected compositor: wlroots-based\n");
+            }
+            else
+            {
+                compositor_type = CompositorType::Unknown;
+                printf("[Wayland] Detected compositor: Unknown (XDG_CURRENT_DESKTOP=%s)\n", desktop);
+            }
+        }
+        else
+        {
+            compositor_type = CompositorType::Unknown;
+            printf("[Wayland] Detected compositor: Unknown (no XDG_CURRENT_DESKTOP)\n");
+        }
+    }
+}
+
+/**
+ * Get cursor position via Hyprland IPC socket.
+ * Sends "j/cursorpos" command and parses JSON response {"x":N,"y":N}.
+ * Socket must be closed immediately to avoid Hyprland 5-second freeze.
+ */
+bool WaylandProtocol::GetCursorPositionHyprland(Point& pos)
+{
+    const char *his = getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    if (!his)
+        return false;
+
+    // Build socket path: try XDG_RUNTIME_DIR first, then /tmp
+    std::string socket_path;
+    const char *xdg_runtime = getenv("XDG_RUNTIME_DIR");
+    if (xdg_runtime)
+    {
+        socket_path = std::string(xdg_runtime) + "/hypr/" + his + "/.socket.sock";
+    }
+
+    // Check if socket exists, fall back to /tmp
+    struct stat st;
+    if (socket_path.empty() || stat(socket_path.c_str(), &st) != 0)
+    {
+        socket_path = std::string("/tmp/hypr/") + his + "/.socket.sock";
+        if (stat(socket_path.c_str(), &st) != 0)
+            return false;
+    }
+
+    // Create and connect unix domain socket
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0)
+        return false;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        close(sock);
+        return false;
+    }
+
+    // Set read timeout to avoid blocking the main thread if Hyprland IPC hangs
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000;  // 200ms
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // Send command: "j/cursorpos" (j flag = JSON output)
+    const char *cmd = "j/cursorpos";
+    if (write(sock, cmd, strlen(cmd)) < 0)
+    {
+        close(sock);
+        return false;
+    }
+
+    // Read response (small JSON like {"x":123,"y":456})
+    char buf[256];
+    int total = 0;
+    while (total < (int)sizeof(buf) - 1)
+    {
+        int n = read(sock, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0)
+            break;
+        total += n;
+    }
+    buf[total] = '\0';
+
+    // Close socket immediately to avoid Hyprland 5-second freeze
+    close(sock);
+
+    if (total == 0)
+        return false;
+
+    // Parse JSON: {"x":123,"y":456} - simple manual parsing
+    int x = 0, y = 0;
+    bool got_x = false, got_y = false;
+    const char *p = buf;
+    while (*p)
+    {
+        if (*p == '"')
+        {
+            p++;
+            if (*p == 'x' && *(p + 1) == '"')
+            {
+                p += 2;  // skip x"
+                while (*p == ' ' || *p == ':') p++;
+                x = atoi(p);
+                got_x = true;
+            }
+            else if (*p == 'y' && *(p + 1) == '"')
+            {
+                p += 2;  // skip y"
+                while (*p == ' ' || *p == ':') p++;
+                y = atoi(p);
+                got_y = true;
+            }
+        }
+        if (got_x && got_y)
+            break;
+        p++;
+    }
+
+    if (got_x && got_y)
+    {
+        pos = Point(x, y);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Load DBus functions via dlopen for KDE cursor position query.
+ * Only attempts loading once; subsequent calls return cached result.
+ */
+bool WaylandProtocol::LoadDBusFunctions()
+{
+    if (dbus_tried)
+        return dbus_fn.lib_handle != nullptr;
+    dbus_tried = true;
+
+    void *lib = dlopen("libdbus-1.so.3", RTLD_LAZY);
+    if (!lib)
+    {
+        printf("[Wayland] KDE: Failed to load libdbus-1.so.3: %s\n", dlerror());
+        return false;
+    }
+
+    dbus_fn.lib_handle = lib;
+
+    // Load all required function pointers
+    #define LOAD_DBUS_FN(name, field) \
+        dbus_fn.field = reinterpret_cast<decltype(dbus_fn.field)>(dlsym(lib, "dbus_" #name)); \
+        if (!dbus_fn.field) { printf("[Wayland] KDE: Missing dbus_%s\n", #name); goto fail; }
+
+    LOAD_DBUS_FN(error_init, error_init);
+    LOAD_DBUS_FN(error_free, error_free);
+    LOAD_DBUS_FN(bus_get, bus_get);
+    LOAD_DBUS_FN(message_new_method_call, message_new_method_call);
+    LOAD_DBUS_FN(connection_send_with_reply_and_block, connection_send_with_reply_and_block);
+    LOAD_DBUS_FN(message_iter_init, message_iter_init);
+    LOAD_DBUS_FN(message_iter_recurse, message_iter_recurse);
+    LOAD_DBUS_FN(message_iter_get_arg_type, message_iter_get_arg_type);
+    LOAD_DBUS_FN(message_iter_get_basic, message_iter_get_basic);
+    LOAD_DBUS_FN(message_iter_next, message_iter_next);
+    LOAD_DBUS_FN(message_unref, message_unref);
+    LOAD_DBUS_FN(bus_get_unique_name, bus_get_unique_name);
+    LOAD_DBUS_FN(message_append_args, message_append_args);
+    LOAD_DBUS_FN(connection_read_write, connection_read_write);
+    LOAD_DBUS_FN(connection_pop_message, connection_pop_message);
+    LOAD_DBUS_FN(message_get_member, message_get_member);
+
+    #undef LOAD_DBUS_FN
+
+    // Get session bus connection
+    {
+        DBusError_ABI err;
+        dbus_fn.error_init(&err);
+        dbus_fn.session_bus = dbus_fn.bus_get(0 /* DBUS_BUS_SESSION */, &err);
+        if (!dbus_fn.session_bus)
+        {
+            printf("[Wayland] KDE: Failed to connect to session bus: %s\n",
+                   err.name ? err.name : "unknown");
+            dbus_fn.error_free(&err);
+            goto fail;
+        }
+        dbus_fn.error_free(&err);
+    }
+
+    // Get our unique bus name for KWin script callback
+    {
+        const char *name = dbus_fn.bus_get_unique_name(dbus_fn.session_bus);
+        if (!name)
+        {
+            printf("[Wayland] KDE: Failed to get unique bus name\n");
+            goto fail;
+        }
+        kde_bus_name = name;
+    }
+
+    // Write temporary KWin script (reused until Cleanup)
+    kde_script_path = "/tmp/selectionhook_kwin_cursor.js";
+    {
+        FILE *f = fopen(kde_script_path.c_str(), "w");
+        if (!f)
+        {
+            printf("[Wayland] KDE: Failed to write KWin script to %s\n", kde_script_path.c_str());
+            kde_script_path.clear();
+            goto fail;
+        }
+        fprintf(f,
+            "let p = workspace.cursorPos;\n"
+            "callDBus(\"%s\", \"/\", \"\", \"cursorpos\", String(p.x) + \",\" + String(p.y));\n",
+            kde_bus_name.c_str());
+        fclose(f);
+    }
+
+    printf("[Wayland] KDE: DBus functions loaded successfully (bus=%s)\n", kde_bus_name.c_str());
+    return true;
+
+fail:
+    dlclose(lib);
+    dbus_fn = DBusFunctions{};
+    return false;
+}
+
+/**
+ * Get cursor position via KDE KWin Scripting DBus API.
+ *
+ * Approach (inspired by kdotool): load a JS script into KWin that reads
+ * workspace.cursorPos and calls back to our bus address via callDBus.
+ *
+ * Flow per call:
+ * 1. loadScript(path, name) → script_id
+ * 2. Run the script (auto-detected method, see kde_run_method):
+ *    a. Per-script: /Scripting/Script{id} → org.kde.kwin.Script.run()
+ *    b. Manager-level: /Scripting → org.kde.kwin.Scripting.start()
+ * 3. Poll for incoming "cursorpos" method call (100ms timeout)
+ * 4. unloadScript(name) to clean up
+ * 5. Parse "x,y" string → Point
+ */
+bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
+{
+    if (!LoadDBusFunctions())
+        return false;
+
+    if (kde_script_path.empty())
+        return false;
+
+    DBusError_ABI err;
+    bool success = false;
+
+    const char *script_name = "selectionhook_cursor";
+
+    // Step 0: Unload any previously loaded script with the same name
+    // (KWin keeps scripts across process restarts; loadScript returns -1 if name exists)
+    {
+        void *umsg = dbus_fn.message_new_method_call(
+            "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
+        if (umsg)
+        {
+            dbus_fn.message_append_args(umsg, 's', &script_name, '\0');
+            dbus_fn.error_init(&err);
+            void *ureply = dbus_fn.connection_send_with_reply_and_block(
+                dbus_fn.session_bus, umsg, 200, &err);
+            dbus_fn.message_unref(umsg);
+            if (ureply)
+                dbus_fn.message_unref(ureply);
+            dbus_fn.error_free(&err);
+        }
+    }
+
+    // Step 1: loadScript(String path, String name) → Int32 id
+    void *msg = dbus_fn.message_new_method_call(
+        "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript");
+    if (!msg)
+        return false;
+
+    const char *script_path_cstr = kde_script_path.c_str();
+    // DBUS_TYPE_STRING = 's' (0x73), DBUS_TYPE_INVALID = '\0'
+    dbus_fn.message_append_args(msg,
+        's', &script_path_cstr,
+        's', &script_name,
+        '\0');
+
+    dbus_fn.error_init(&err);
+    void *reply = dbus_fn.connection_send_with_reply_and_block(
+        dbus_fn.session_bus, msg, 200, &err);
+    dbus_fn.message_unref(msg);
+
+    if (!reply)
+    {
+        dbus_fn.error_free(&err);
+        return false;
+    }
+    dbus_fn.error_free(&err);
+
+    // Parse script_id from reply (Int32)
+    int32_t script_id = -1;
+    {
+        DBusMessageIter_ABI iter;
+        if (dbus_fn.message_iter_init(reply, &iter) &&
+            dbus_fn.message_iter_get_arg_type(&iter) == 'i')
+        {
+            dbus_fn.message_iter_get_basic(&iter, &script_id);
+        }
+        dbus_fn.message_unref(reply);
+    }
+
+    if (script_id < 0)
+        return false;
+
+    // Step 2: Run the loaded script
+    // On first call (kde_run_method == Unknown), probe both methods:
+    //   1. Per-script: /Scripting/Script{id} → org.kde.kwin.Script.run()
+    //      Standard KWin DBus interface. Each loaded script registers a DBus
+    //      object at /Scripting/Script{id} via ScriptAdaptor, exposing run()/stop().
+    //      This is how kdotool operates and matches KWin source for both Plasma 5 & 6.
+    //   2. Manager-level: /Scripting → org.kde.kwin.Scripting.start()
+    //      Runs all loaded-but-not-yet-started scripts. Used as fallback when
+    //      per-script DBus objects are not reachable (observed on some Plasma 6
+    //      distributions). Already-running scripts are protected by Script::run()'s
+    //      internal `if (running()) return` guard, so this is safe even if other
+    //      KWin scripts are loaded.
+    // Once a method succeeds, kde_run_method is latched so subsequent calls skip
+    // the probe — the KWin version won't change within a session.
+    bool script_started = false;
+
+    if (kde_run_method != KWinRunMethod::ManagerStart)
+    {
+        // Try per-script path: /Scripting/Script{id} → run()
+        char script_obj_path[64];
+        snprintf(script_obj_path, sizeof(script_obj_path),
+                 "/Scripting/Script%d", script_id);
+        msg = dbus_fn.message_new_method_call(
+            "org.kde.KWin", script_obj_path, "org.kde.kwin.Script", "run");
+        if (msg) {
+            dbus_fn.error_init(&err);
+            reply = dbus_fn.connection_send_with_reply_and_block(
+                dbus_fn.session_bus, msg, 200, &err);
+            dbus_fn.message_unref(msg);
+            if (reply) {
+                dbus_fn.message_unref(reply);
+                script_started = true;
+                kde_run_method = KWinRunMethod::PerScript;
+            }
+            dbus_fn.error_free(&err);
+        }
+    }
+
+    if (!script_started && kde_run_method != KWinRunMethod::PerScript)
+    {
+        // Fallback: manager-level start() on /Scripting
+        msg = dbus_fn.message_new_method_call(
+            "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "start");
+        if (msg) {
+            dbus_fn.error_init(&err);
+            reply = dbus_fn.connection_send_with_reply_and_block(
+                dbus_fn.session_bus, msg, 200, &err);
+            dbus_fn.message_unref(msg);
+            if (reply) {
+                dbus_fn.message_unref(reply);
+                script_started = true;
+                kde_run_method = KWinRunMethod::ManagerStart;
+            }
+            dbus_fn.error_free(&err);
+        }
+    }
+
+    if (!script_started)
+        goto cleanup;
+
+    // Step 3: Poll for incoming "cursorpos" method call (100ms timeout)
+    {
+        auto start = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(100))
+        {
+            dbus_fn.connection_read_write(dbus_fn.session_bus, 10);
+            void *incoming = dbus_fn.connection_pop_message(dbus_fn.session_bus);
+            if (!incoming)
+                continue;
+
+            const char *member = dbus_fn.message_get_member(incoming);
+            if (member && strcmp(member, "cursorpos") == 0)
+            {
+                // Parse argument: single STRING "x,y"
+                DBusMessageIter_ABI iter;
+                if (dbus_fn.message_iter_init(incoming, &iter) &&
+                    dbus_fn.message_iter_get_arg_type(&iter) == 's')
+                {
+                    const char *val = nullptr;
+                    dbus_fn.message_iter_get_basic(&iter, &val);
+                    if (val)
+                    {
+                        int x = 0, y = 0;
+                        if (sscanf(val, "%d,%d", &x, &y) == 2)
+                        {
+                            pos = Point(x, y);
+                            success = true;
+                        }
+                    }
+                }
+                dbus_fn.message_unref(incoming);
+                break;
+            }
+            dbus_fn.message_unref(incoming);
+        }
+    }
+
+cleanup:
+    // Step 4: unloadScript to clean up
+    {
+        void *umsg = dbus_fn.message_new_method_call(
+            "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
+        if (umsg)
+        {
+            dbus_fn.message_append_args(umsg, 's', &script_name, '\0');
+            dbus_fn.error_init(&err);
+            void *ureply = dbus_fn.connection_send_with_reply_and_block(
+                dbus_fn.session_bus, umsg, 200, &err);
+            dbus_fn.message_unref(umsg);
+            if (ureply)
+                dbus_fn.message_unref(ureply);
+            dbus_fn.error_free(&err);
+        }
+    }
+
+    return success;
+}
+
+/**
+ * Get cursor position via XWayland (XQueryPointer on XWayland display).
+ * Opens XWayland display on first call and reuses the connection.
+ * Note: cursor position may freeze when cursor is over native Wayland windows.
+ */
+bool WaylandProtocol::GetCursorPositionXWayland(Point& pos)
+{
+    if (!xwayland_tried)
+    {
+        xwayland_tried = true;
+        const char *display_env = getenv("DISPLAY");
+        if (display_env)
+        {
+            xwayland_display = XOpenDisplay(display_env);
+            if (xwayland_display)
+            {
+                printf("[Wayland] XWayland fallback display opened (%s)\n", display_env);
+            }
+            else
+            {
+                printf("[Wayland] XWayland: Failed to open display %s\n", display_env);
+            }
+        }
+        else
+        {
+            printf("[Wayland] XWayland: DISPLAY not set, fallback unavailable\n");
+        }
+    }
+
+    if (!xwayland_display)
+        return false;
+
+    Window root_return, child_return;
+    int root_x, root_y, win_x, win_y;
+    unsigned int mask_return;
+
+    if (XQueryPointer(xwayland_display, DefaultRootWindow(xwayland_display),
+                      &root_return, &child_return, &root_x, &root_y,
+                      &win_x, &win_y, &mask_return))
+    {
+        pos = Point(root_x, root_y);
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Get current mouse position using the best available method.
+ * Fallback chain: Compositor IPC → XWayland → libevdev accumulated value.
+ */
+Point WaylandProtocol::GetCurrentMousePosition()
+{
+    Point pos;
+
+    // 1. Compositor-specific IPC (for compositors that support direct cursor query)
+    switch (compositor_type)
+    {
+        case CompositorType::Hyprland:
+            if (GetCursorPositionHyprland(pos))
+                return pos;
+            break;
+        case CompositorType::KDE:
+            if (GetCursorPositionKDE(pos))
+                return pos;
+            break;
+        // Sway, GNOME, Wlroots, COSMIC, Unknown → fall through to XWayland
+        default:
+            break;
+    }
+
+    // 2. XWayland fallback (works across compositors when XWayland is available)
+    if (GetCursorPositionXWayland(pos))
+        return pos;
+
+    // 3. Last resort: libevdev accumulated value (inaccurate but non-zero)
+    return current_mouse_pos;
 }
 
 // Factory function to create WaylandProtocol instance

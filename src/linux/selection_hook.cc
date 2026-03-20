@@ -208,8 +208,11 @@ constexpr uint64_t MAX_DRAG_TIME_MS = 8000;
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
 static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 
-// XFixes correlation window: max time between mouse gesture and XFixes event to be considered related
-constexpr uint64_t CORRELATION_WINDOW_MS = 500;
+// Path A/B correlation window (ms): maximum elapsed time between a mouse gesture
+// and a selection change event for them to be considered related.
+// 300ms is sufficient — XFixes fires within ~5ms on X11, and the Wayland
+// data-control event typically arrives within ~50ms after drag end.
+constexpr uint64_t CORRELATION_WINDOW_MS = 300;
 
 // No-input fallback (Path C): debounce quiet period before firing selection event
 constexpr uint64_t NO_INPUT_DEBOUNCE_MS = 300;
@@ -286,11 +289,12 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     bool is_last_valid_click = false;
     int last_mouse_up_modifier_flags = 0;
 
-    // XFixes atomic timestamp - written by OnSelectionEventCallback (XFixes thread),
-    // read by ProcessMouseEvent (main thread)
-    std::atomic<uint64_t> last_xfixes_time{0};
+    // Atomic timestamp of the last selection change event, written by
+    // OnSelectionEventCallback in the protocol thread, read by
+    // ProcessMouseEvent on the main thread (Path A).
+    std::atomic<uint64_t> last_selection_event_time{0};
 
-    // Pending gesture for Path B (XFixes arrives after mouse-up)
+    // Pending gesture for Path B (selection change event arrives after mouse-up)
     struct {
         bool active = false;
         SelectionDetectType type = SelectionDetectType::None;
@@ -313,7 +317,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::ThreadSafeFunction tsfn;
     Napi::ThreadSafeFunction mouse_tsfn;
     Napi::ThreadSafeFunction keyboard_tsfn;
-    Napi::ThreadSafeFunction selection_tsfn;  // For XFixes events (Path B)
+    Napi::ThreadSafeFunction selection_tsfn;  // For selection change events (Path A/B)
 
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
@@ -513,7 +517,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         Napi::ThreadSafeFunction::New(env, callback, "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
                                       [this](Napi::Env) { mouse_keyboard_running = false; });
 
-    // Create thread-safe function for XFixes selection events (Path B)
+    // Create thread-safe function for selection change events (Path A/B)
     selection_tsfn =
         Napi::ThreadSafeFunction::New(env, callback, "SelectionEventCallback", 64, 1);
 
@@ -1042,7 +1046,8 @@ void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext 
 }
 
 /**
- * Process mouse event on main thread and detect text selection (bidirectional trigger with XFixes)
+ * Process mouse event on main thread and detect text selection gestures.
+ * Correlates recognized gestures with selection change events via Path A or Path B.
  */
 void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *pMouseEvent)
 {
@@ -1168,10 +1173,10 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         }
                     }
 
-                    // Bidirectional trigger: correlate gesture with XFixes
+                    // Correlate recognized gesture with selection change event
                     if (detectionType != SelectionDetectType::None)
                     {
-                        uint64_t lastXfixes = currentInstance->last_xfixes_time.load();
+                        uint64_t lastSelectionEvent = currentInstance->last_selection_event_time.load();
 
                         // Determine mouse coordinates for the event
                         Point gestureStart, gestureEnd;
@@ -1195,16 +1200,16 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                                 break;
                         }
 
-                        if (lastXfixes > 0 &&
-                            (static_cast<uint64_t>(currentTime) - lastXfixes) < CORRELATION_WINDOW_MS)
+                        if (lastSelectionEvent > 0 &&
+                            (static_cast<uint64_t>(currentTime) - lastSelectionEvent) < CORRELATION_WINDOW_MS)
                         {
-                            // Path A: XFixes already arrived, fast path
-                            currentInstance->last_xfixes_time.store(0);  // Consume
+                            // Path A: selection change event already arrived, fire immediately
+                            currentInstance->last_selection_event_time.store(0);  // Consume
                             currentInstance->EmitSelectionEvent(detectionType, gestureStart, gestureEnd);
                         }
                         else
                         {
-                            // Path B: Set pending, wait for XFixes
+                            // Path B: store pending gesture, wait for selection change event
                             currentInstance->pending_gesture.active = true;
                             currentInstance->pending_gesture.type = detectionType;
                             currentInstance->pending_gesture.mousePosStart = gestureStart;
@@ -1281,7 +1286,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 }
 
 /**
- * XFixes selection event callback (called from XFixes thread)
+ * Selection change event callback (XFixes on X11, data-control on Wayland).
+ * Called from the protocol's selection monitoring thread.
  */
 void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeContext *event)
 {
@@ -1292,8 +1298,8 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
         return;
     }
 
-    // Atomic write - executed in XFixes thread, read by Path A in main thread
-    instance->last_xfixes_time.store(event->timestamp_ms);
+    // Atomic write — executed in protocol selection thread, read by Path A in main thread
+    instance->last_selection_event_time.store(event->timestamp_ms);
 
     // Dispatch to main thread for Path B processing
     if (instance->running.load() && instance->selection_tsfn)
@@ -1310,9 +1316,9 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
  * Process selection event on main thread.
  *
  * Three paths for selection detection:
- *   Path A: Mouse gesture detected, data-control/XFixes already arrived (fast path)
- *   Path B: Mouse gesture detected, waiting for data-control/XFixes confirmation
- *   Path C: No-input fallback — data-control event + debounce (no libevdev)
+ *   Path A: Mouse gesture detected, selection change event already arrived (fast path)
+ *   Path B: Mouse gesture detected, waiting for selection change event confirmation
+ *   Path C: No-input fallback — selection change event + debounce (no libevdev)
  */
 void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function, SelectionChangeContext *pEvent)
 {
@@ -1324,12 +1330,12 @@ void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function
 
     if (currentInstance->pending_gesture.active)
     {
-        // Use XFixes event timestamp (not wall clock "now") to avoid false expiry
+        // Use selection event timestamp (not wall clock "now") to avoid false expiry
         // under main-thread load when ThreadSafeFunction callback is delayed
         if ((pEvent->timestamp_ms - currentInstance->pending_gesture.timestamp) < CORRELATION_WINDOW_MS)
         {
-            // Path B: pending gesture confirmed by XFixes
-            currentInstance->last_xfixes_time.store(0);  // Consume
+            // Path B: pending gesture confirmed by selection change event
+            currentInstance->last_selection_event_time.store(0);  // Consume
             currentInstance->EmitSelectionEvent(currentInstance->pending_gesture.type,
                                                 currentInstance->pending_gesture.mousePosStart,
                                                 currentInstance->pending_gesture.mousePosEnd);

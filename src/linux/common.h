@@ -227,7 +227,7 @@ struct KeyboardEventContext
     int flags;  ///< Modifier bitmask (MODIFIER_SHIFT/CTRL/ALT/META)
 };
 
-// Structure for selection change event (from XFixes PRIMARY selection monitoring)
+// Structure for selection change event (XFixes on X11, data-control on Wayland)
 struct SelectionChangeContext
 {
     uint64_t timestamp_ms;

@@ -43,6 +43,12 @@ Selection text on Linux is obtained exclusively via **PRIMARY selection** — th
 | Program name | ❌ Always empty | Wayland security model does not expose window information |
 | Window rect | ❌ Always unavailable | Wayland does not expose global window coordinates |
 
+**Left-handed mouse support (Wayland only):**
+
+On Wayland, libevdev reads raw physical button codes from `/dev/input/event*`, bypassing libinput's left-handed button swap. selection-hook monitors both `BTN_LEFT` and `BTN_RIGHT` for gesture detection (drag, double-click, shift+click), so left-handed users who swap mouse buttons via system settings will have selection detection work correctly with their primary (physical right) button. The existing gesture-selection correlation mechanism naturally filters out right-click context menu actions that don't produce text selections.
+
+On X11, XRecord captures post-swap logical events, so left-handed mode works without any special handling.
+
 **Input device access (Wayland only):**
 
 Wayland's security model prevents applications from intercepting global input events via the display server. We use libevdev to read directly from `/dev/input/event*` devices, which requires the user to have access to these devices. The most common way is to join the `input` group:

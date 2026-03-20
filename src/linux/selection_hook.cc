@@ -1074,10 +1074,29 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     switch (mouseCode)
     {
         case BTN_LEFT:
+        case BTN_RIGHT:
+            // Monitor both buttons for gesture detection so that left-handed users
+            // (who swap buttons) can trigger selections with their primary button.
+            // On Wayland, libevdev reads raw physical button codes from /dev/input,
+            // bypassing libinput's left-handed swap. The gesture-selection correlation
+            // mechanism (requiring both a gesture AND a selection-change event within
+            // 300ms) naturally filters out right-click actions that don't produce
+            // text selections.
+
+            // On X11, XRecord captures post-swap logical events, so left-handed
+            // users already report BTN_LEFT as their primary button. Skip gesture
+            // tracking for BTN_RIGHT on X11 — only Wayland (libevdev) needs it.
+            if (mouseCode == BTN_RIGHT && currentInstance->env_info.displayProtocol != DisplayProtocol::Wayland)
+            {
+                mouseTypeStr = (mouseValue == 1) ? "mouse-down" : "mouse-up";
+                mouseButton = MouseButton::Right;
+                break;
+            }
+
             if (mouseValue == 1)  // Press
             {
                 mouseTypeStr = "mouse-down";
-                mouseButton = MouseButton::Left;
+                mouseButton = (mouseCode == BTN_LEFT) ? MouseButton::Left : MouseButton::Right;
 
                 // Update mouse-down state
                 currentInstance->last_mouse_down_time = currentTime;
@@ -1097,7 +1116,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             else if (mouseValue == 0)  // Release
             {
                 mouseTypeStr = "mouse-up";
-                mouseButton = MouseButton::Left;
+                mouseButton = (mouseCode == BTN_LEFT) ? MouseButton::Left : MouseButton::Right;
 
                 // Update mouse-up state (save previous values first)
                 Point prevUp = currentInstance->last_mouse_up_pos;
@@ -1224,11 +1243,6 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 currentInstance->prev_mouse_up_pos = prevUp;
                 currentInstance->prev_mouse_up_time = prevUpTime;
             }
-            break;
-
-        case BTN_RIGHT:
-            mouseTypeStr = (mouseValue == 1) ? "mouse-down" : "mouse-up";
-            mouseButton = MouseButton::Right;
             break;
 
         case BTN_MIDDLE:

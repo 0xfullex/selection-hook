@@ -294,6 +294,12 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // ProcessMouseEvent on the main thread (Path A).
     std::atomic<uint64_t> last_selection_event_time{0};
 
+    // Gesture button state — written by OnMouseEventCallback (input thread),
+    // read by OnSelectionEventCallback (protocol selection thread).
+    // Tracks BTN_LEFT and BTN_RIGHT (Wayland left-handed support) to suppress
+    // intermediate selection change events during mouse drag.
+    std::atomic<bool> is_gesture_button_down{false};
+
     // Pending gesture for Path B (selection change event arrives after mouse-up)
     struct {
         bool active = false;
@@ -600,6 +606,7 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
     if (debounce_thread.joinable())
         debounce_thread.join();
     debounce_last_event_time.store(0);
+    is_gesture_button_down.store(false);
     is_no_input_fallback = false;
 
     // Release thread-safe functions after threads have stopped
@@ -1030,6 +1037,16 @@ void SelectionHook::OnMouseEventCallback(void *context, MouseEventContext *mouse
     // Update current mouse position
     instance->current_mouse_pos = mouseEvent->pos;
 
+    // Track gesture button state for selection event suppression during drag.
+    // On X11, XRecord reports post-swap logical codes, so only BTN_LEFT matters.
+    // On Wayland, libevdev reports raw physical codes, so BTN_RIGHT must also
+    // be tracked for left-handed users (mirrors the guard at ProcessMouseEvent).
+    if (mouseEvent->code == BTN_LEFT ||
+        (mouseEvent->code == BTN_RIGHT && instance->env_info.displayProtocol == DisplayProtocol::Wayland))
+    {
+        instance->is_gesture_button_down.store(mouseEvent->value == 1);
+    }
+
     instance->mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
 }
 
@@ -1315,7 +1332,18 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
     // Atomic write — executed in protocol selection thread, read by Path A in main thread
     instance->last_selection_event_time.store(event->timestamp_ms);
 
-    // Dispatch to main thread for Path B processing
+    // During mouse drag: skip ThreadSafeFunction dispatch.  Path A will pick up
+    // last_selection_event_time when ButtonRelease is processed.  Only dispatch when:
+    //   - Path B: mouse is up (pending_gesture may be awaiting confirmation)
+    //   - Path C: no-input fallback mode (always needs dispatch for debounce)
+    if (instance->is_gesture_button_down.load())
+    {
+        // Mouse button held — only store timestamp for Path A, skip dispatch
+        delete event;
+        return;
+    }
+
+    // Dispatch to main thread for Path B / Path C processing
     if (instance->running.load() && instance->selection_tsfn)
     {
         instance->selection_tsfn.NonBlockingCall(event, ProcessSelectionEvent);

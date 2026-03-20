@@ -1,5 +1,11 @@
 <div align="center">
 
+```
+┌─┐┌─┐┬  ┌─┐┌─┐┌┬┐┬┌─┐┌┐┌   ┬ ┬┌─┐┌─┐┬┌─
+└─┐├┤ │  ├┤ │   │ ││ ││││───├─┤│ ││ │├┴┐
+└─┘└─┘┴─┘└─┘└─┘ ┴ ┴└─┘┘└┘   ┴ ┴└─┘└─┘┴ ┴
+```
+
 <h1>selection-hook</h1>
 
 <p><strong>The first full-featured, open-source cross-application text selection monitor.</strong></p>

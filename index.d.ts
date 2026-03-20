@@ -140,8 +140,8 @@ export interface LinuxEnvInfo {
   displayProtocol: (typeof SelectionHook.DisplayProtocol)[keyof typeof SelectionHook.DisplayProtocol];
   /** Compositor type: 0=Unknown, 1=KWin, 2=Mutter, 3=Hyprland, 4=Sway, 5=Wlroots, 6=CosmicComp */
   compositorType: (typeof SelectionHook.CompositorType)[keyof typeof SelectionHook.CompositorType];
-  /** Whether the user has 'input' group access (needed for Wayland input monitoring) */
-  hasInputGroupAccess: boolean;
+  /** Whether the user can access input devices (needed for Wayland input monitoring) */
+  hasInputDeviceAccess: boolean;
   /** Whether the process is running as root */
   isRoot: boolean;
 }
@@ -420,7 +420,7 @@ declare class SelectionHook extends EventEmitter {
    * Get Linux environment information (Linux only)
    *
    * Returns an object containing display protocol, compositor type,
-   * input group access status, and root status. All values are detected
+   * input device access status, and root status. All values are detected
    * once at construction time and cached.
    * Can be called before start().
    *

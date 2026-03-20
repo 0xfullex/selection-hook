@@ -43,23 +43,34 @@ Selection text on Linux is obtained exclusively via **PRIMARY selection** — th
 | Program name | ❌ Always empty | Wayland security model does not expose window information |
 | Window rect | ❌ Always unavailable | Wayland does not expose global window coordinates |
 
-**Input group requirement (Wayland only):**
+**Input device access (Wayland only):**
 
-Wayland's security model prevents applications from intercepting global input events via the display server. We use libevdev to read directly from `/dev/input/event*` devices, which requires the user to be in the `input` group:
+Wayland's security model prevents applications from intercepting global input events via the display server. We use libevdev to read directly from `/dev/input/event*` devices, which requires the user to have access to these devices. The most common way is to join the `input` group:
 
 ```bash
 sudo usermod -aG input $USER
 # Then re-login for the change to take effect
 ```
 
-You can check whether the current user has `input` group access programmatically:
+Other methods that also grant access include systemd-logind ACLs (often set automatically for the active session), custom udev rules, and Linux capabilities. `hasInputDeviceAccess` checks all of these.
+
+You can check whether the current user has input device access programmatically:
 
 ```javascript
 const info = hook.linuxGetEnvInfo();
-if (info && !info.hasInputGroupAccess) {
-  console.warn('User does not have input group access. Run: sudo usermod -aG input $USER');
+if (info && !info.hasInputDeviceAccess) {
+  console.warn('User does not have input device access. Run: sudo usermod -aG input $USER');
 }
 ```
+
+**Fallback without input device access (Wayland):**
+
+When input devices are not accessible, selection-hook falls back to **data-control debounce mode** (Path C). In this mode, text selection is detected solely via the Wayland data-control protocol events with a 300ms debounce. This means:
+
+- Mouse/keyboard events will **not** be emitted
+- Selection detection still works but with slightly higher latency (~300ms after the user finishes selecting)
+- `posLevel` will be `MOUSE_SINGLE` (cursor position queried from compositor at the time of detection)
+- `programName` remains empty (Wayland limitation)
 
 ### Wayland Compositor Compatibility
 
@@ -106,7 +117,7 @@ The following APIs have different behavior on Linux compared to Windows/macOS:
 
 | API | X11 | Wayland | Notes |
 |---|---|---|---|
-| `linuxGetEnvInfo()` | ✅ Returns env info | ✅ Returns env info | Can be called before `start()`. Returns `null` on non-Linux. Includes `displayProtocol`, `compositorType`, `hasInputGroupAccess`, `isRoot` |
+| `linuxGetEnvInfo()` | ✅ Returns env info | ✅ Returns env info | Can be called before `start()`. Returns `null` on non-Linux. Includes `displayProtocol`, `compositorType`, `hasInputDeviceAccess` (always `true` on X11), `isRoot` |
 | `writeToClipboard()` | Returns `false` | Returns `false` | Blocked at JS layer. Use host app's clipboard API. |
 | `readFromClipboard()` | Returns `null` | Returns `null` | Blocked at JS layer. Use host app's clipboard API. |
 | `enableClipboard()` / `disableClipboard()` | No effect | No effect | Clipboard fallback not implemented on Linux |

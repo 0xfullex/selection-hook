@@ -414,7 +414,7 @@ function handleKeyPress(key) {
         console.log(colors.info, "=== Linux Environment Info ===");
         console.log(colors.info, `  Display Protocol: ${protocolNames[envInfo.displayProtocol] || envInfo.displayProtocol}`);
         console.log(colors.info, `  Compositor Type:  ${compositorNames[envInfo.compositorType] || envInfo.compositorType}`);
-        console.log(colors.info, `  Input Group Access: ${envInfo.hasInputGroupAccess}`);
+        console.log(colors.info, `  Input Device Access: ${envInfo.hasInputDeviceAccess}`);
         console.log(colors.info, `  Is Root: ${envInfo.isRoot}`);
       } else {
         console.log(colors.warning, "Linux environment info is only available on Linux");

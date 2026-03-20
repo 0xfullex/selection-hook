@@ -439,12 +439,13 @@ class WaylandProtocol : public ProtocolBase
         selection_callback = selectionCb;
         callback_context = context;
 
-        if (!InitializeInputDevices())
+        if (env_info.hasInputDeviceAccess)
         {
-            fprintf(stderr, "[Wayland] WARNING: Failed to initialize input devices "
-                    "(try adding user to 'input' group: sudo usermod -aG input $USER). "
-                    "Mouse/keyboard events will not be available.\n");
-            // Don't fail — Wayland data-control selection monitoring can still work
+            if (!InitializeInputDevices())
+            {
+                fprintf(stderr, "[Wayland] WARNING: Failed to initialize input devices. "
+                        "Mouse/keyboard events will not be available.\n");
+            }
         }
 
         // Succeed if we have either input devices or data-control protocol

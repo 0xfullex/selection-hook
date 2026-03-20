@@ -123,14 +123,14 @@ Note: The return value indicates the current permission status, not the request 
 
 _Linux Only_
 
-Get Linux environment information. Can be called before `start()`. Returns an object with display protocol, compositor type, input group access status, and root status. All values are detected once at construction time and cached. Returns `null` on non-Linux platforms.
+Get Linux environment information. Can be called before `start()`. Returns an object with display protocol, compositor type, input device access status, and root status. All values are detected once at construction time and cached. Returns `null` on non-Linux platforms.
 
 ```javascript
 const info = hook.linuxGetEnvInfo();
 // info = {
 //   displayProtocol: 2,       // SelectionHook.DisplayProtocol.WAYLAND
 //   compositorType: 1,        // SelectionHook.CompositorType.KWIN
-//   hasInputGroupAccess: true, // user is in the 'input' group
+//   hasInputDeviceAccess: true, // user can access input devices
 //   isRoot: false
 // }
 ```
@@ -356,7 +356,7 @@ Returned by `linuxGetEnvInfo()`. Contains cached Linux environment information d
 |---|---|---|
 | `displayProtocol` | `number` | Display protocol (`SelectionHook.DisplayProtocol`) |
 | `compositorType` | `number` | Compositor type (`SelectionHook.CompositorType`) |
-| `hasInputGroupAccess` | `boolean` | Whether the user has `input` group access (needed for Wayland libevdev input monitoring) |
+| `hasInputDeviceAccess` | `boolean` | Whether the user can access input devices (needed for Wayland libevdev input monitoring). Checks `input` group, ACLs, capabilities, and actual device access. Always `true` on X11. |
 | `isRoot` | `boolean` | Whether the process is running as root |
 
 ### TypeScript Support

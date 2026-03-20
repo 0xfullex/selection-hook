@@ -84,7 +84,7 @@ struct LinuxEnvInfo
 {
     DisplayProtocol displayProtocol = DisplayProtocol::Unknown;
     CompositorType compositorType = CompositorType::Unknown;
-    bool hasInputGroupAccess = false;
+    bool hasInputDeviceAccess = false;
     bool isRoot = false;
 };
 

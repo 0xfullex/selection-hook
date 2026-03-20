@@ -46,7 +46,7 @@ Most similar tools only work on a single platform. selection-hook gives you one 
 | macOS    | ✅ Fully supported (macOS 10.14+) |
 | Linux    | ✅ X11 — well supported<br>⚠️ Wayland — supported with limitations |
 
-Linux has platform-level limitations compared to Windows/macOS due to the display server architecture. See [Linux Platform docs](docs/LINUX.md) for details.
+Linux has platform-level limitations compared to Windows/macOS due to the display server architecture. Wayland has additional limitations due to its restrictive security model. See [Linux Platform docs](docs/LINUX.md) for details.
 
 ## 🚀 Quick Start
 

@@ -45,6 +45,12 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <grp.h>
+#include <dirent.h>
+#include <fcntl.h>
+
+// Threading primitives for Path C debounce
+#include <condition_variable>
+#include <mutex>
 
 // Include common definitions
 #include "common.h"
@@ -130,39 +136,63 @@ CompositorType DetectCompositorType()
 }
 
 /**
- * Check if the current user has 'input' group access.
- * Root users always have access.
+ * Check if the current user can access input devices.
+ * X11 uses XRecord (always available). Wayland uses libevdev (/dev/input).
+ * For Wayland: checks root > input group > actual device open (covers ACL, capabilities, etc.)
  */
-bool CheckInputGroupAccess()
+bool CheckInputDeviceAccess(DisplayProtocol protocol)
 {
+    // X11 uses XRecord for input monitoring — always available
+    if (protocol == DisplayProtocol::X11)
+        return true;
+
     // Root always has access
     if (geteuid() == 0)
         return true;
 
-    // Get the 'input' group
+    // Check input group membership (fast path, no I/O)
     struct group *grp = getgrnam("input");
-    if (!grp)
-        return false;
-
-    gid_t input_gid = grp->gr_gid;
-
-    // Check effective group ID
-    if (getegid() == input_gid)
-        return true;
-
-    // Check supplementary groups
-    int ngroups = getgroups(0, nullptr);
-    if (ngroups <= 0)
-        return false;
-
-    std::vector<gid_t> groups(ngroups);
-    if (getgroups(ngroups, groups.data()) < 0)
-        return false;
-
-    for (int i = 0; i < ngroups; i++)
+    if (grp)
     {
-        if (groups[i] == input_gid)
+        gid_t input_gid = grp->gr_gid;
+        if (getegid() == input_gid)
             return true;
+
+        int ngroups = getgroups(0, nullptr);
+        if (ngroups > 0)
+        {
+            std::vector<gid_t> groups(ngroups);
+            if (getgroups(ngroups, groups.data()) >= 0)
+            {
+                for (int i = 0; i < ngroups; i++)
+                {
+                    if (groups[i] == input_gid)
+                        return true;
+                }
+            }
+        }
+    }
+
+    // Fallback: try opening any input device (covers ACL, capabilities, etc.)
+    DIR *dir = opendir("/dev/input");
+    if (dir)
+    {
+        struct dirent *entry;
+        while ((entry = readdir(dir)))
+        {
+            if (strncmp(entry->d_name, "event", 5) == 0)
+            {
+                std::string path = std::string("/dev/input/") + entry->d_name;
+                int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+                if (fd >= 0)
+                {
+                    close(fd);
+                    closedir(dir);
+                    return true;
+                }
+            }
+        }
+        closedir(dir);
     }
 
     return false;
@@ -180,6 +210,9 @@ static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 
 // XFixes correlation window: max time between mouse gesture and XFixes event to be considered related
 constexpr uint64_t CORRELATION_WINDOW_MS = 500;
+
+// No-input fallback (Path C): debounce quiet period before firing selection event
+constexpr uint64_t NO_INPUT_DEBOUNCE_MS = 300;
 
 //=============================================================================
 // TextSelectionHook Class Declaration
@@ -229,7 +262,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static void OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent);
     static void OnSelectionEventCallback(void *context, SelectionChangeContext *selectionEvent);
 
-    // Emit text selection event (shared by Path A and Path B)
+    // Emit text selection event (shared by Path A, Path B, and Path C)
     void EmitSelectionEvent(SelectionDetectType type, Point start, Point end);
 
     // Protocol interface for X11/Wayland abstraction
@@ -265,6 +298,16 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
         Point mousePosEnd;
         uint64_t timestamp = 0;
     } pending_gesture;
+
+    // No-input fallback (Path C): debounce for Wayland without libevdev
+    bool is_no_input_fallback = false;
+    std::mutex debounce_mutex;
+    std::condition_variable debounce_cv;
+    std::thread debounce_thread;
+    std::atomic<bool> debounce_running{false};
+    std::atomic<uint64_t> debounce_last_event_time{0};
+
+    void DebounceThreadProc();
 
     // Thread communication
     Napi::ThreadSafeFunction tsfn;
@@ -308,7 +351,7 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     // Detect all environment information once at construction time
     env_info.displayProtocol = DetectDisplayProtocol();
     env_info.compositorType = DetectCompositorType();
-    env_info.hasInputGroupAccess = CheckInputGroupAccess();
+    env_info.hasInputDeviceAccess = CheckInputDeviceAccess(env_info.displayProtocol);
     env_info.isRoot = (geteuid() == 0);
 
     protocol = CreateProtocol(env_info.displayProtocol);
@@ -339,6 +382,12 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
  */
 SelectionHook::~SelectionHook()
 {
+    // Stop debounce thread (Path C)
+    debounce_running = false;
+    debounce_cv.notify_one();
+    if (debounce_thread.joinable())
+        debounce_thread.join();
+
     // Stop worker thread
     bool was_running = running.exchange(false);
     if (was_running && tsfn)
@@ -492,6 +541,18 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         // Set running flags only after successful start
         running = true;
         mouse_keyboard_running = true;
+
+        // Start debounce thread for no-input fallback (Wayland without libevdev)
+        // Note: !isRoot is redundant (CheckInputDeviceAccess already returns true for root)
+        // but kept as defensive guard
+        is_no_input_fallback = (env_info.displayProtocol == DisplayProtocol::Wayland
+                                && !env_info.hasInputDeviceAccess && !env_info.isRoot);
+        if (is_no_input_fallback)
+        {
+            fprintf(stderr, "[Wayland] No input devices available, using data-control debounce fallback (Path C)\n");
+            debounce_running = true;
+            debounce_thread = std::thread(&SelectionHook::DebounceThreadProc, this);
+        }
     }
     catch (const std::exception &e)
     {
@@ -528,6 +589,14 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
 
     // Give a small delay to ensure any pending callbacks complete
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Stop debounce thread (Path C)
+    debounce_running = false;
+    debounce_cv.notify_one();
+    if (debounce_thread.joinable())
+        debounce_thread.join();
+    debounce_last_event_time.store(0);
+    is_no_input_fallback = false;
 
     // Release thread-safe functions after threads have stopped
     try
@@ -762,7 +831,7 @@ Napi::Value SelectionHook::LinuxGetEnvInfo(const Napi::CallbackInfo &info)
         Napi::Object obj = Napi::Object::New(env);
         obj.Set("displayProtocol", Napi::Number::New(env, static_cast<int>(env_info.displayProtocol)));
         obj.Set("compositorType", Napi::Number::New(env, static_cast<int>(env_info.compositorType)));
-        obj.Set("hasInputGroupAccess", Napi::Boolean::New(env, env_info.hasInputGroupAccess));
+        obj.Set("hasInputDeviceAccess", Napi::Boolean::New(env, env_info.hasInputDeviceAccess));
         obj.Set("isRoot", Napi::Boolean::New(env, env_info.isRoot));
         return obj;
     }
@@ -1238,7 +1307,12 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
 }
 
 /**
- * Process selection event on main thread (Path B: XFixes arrives after mouse-up)
+ * Process selection event on main thread.
+ *
+ * Three paths for selection detection:
+ *   Path A: Mouse gesture detected, data-control/XFixes already arrived (fast path)
+ *   Path B: Mouse gesture detected, waiting for data-control/XFixes confirmation
+ *   Path C: No-input fallback — data-control event + debounce (no libevdev)
  */
 void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function, SelectionChangeContext *pEvent)
 {
@@ -1267,13 +1341,81 @@ void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function
             currentInstance->pending_gesture.active = false;
         }
     }
-    // else: no pending gesture, skip (keyboard selection or external PRIMARY change)
+    else if (currentInstance->is_no_input_fallback && !currentInstance->is_selection_passive_mode)
+    {
+        // Path C: No-input fallback - reset debounce timer
+        currentInstance->debounce_last_event_time.store(pEvent->timestamp_ms);
+        currentInstance->debounce_cv.notify_one();
+    }
+    // else: no pending gesture and no fallback, skip
 
     delete pEvent;
 }
 
 /**
- * Emit text selection event (shared by Path A and Path B)
+ * Debounce thread for no-input fallback (Path C).
+ * When libevdev is unavailable, data-control events alone trigger selection
+ * detection after a quiet period (no new events for NO_INPUT_DEBOUNCE_MS).
+ */
+void SelectionHook::DebounceThreadProc()
+{
+    while (debounce_running.load())
+    {
+        // Phase 1: Idle wait — block until a data-control event arrives or shutdown
+        {
+            std::unique_lock<std::mutex> lock(debounce_mutex);
+            debounce_cv.wait(lock, [this] {
+                return debounce_last_event_time.load() != 0 || !debounce_running.load();
+            });
+        }
+
+        if (!debounce_running.load())
+            break;
+
+        // Phase 2: Active debounce — wait for quiet period
+        while (debounce_running.load())
+        {
+            uint64_t last = debounce_last_event_time.load();
+            if (last == 0)
+                break;  // Consumed elsewhere, go back to idle wait
+
+            auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+
+            uint64_t elapsed = static_cast<uint64_t>(now) - last;
+            if (elapsed >= NO_INPUT_DEBOUNCE_MS)
+            {
+                // Quiet period elapsed — fire selection event
+                debounce_last_event_time.store(0);
+
+                if (!running.load() || !tsfn)
+                    break;
+
+                auto callback = [](Napi::Env env, Napi::Function jsCallback)
+                {
+                    if (!currentInstance || !currentInstance->running.load())
+                        return;
+                    Point cursorPos = currentInstance->protocol->GetCurrentMousePosition();
+                    currentInstance->EmitSelectionEvent(
+                        SelectionDetectType::Drag, cursorPos, cursorPos);
+                };
+                tsfn.NonBlockingCall(callback);
+                break;
+            }
+            else
+            {
+                // Wait for remaining debounce time (or new event / shutdown)
+                auto remaining = std::chrono::milliseconds(NO_INPUT_DEBOUNCE_MS - elapsed);
+                std::unique_lock<std::mutex> lock(debounce_mutex);
+                debounce_cv.wait_for(lock, remaining);
+            }
+        }
+    }
+}
+
+/**
+ * Emit text selection event (shared by Path A, Path B, and Path C)
  */
 void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Point end)
 {

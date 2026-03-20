@@ -14,13 +14,19 @@
 // Linux input constants for ModifierState
 #include <linux/input.h>
 
+// Sentinel value for unreliable/unavailable screen coordinates.
+// Used when coordinate source (e.g. libevdev) cannot provide actual screen positions.
+constexpr int INVALID_COORDINATE = -99999;
+
 // Common Point structure for coordinates
 struct Point
 {
     int x = 0;
     int y = 0;
+    bool valid = false;  // true only when constructed with coordinates
+
     Point() = default;
-    Point(int x, int y) : x(x), y(y) {}
+    Point(int x, int y) : x(x), y(y), valid(true) {}
 };
 
 // Window rectangle for movement detection
@@ -268,7 +274,7 @@ class ProtocolBase
     virtual int GetModifierFlags() = 0;
 
     // Get current mouse cursor position (screen coordinates)
-    virtual Point GetCurrentMousePosition() { return Point(0, 0); }
+    virtual Point GetCurrentMousePosition() { return Point(); }
 
     // Set environment info from top-level detection
     virtual void SetEnvInfo(const LinuxEnvInfo& info) { (void)info; }

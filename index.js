@@ -65,6 +65,9 @@ class SelectionHook extends EventEmitter {
     INCLUDE_CLIPBOARD_DELAY_READ: 1,
   };
 
+  /** Sentinel value indicating coordinates are unavailable (-99999) */
+  static INVALID_COORDINATE = -99999;
+
   // Linux only
   static DisplayProtocol = {
     UNKNOWN: 0,

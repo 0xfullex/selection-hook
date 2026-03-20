@@ -292,7 +292,9 @@ class WaylandProtocol : public ProtocolBase
           pending_offer(nullptr),
           pending_has_text(false)
     {
-        current_mouse_pos = Point(0, 0);
+        // Hardware-accumulated position from libevdev (REL/ABS events).
+        // Not a real screen coordinate on Wayland; valid stays false.
+        current_mouse_pos = Point();
         read_request = {nullptr, -1, false, false};
     }
 

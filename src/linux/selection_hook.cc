@@ -42,11 +42,11 @@
 #include <cstring>
 
 // Linux system headers
-#include <sys/types.h>
-#include <unistd.h>
-#include <grp.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 // Threading primitives for Path C debounce
 #include <condition_variable>
@@ -123,13 +123,13 @@ CompositorType DetectCompositorType()
                        [](unsigned char c) { return std::tolower(c); });
 
         if (desktop_str.find("kde") != std::string::npos)
-            return CompositorType::KWin;        // KDE Plasma → KWin
+            return CompositorType::KWin;  // KDE Plasma → KWin
         if (desktop_str.find("gnome") != std::string::npos)
-            return CompositorType::Mutter;       // GNOME → mutter
+            return CompositorType::Mutter;  // GNOME → mutter
         if (desktop_str.find("cosmic") != std::string::npos)
-            return CompositorType::CosmicComp;   // COSMIC → cosmic-comp
+            return CompositorType::CosmicComp;  // COSMIC → cosmic-comp
         if (desktop_str.find("wlroots") != std::string::npos)
-            return CompositorType::Wlroots;      // Generic wlroots-based
+            return CompositorType::Wlroots;  // Generic wlroots-based
     }
 
     return CompositorType::Unknown;
@@ -215,7 +215,7 @@ static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 constexpr uint64_t CORRELATION_WINDOW_MS = 300;
 
 // No-input fallback (Path C): debounce quiet period before firing selection event
-constexpr uint64_t NO_INPUT_DEBOUNCE_MS = 300;
+constexpr uint64_t NO_INPUT_DEBOUNCE_MS = 200;
 
 //=============================================================================
 // TextSelectionHook Class Declaration
@@ -279,10 +279,16 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // Mouse state tracking (for selection gesture detection)
     Point last_mouse_down_pos;
+    // Accurate screen position at mouse-down, obtained by querying the display
+    // server (compositor IPC or XWayland). Unlike last_mouse_down_pos which comes
+    // from the input event (unreliable on Wayland), this provides real screen
+    // coordinates for reporting to consumers. Also used to detect XWayland
+    // position freezing by comparing with the emission-time query.
+    Point queried_mouse_down_pos;
     uint64_t last_mouse_down_time = 0;
     Point last_mouse_up_pos;
     uint64_t last_mouse_up_time = 0;
-    Point prev_mouse_up_pos;        // Previous mouse-up (for shift+click)
+    Point prev_mouse_up_pos;  // Previous mouse-up (for shift+click)
     uint64_t prev_mouse_up_time = 0;
     uint64_t last_window_handler = 0;
     WindowRect last_window_rect;
@@ -301,7 +307,8 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     std::atomic<bool> is_gesture_button_down{false};
 
     // Pending gesture for Path B (selection change event arrives after mouse-up)
-    struct {
+    struct
+    {
         bool active = false;
         SelectionDetectType type = SelectionDetectType::None;
         Point mousePosStart;
@@ -384,7 +391,7 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     DOUBLE_CLICK_TIME_MS = 500;  // Default value
 
     // Initialize current mouse position
-    current_mouse_pos = Point(0, 0);
+    current_mouse_pos = Point();
 }
 
 /**
@@ -524,8 +531,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
                                       [this](Napi::Env) { mouse_keyboard_running = false; });
 
     // Create thread-safe function for selection change events (Path A/B)
-    selection_tsfn =
-        Napi::ThreadSafeFunction::New(env, callback, "SelectionEventCallback", 64, 1);
+    selection_tsfn = Napi::ThreadSafeFunction::New(env, callback, "SelectionEventCallback", 64, 1);
 
     // Initialize input monitoring via protocol
     if (!protocol->InitializeInputMonitoring(&SelectionHook::OnMouseEventCallback,
@@ -555,8 +561,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         // Start debounce thread for no-input fallback (Wayland without libevdev)
         // Note: !isRoot is redundant (CheckInputDeviceAccess already returns true for root)
         // but kept as defensive guard
-        is_no_input_fallback = (env_info.displayProtocol == DisplayProtocol::Wayland
-                                && !env_info.hasInputDeviceAccess && !env_info.isRoot);
+        is_no_input_fallback = (env_info.displayProtocol == DisplayProtocol::Wayland &&
+                                !env_info.hasInputDeviceAccess && !env_info.isRoot);
         if (is_no_input_fallback)
         {
             fprintf(stderr, "[Wayland] No input devices available, using data-control debounce fallback (Path C)\n");
@@ -997,27 +1003,18 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
     resultObj.Set(Napi::String::New(env, "method"), Napi::Number::New(env, static_cast<int>(selectionInfo.method)));
     resultObj.Set(Napi::String::New(env, "posLevel"), Napi::Number::New(env, static_cast<int>(selectionInfo.posLevel)));
 
-    // First paragraph left-top point (start position)
-    resultObj.Set(Napi::String::New(env, "startTopX"), Napi::Number::New(env, selectionInfo.startTop.x));
-    resultObj.Set(Napi::String::New(env, "startTopY"), Napi::Number::New(env, selectionInfo.startTop.y));
+    // Helper: output real coordinate when valid, INVALID_COORDINATE otherwise
+    auto setCoord = [&](const char* xKey, const char* yKey, const Point& p) {
+        resultObj.Set(xKey, Napi::Number::New(env, p.valid ? p.x : INVALID_COORDINATE));
+        resultObj.Set(yKey, Napi::Number::New(env, p.valid ? p.y : INVALID_COORDINATE));
+    };
 
-    // Last paragraph right-bottom point (end position)
-    resultObj.Set(Napi::String::New(env, "endBottomX"), Napi::Number::New(env, selectionInfo.endBottom.x));
-    resultObj.Set(Napi::String::New(env, "endBottomY"), Napi::Number::New(env, selectionInfo.endBottom.y));
-
-    // First paragraph left-bottom point
-    resultObj.Set(Napi::String::New(env, "startBottomX"), Napi::Number::New(env, selectionInfo.startBottom.x));
-    resultObj.Set(Napi::String::New(env, "startBottomY"), Napi::Number::New(env, selectionInfo.startBottom.y));
-
-    // Last paragraph right-top point
-    resultObj.Set(Napi::String::New(env, "endTopX"), Napi::Number::New(env, selectionInfo.endTop.x));
-    resultObj.Set(Napi::String::New(env, "endTopY"), Napi::Number::New(env, selectionInfo.endTop.y));
-
-    // Mouse positions
-    resultObj.Set(Napi::String::New(env, "mouseStartX"), Napi::Number::New(env, selectionInfo.mousePosStart.x));
-    resultObj.Set(Napi::String::New(env, "mouseStartY"), Napi::Number::New(env, selectionInfo.mousePosStart.y));
-    resultObj.Set(Napi::String::New(env, "mouseEndX"), Napi::Number::New(env, selectionInfo.mousePosEnd.x));
-    resultObj.Set(Napi::String::New(env, "mouseEndY"), Napi::Number::New(env, selectionInfo.mousePosEnd.y));
+    setCoord("startTopX", "startTopY", selectionInfo.startTop);
+    setCoord("startBottomX", "startBottomY", selectionInfo.startBottom);
+    setCoord("endTopX", "endTopY", selectionInfo.endTop);
+    setCoord("endBottomX", "endBottomY", selectionInfo.endBottom);
+    setCoord("mouseStartX", "mouseStartY", selectionInfo.mousePosStart);
+    setCoord("mouseEndX", "mouseEndY", selectionInfo.mousePosEnd);
 
     return resultObj;
 }
@@ -1118,6 +1115,14 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Update mouse-down state
                 currentInstance->last_mouse_down_time = currentTime;
                 currentInstance->last_mouse_down_pos = currentPos;
+
+                // Query display server for accurate screen coordinates at gesture start.
+                // On X11 this duplicates last_mouse_down_pos; on Wayland it provides the
+                // first reliable coordinate for drag gesture reporting (MouseDual).
+                if (currentInstance->env_info.displayProtocol == DisplayProtocol::Wayland)
+                {
+                    currentInstance->queried_mouse_down_pos = currentInstance->protocol->GetCurrentMousePosition();
+                }
 
                 // Clear pending gesture (prevent old pending from being triggered by new action)
                 currentInstance->pending_gesture.active = false;
@@ -1303,11 +1308,15 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             return;
         }
 
+        // Output INVALID_COORDINATE when position source is unreliable (e.g. libevdev on Wayland)
+        int outX = currentPos.valid ? currentPos.x : INVALID_COORDINATE;
+        int outY = currentPos.valid ? currentPos.y : INVALID_COORDINATE;
+
         Napi::Object resultObj = Napi::Object::New(env);
         resultObj.Set(Napi::String::New(env, "type"), Napi::String::New(env, "mouse-event"));
         resultObj.Set(Napi::String::New(env, "action"), Napi::String::New(env, mouseTypeStr));
-        resultObj.Set(Napi::String::New(env, "x"), Napi::Number::New(env, currentPos.x));
-        resultObj.Set(Napi::String::New(env, "y"), Napi::Number::New(env, currentPos.y));
+        resultObj.Set(Napi::String::New(env, "x"), Napi::Number::New(env, outX));
+        resultObj.Set(Napi::String::New(env, "y"), Napi::Number::New(env, outY));
         resultObj.Set(Napi::String::New(env, "button"), Napi::Number::New(env, static_cast<int>(mouseButton)));
         resultObj.Set(Napi::String::New(env, "flag"), Napi::Number::New(env, mouseFlagValue));
         function.Call({resultObj});
@@ -1412,9 +1421,7 @@ void SelectionHook::DebounceThreadProc()
         // Phase 1: Idle wait — block until a data-control event arrives or shutdown
         {
             std::unique_lock<std::mutex> lock(debounce_mutex);
-            debounce_cv.wait(lock, [this] {
-                return debounce_last_event_time.load() != 0 || !debounce_running.load();
-            });
+            debounce_cv.wait(lock, [this] { return debounce_last_event_time.load() != 0 || !debounce_running.load(); });
         }
 
         if (!debounce_running.load())
@@ -1445,8 +1452,7 @@ void SelectionHook::DebounceThreadProc()
                     if (!currentInstance || !currentInstance->running.load())
                         return;
                     Point cursorPos = currentInstance->protocol->GetCurrentMousePosition();
-                    currentInstance->EmitSelectionEvent(
-                        SelectionDetectType::Drag, cursorPos, cursorPos);
+                    currentInstance->EmitSelectionEvent(SelectionDetectType::Drag, cursorPos, cursorPos);
                 };
                 tsfn.NonBlockingCall(callback);
                 break;
@@ -1503,30 +1509,55 @@ void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
             break;
     }
 
-    // Wayland: query compositor for accurate cursor position
+    // Wayland: refine coordinates using display server query.
+    // Replaces unreliable libevdev positions with compositor/XWayland coordinates.
     if (env_info.displayProtocol == DisplayProtocol::Wayland)
     {
         Point accuratePos = protocol->GetCurrentMousePosition();
-        if (accuratePos.x != 0 || accuratePos.y != 0)
+
+        switch (type)
         {
-            selectionInfo.mousePosEnd = accuratePos;
-            switch (type)
-            {
-                case SelectionDetectType::Drag:
-                    // start is mouse-down time, cannot be retroactively corrected, downgrade to Single
+            case SelectionDetectType::Drag: {
+                if (queried_mouse_down_pos.valid && accuratePos.valid) {
+                    // XWayland frozen: position unchanged despite physical drag → stale coordinates
+                    if (accuratePos.x == queried_mouse_down_pos.x &&
+                        accuratePos.y == queried_mouse_down_pos.y) {
+                        selectionInfo.mousePosStart.valid = false;
+                        selectionInfo.mousePosEnd.valid = false;
+                        selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
+                    } else {
+                        // Both start (mouse-down) and end (emission) are accurate
+                        selectionInfo.mousePosStart = queried_mouse_down_pos;
+                        selectionInfo.mousePosEnd = accuratePos;
+                        selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
+                    }
+                } else if (accuratePos.valid) {
+                    // Only emission-time position is accurate
+                    selectionInfo.mousePosEnd = accuratePos;
+                    selectionInfo.mousePosStart = accuratePos;  // start = end
                     selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
-                    break;
-                case SelectionDetectType::DoubleClick:
-                    // Both coordinates are essentially the same point, calibrate start too
-                    selectionInfo.mousePosStart = accuratePos;
-                    break;
-                case SelectionDetectType::ShiftClick:
-                    // start is previous click position (libevdev), inaccurate, downgrade to Single
+                } else {
+                    // Both invalid (no compositor IPC, no XWayland)
                     selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
-                    break;
-                default:
-                    break;
+                }
+                break;
             }
+            case SelectionDetectType::DoubleClick:
+                if (accuratePos.valid) {
+                    selectionInfo.mousePosStart = accuratePos;
+                    selectionInfo.mousePosEnd = accuratePos;
+                }
+                // posLevel stays MouseSingle (double-click is always single point)
+                break;
+            case SelectionDetectType::ShiftClick:
+                if (accuratePos.valid) {
+                    selectionInfo.mousePosEnd = accuratePos;
+                    selectionInfo.mousePosStart = accuratePos;  // start = end
+                }
+                selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
+                break;
+            default:
+                break;
         }
     }
 

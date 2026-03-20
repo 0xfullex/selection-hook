@@ -441,7 +441,7 @@ class X11Protocol : public ProtocolBase
     Point GetCurrentMousePosition() override
     {
         if (!display)
-            return Point(0, 0);
+            return Point();
 
         Window root_return, child_return;
         int root_x, root_y, win_x, win_y;
@@ -452,7 +452,7 @@ class X11Protocol : public ProtocolBase
             return Point(root_x, root_y);
         }
 
-        return Point(0, 0);
+        return Point();
     }
 
 };

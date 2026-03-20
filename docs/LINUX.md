@@ -21,7 +21,7 @@ Selection text on Linux is obtained exclusively via **PRIMARY selection** — th
 |---|---|
 | **Clipboard read/write disabled** | `writeToClipboard()` and `readFromClipboard()` return false on Linux. X11's lazy clipboard model requires the owner to keep a window alive and respond to `SelectionRequest` events, which is unreliable in a library context. Host applications should use their own clipboard API (e.g., Electron's `clipboard` module). |
 | **No clipboard fallback** | The Ctrl+C clipboard fallback mechanism (used on Windows/macOS as a last resort) is not implemented on Linux. Text is obtained solely via PRIMARY selection. |
-| **No text range coordinates** | `startTop`, `startBottom`, `endTop`, `endBottom` are always `{x: 0, y: 0}`. Retrieving selection bounding rectangles is not implemented on Linux. `posLevel` will be `MOUSE_SINGLE` or `MOUSE_DUAL` at most, never `SEL_FULL`. |
+| **No text range coordinates** | `startTop`, `startBottom`, `endTop`, `endBottom` are always `-99999` (`INVALID_COORDINATE`). Selection bounding rectangles are not available on Linux. `posLevel` will be `MOUSE_SINGLE` or `MOUSE_DUAL` at most, never `SEL_FULL`. |
 
 ### X11 Specific
 
@@ -75,7 +75,7 @@ When input devices are not accessible, selection-hook falls back to **data-contr
 
 - Mouse/keyboard events will **not** be emitted
 - Selection detection still works but with slightly higher latency (~300ms after the user finishes selecting)
-- `posLevel` will be `MOUSE_SINGLE` (cursor position queried from compositor at the time of detection)
+- `posLevel` will be `MOUSE_SINGLE` (cursor position queried from compositor at the time of detection, or `-99999` if unavailable)
 - `programName` remains empty (Wayland limitation)
 
 ### Wayland Compositor Compatibility
@@ -117,6 +117,18 @@ Wayland does not provide a standard API for global cursor position queries. We u
 - Coordinates track correctly when the cursor is over XWayland windows, but may freeze at the last known position when the cursor moves over native Wayland windows
 - If XWayland is unavailable, falls back to libevdev accumulated coordinates (device-relative, not screen coordinates)
 
+**Coordinate unavailability (`INVALID_COORDINATE = -99999`):**
+
+On Wayland, mouse event coordinates (`x`, `y`) come from libevdev hardware events (relative deltas or absolute hardware values) which do not represent actual screen positions. These coordinates are reported as `-99999` (`SelectionHook.INVALID_COORDINATE`) to clearly indicate they are unavailable. Always check coordinate fields against this sentinel value before using them for positioning.
+
+For text selection events, the coordinate fallback chain works as follows:
+- **Compositor IPC** (Hyprland, KDE): provides accurate screen coordinates → real values
+- **XWayland**: provides accurate coordinates when cursor is over XWayland windows → real values
+- **XWayland frozen**: detected when mouse-down and mouse-up queries return identical coordinates despite physical movement → `-99999`
+- **No IPC, no XWayland**: libevdev values → `-99999`
+
+For drag selections on Wayland, the library queries the compositor at both mouse-down and mouse-up, enabling `MOUSE_DUAL` position level when both queries succeed and coordinates differ (indicating the cursor actually moved between XWayland/compositor-tracked windows).
+
 ## API Behavior on Linux
 
 The following APIs have different behavior on Linux compared to Windows/macOS:
@@ -131,9 +143,9 @@ The following APIs have different behavior on Linux compared to Windows/macOS:
 | `setFineTunedList()` | No effect | No effect | Windows only |
 | `setGlobalFilterMode()` | ✅ Works | ⚠️ Ineffective | `programName` is always empty on Wayland, so program-based filtering cannot match |
 | `programName` in events | ✅ Via `WM_CLASS` | Always `""` | Wayland security model restriction |
-| `startTop/startBottom/endTop/endBottom` | Always `(0,0)` | Always `(0,0)` | Selection bounding rectangles not implemented |
-| `posLevel` | `MOUSE_SINGLE` or `MOUSE_DUAL` | `MOUSE_SINGLE` or `MOUSE_DUAL` | Never reaches `SEL_FULL` on Linux |
-| `mousePosStart` / `mousePosEnd` | ✅ Screen coordinates | Compositor-dependent | See compositor compatibility table |
+| `startTop/startBottom/endTop/endBottom` | Always `-99999` | Always `-99999` | Selection bounding rectangles not available. Check against `INVALID_COORDINATE`. |
+| `posLevel` | `MOUSE_SINGLE` or `MOUSE_DUAL` | `MOUSE_SINGLE` or `MOUSE_DUAL` | Wayland drag can achieve `MOUSE_DUAL` when compositor provides accurate positions at both mouse-down and mouse-up. Never reaches `SEL_FULL` on Linux. |
+| `mousePosStart` / `mousePosEnd` | ✅ Screen coordinates | Compositor-dependent | May be `-99999` when unavailable. See compositor compatibility table. |
 
 ## Hint for Electron Applications
 

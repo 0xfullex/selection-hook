@@ -220,33 +220,37 @@ Represents text selection information including content, source application, and
 | --------------- | ----------------- | ------------------------------------------------------------- |
 | `text`          | `string`          | The selected text content                                     |
 | `programName`   | `string`          | Name of the application where selection occurred. Always empty on Linux Wayland. |
-| `startTop`      | `Point`           | First paragraph's top-left coordinates (px). Always `(0,0)` on Linux. |
-| `startBottom`   | `Point`           | First paragraph's bottom-left coordinates (px). Always `(0,0)` on Linux. |
-| `endTop`        | `Point`           | Last paragraph's top-right coordinates (px). Always `(0,0)` on Linux. |
-| `endBottom`     | `Point`           | Last paragraph's bottom-right coordinates (px). Always `(0,0)` on Linux. |
-| `mousePosStart` | `Point`           | Mouse position when selection started (px). Accuracy varies on Linux Wayland (see [details](LINUX.md)). |
-| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px). Accuracy varies on Linux Wayland (see [details](LINUX.md)).   |
+| `startTop`      | `Point`           | First paragraph's top-left coordinates (px)                   |
+| `startBottom`   | `Point`           | First paragraph's bottom-left coordinates (px)                |
+| `endTop`        | `Point`           | Last paragraph's top-right coordinates (px)                   |
+| `endBottom`     | `Point`           | Last paragraph's bottom-right coordinates (px)                |
+| `mousePosStart` | `Point`           | Mouse position when selection started (px)                    |
+| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px)                      |
 | `method`        | `SelectionMethod` | Indicates which method was used to detect the text selection. |
 | `posLevel`      | `PositionLevel`   | Indicates which positional data is provided.                  |
 | `isFullscreen`  | `boolean`         | _macOS Only_ Whether the window is in fullscreen mode         |
 
 Type `Point` is `{ x: number; y: number }`
 
+**Linux coordinate availability:** On Linux, `startTop`/`startBottom`/`endTop`/`endBottom` are always `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because selection bounding rectangles are not available. On Linux Wayland, `mousePosStart`/`mousePosEnd` may also be `-99999` when the coordinate source (libevdev) cannot provide actual screen positions — see [Linux platform details](LINUX.md) for the compositor-dependent fallback chain.
+
 When `PositionLevel` is:
 
 - `MOUSE_SINGLE`：only `mousePosStart` and `mousePosEnd` is provided, and `mousePosStart` equals `mousePosEnd`
-- `MOUSE_DUAL`: only `mousePosStart` and `mousePosEnd` is provided
+- `MOUSE_DUAL`: only `mousePosStart` and `mousePosEnd` is provided. On Linux Wayland, drag selection can achieve `MOUSE_DUAL` when the compositor provides accurate cursor positions at both mouse-down and mouse-up.
 - `SEL_FULL`: all the mouse position and paragraph's coordinates are provided
 
 #### `MouseEventData`
 
-Contains mouse click/movement information in screen coordinates. On Linux Wayland, coordinate accuracy depends on compositor (see [Linux platform details](LINUX.md)).
+Contains mouse click/movement information in screen coordinates.
 
 | Property | Type     | Description                                                                                                                     |
 | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `x`      | `number` | Horizontal pointer position (px)                                                                                                |
 | `y`      | `number` | Vertical pointer position (px)                                                                                                  |
 | `button` | `number` | Same as WebAPIs' MouseEvent.button <br /> `0`=Left, `1`=Middle, `2`=Right, `3`=Back, `4`=Forward <br /> `-1`=None, `99`=Unknown |
+
+On Linux Wayland, `x`/`y` may be `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because the input source (libevdev) cannot provide actual screen positions. See [Linux platform details](LINUX.md).
 
 If `button != -1` when `mouse-move`, which means it's dragging.
 
@@ -280,6 +284,16 @@ About vkCode:
 - Linux: KEY\_\* values from `<linux/input-event-codes.h>`
 
 ### Constants
+
+#### **`SelectionHook.INVALID_COORDINATE`**
+
+Sentinel value (`-99999`) indicating that a coordinate is unavailable or unreliable. On Linux Wayland, mouse event coordinates and selection position coordinates may be set to this value when the input source (libevdev) cannot provide actual screen positions. Check coordinate fields against `SelectionHook.INVALID_COORDINATE` before using them for UI positioning.
+
+```javascript
+if (data.mousePosEnd.x !== SelectionHook.INVALID_COORDINATE) {
+  // Position is reliable, use it
+}
+```
 
 #### **`SelectionHook.SelectionMethod`**
 

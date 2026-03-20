@@ -13,6 +13,11 @@ import { EventEmitter } from "events";
  *
  * Contains the selected text and its position information.
  * Position coordinates are in screen coordinates (pixels).
+ *
+ * On Linux, `startTop`/`startBottom`/`endTop`/`endBottom` are always
+ * `-99999` (INVALID_COORDINATE) because selection bounding rectangles are
+ * not available. On Linux Wayland, `mousePosStart`/`mousePosEnd` may also
+ * be `-99999` when the coordinate source cannot provide screen positions.
  */
 export interface TextSelectionData {
   /** The selected text content */
@@ -27,9 +32,9 @@ export interface TextSelectionData {
   endTop: { x: number; y: number };
   /** Last paragraph's right-bottom point (x, y) in pixels */
   endBottom: { x: number; y: number };
-  /** Current mouse position (x, y) in pixels */
+  /** Mouse position when selection started (x, y) in pixels */
   mousePosStart: { x: number; y: number };
-  /** Mouse down position (x, y) in pixels */
+  /** Mouse position when selection ended (x, y) in pixels */
   mousePosEnd: { x: number; y: number };
   /** Selection method identifier */
   method: (typeof SelectionHook.SelectionMethod)[keyof typeof SelectionHook.SelectionMethod];
@@ -44,6 +49,8 @@ export interface TextSelectionData {
  *
  * Contains information about mouse events such as clicks and movements.
  * Coordinates are in screen coordinates (pixels).
+ * On Linux Wayland, `x`/`y` may be `-99999` (INVALID_COORDINATE) when
+ * the coordinate source cannot provide screen positions.
  */
 export interface MouseEventData {
   /** X coordinate of mouse pointer (px) */
@@ -184,6 +191,14 @@ declare class SelectionHook extends EventEmitter {
     EXCLUDE_CLIPBOARD_CURSOR_DETECT: 0;
     INCLUDE_CLIPBOARD_DELAY_READ: 1;
   };
+
+  /**
+   * Sentinel value indicating coordinates are unavailable (-99999).
+   * Returned when the coordinate source (e.g. libevdev on Wayland) cannot
+   * provide actual screen positions. Check coordinate fields against this
+   * value before using them for positioning.
+   */
+  static INVALID_COORDINATE: -99999;
 
   static DisplayProtocol: {
     UNKNOWN: 0;

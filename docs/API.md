@@ -1,6 +1,21 @@
 # API Reference
 
-### Constructor
+- [Constructor](#constructor)
+- [Methods](#methods)
+  - [Lifecycle](#lifecycle) — `start()`, `stop()`, `isRunning()`, `cleanup()`
+  - [Selection](#selection) — `getCurrentSelection()`, `setSelectionPassiveMode()`
+  - [Mouse Tracking](#mouse-tracking) — `enableMouseMoveEvent()`, `disableMouseMoveEvent()`
+  - [Clipboard](#clipboard) — `enableClipboard()`, `disableClipboard()`, `setClipboardMode()`, `writeToClipboard()`, `readFromClipboard()`
+  - [Filtering](#filtering) — `setGlobalFilterMode()`, `setFineTunedList()`
+  - [Platform-Specific](#platform-specific) — `macIsProcessTrusted()`, `macRequestProcessTrust()`, `linuxGetEnvInfo()`
+- [Events](#events) — `text-selection`, `mouse-move`, `mouse-up`, `mouse-down`, `mouse-wheel`, `key-down`, `key-up`, `status`, `error`
+- [Types](#types) — `SelectionConfig`, `TextSelectionData`, `MouseEventData`, `MouseWheelEventData`, `KeyboardEventData`, `LinuxEnvInfo`, `Point`
+- [Constants](#constants) — `INVALID_COORDINATE`, `SelectionMethod`, `PositionLevel`, `FilterMode`, `FineTunedListType`, `DisplayProtocol`, `CompositorType`
+- [TypeScript Support](#typescript-support)
+
+---
+
+## Constructor
 
 ```javascript
 const hook = new SelectionHook();
@@ -8,122 +23,200 @@ const hook = new SelectionHook();
 
 Creates a new SelectionHook instance and initializes the native module. The native instance is created immediately in the constructor, so query methods (e.g., `linuxGetEnvInfo()`, `macIsProcessTrusted()`) and configuration methods (e.g., `enableClipboard()`, `setGlobalFilterMode()`) can be called before `start()`.
 
-### Methods
+---
 
-#### **`start(config?: SelectionConfig): boolean`**
+## Methods
+
+### Lifecycle
+
+#### `start(config?): boolean`
 
 Start monitoring text selections.
 
 Configuration methods can be called before `start()` to pre-configure the hook. If `start()` is called with a config object, the config values will override any pre-start settings that differ from defaults.
 
-Config options (with default values):
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `config` | [`SelectionConfig`](#selectionconfig) | No | — | Configuration options. See [`SelectionConfig`](#selectionconfig) for all available fields and defaults. |
 
-```javascript
-{
-  debug?: false,                 // Enable debug logging
-  enableMouseMoveEvent?: false,  // Enable mouse move tracking, can be set in runtime
-  enableClipboard?: true,        // Enable clipboard fallback, can be set in runtime
-  selectionPassiveMode?: false,  // Enable passive mode, can be set in runtime
-  clipboardMode?: SelectionHook.FilterMode.DEFAULT,    // Clipboard mode, can be set in runtime
-  clipboardFilterList?: string[]                       // Program list for clipboard mode, can be set in runtime
-  globalFilterMode?: SelectionHook.FilterMode.DEFAULT, // Global filter mode, can be set in runtime
-  globalFilterList?: string[]                          // Global program list for global filter mode, can be set in runtime
-}
-```
+**Returns:** `boolean` — `true` if started successfully.
 
-see [`SelectionHook.FilterMode`](#selectionhookfiltermode) for details
+See [`SelectionHook.FilterMode`](#selectionhookfiltermode) for filter mode details.
 
-**For _Linux_**:
-`enableClipboard`, `clipboardMode`, and `clipboardFilterList` have no effect on Linux (clipboard fallback is not implemented). On Wayland, `globalFilterMode`/`globalFilterList` are ineffective because `programName` is always empty. See [`docs/LINUX.md`](LINUX.md) for full details.
+> **Linux:** `enableClipboard`, `clipboardMode`, and `clipboardFilterList` have no effect on Linux (clipboard fallback is not implemented). On Wayland, `globalFilterMode`/`globalFilterList` are ineffective because `programName` is always empty. See [Linux platform details](LINUX.md) for full details.
 
-**For _macOS_**:
-macOS requires accessibility permissions for the selection-hook to function properly. Please ensure that the user has enabled accessibility permissions before calling start().
+> **macOS:** macOS requires accessibility permissions for the selection-hook to function properly. Ensure the user has enabled accessibility permissions before calling `start()`.
+> - **Node**: use `selection-hook`'s `macIsProcessTrusted()` and `macRequestProcessTrust()` to check and request permissions.
+> - **Electron**: use Electron's `systemPreferences.isTrustedAccessibilityClient()` to check permissions.
 
-- **Node**: use `selection-hook`'s `macIsProcessTrusted` and `macRequestProcessTrust` to check whether the permission is granted.
-- **Electron**: use `electon`'s `systemPreferences.isTrustedAccessibilityClient` to check whether the permission is granted.
-
-#### **`stop(): boolean`**
+#### `stop(): boolean`
 
 Stop monitoring text selections.
 
-#### **`getCurrentSelection(): TextSelectionData | null`**
+**Returns:** `boolean` — `true` if stopped successfully.
+
+#### `isRunning(): boolean`
+
+Check if selection-hook is currently running.
+
+**Returns:** `boolean` — `true` if monitoring is active.
+
+#### `cleanup(): void`
+
+Release resources and stop monitoring. Should be called before the application exits.
+
+---
+
+### Selection
+
+#### `getCurrentSelection(): TextSelectionData | null`
 
 Get the current text selection if any exists.
 
-#### **`enableMouseMoveEvent(): boolean`**
+**Returns:** [`TextSelectionData`](#textselectiondata) `| null` — Current selection data, or `null` if no selection exists.
 
-Enable mouse move events (high CPU usage). Disabled by default. Can be called before `start()`.
+#### `setSelectionPassiveMode(passive): boolean`
 
-#### **`disableMouseMoveEvent(): boolean`**
+Set passive mode for selection. In passive mode, `text-selection` events will not be emitted — selections are only retrieved via `getCurrentSelection()`. Can be called before `start()`.
 
-Disable mouse move events. Disabled by default. Can be called before `start()`.
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `passive` | `boolean` | Yes | — | `true` to enable passive mode, `false` to disable. |
 
-#### **`enableClipboard(): boolean`**
+**Returns:** `boolean` — `true` if set successfully.
 
-Enable clipboard fallback for text selection. Enabled by default. No effect on Linux (uses PRIMARY selection instead of clipboard fallback). Can be called before `start()`.
+---
 
-#### **`disableClipboard(): boolean`**
+### Mouse Tracking
 
-Disable clipboard fallback for text selection. Enabled by default. No effect on Linux. Can be called before `start()`.
+#### `enableMouseMoveEvent(): boolean`
 
-#### **`setClipboardMode(mode: ClipboardMode, programList?: string[]): boolean`**
+Enable mouse move events. This causes high CPU usage due to frequent event firing. Disabled by default. Can be called before `start()`.
 
-Configure how clipboard fallback works with different programs. See `SelectionHook.FilterMode` constants for details. No effect on Linux. Can be called before `start()`.
+**Returns:** `boolean` — `true` if enabled successfully.
 
-#### **`setGlobalFilterMode(mode: FilterMode, programList?: string[]): boolean`**
+#### `disableMouseMoveEvent(): boolean`
 
-Configure which applications should trigger text selection events. You can include or exclude specific applications from the selection monitoring. See `SelectionHook.FilterMode` constants for details. On Linux Wayland, `programName` is always empty so program-based filtering will not work. Can be called before `start()`.
+Disable mouse move events. This is the default state. Can be called before `start()`.
 
-#### **`setFineTunedList(listType: FineTunedListType, programList?: string[]): boolean`**
+**Returns:** `boolean` — `true` if disabled successfully.
 
-_Windows Only_
+---
+
+### Clipboard
+
+#### `enableClipboard(): boolean`
+
+Enable clipboard fallback for text selection. Enabled by default. Can be called before `start()`.
+
+**Returns:** `boolean` — `true` if enabled successfully.
+
+> **Linux:** No effect on Linux. Linux uses PRIMARY selection instead of clipboard fallback.
+
+#### `disableClipboard(): boolean`
+
+Disable clipboard fallback for text selection. Clipboard is enabled by default. Can be called before `start()`.
+
+**Returns:** `boolean` — `true` if disabled successfully.
+
+> **Linux:** No effect on Linux.
+
+#### `setClipboardMode(mode, programList?): boolean`
+
+Configure how clipboard fallback works with different programs. See [`SelectionHook.FilterMode`](#selectionhookfiltermode) constants for details. Can be called before `start()`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `mode` | [`FilterMode`](#selectionhookfiltermode) | Yes | — | Clipboard filter mode. |
+| `programList` | `string[]` | No | `[]` | Program names to include or exclude. |
+
+**Returns:** `boolean` — `true` if set successfully.
+
+> **Linux:** No effect on Linux.
+
+#### `writeToClipboard(text): boolean`
+
+Write text to the system clipboard. Useful for implementing custom copy functions. Can be called before `start()`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `text` | `string` | Yes | — | Text to write to clipboard. |
+
+**Returns:** `boolean` — `true` if written successfully. Always returns `false` on Linux.
+
+> **Platform:** Windows, macOS only. Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
+
+#### `readFromClipboard(): string | null`
+
+Read text from the system clipboard. Can be called before `start()`.
+
+**Returns:** `string | null` — Clipboard text content, or `null` if clipboard is empty or contains non-text data. Always returns `null` on Linux.
+
+> **Platform:** Windows, macOS only. Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
+
+---
+
+### Filtering
+
+#### `setGlobalFilterMode(mode, programList?): boolean`
+
+Configure which applications should trigger text selection events. You can include or exclude specific applications from selection monitoring. See [`SelectionHook.FilterMode`](#selectionhookfiltermode) constants for details. Can be called before `start()`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `mode` | [`FilterMode`](#selectionhookfiltermode) | Yes | — | Global filter mode. |
+| `programList` | `string[]` | No | `[]` | Program names to include or exclude. |
+
+**Returns:** `boolean` — `true` if set successfully.
+
+> **Linux:** On Wayland, `programName` is always empty so program-based filtering will not work.
+
+#### `setFineTunedList(listType, programList?): boolean`
 
 Configure fine-tuned lists for specific application behaviors. Can be called before `start()`. This allows you to customize how the selection hook behaves with certain applications that may have unique characteristics.
 
-For example, you can add `acrobat.exe` to those lists to enable text seleted in Acrobat.
+For example, you can add `acrobat.exe` to those lists to enable text selected in Acrobat.
 
-List types:
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `listType` | [`FineTunedListType`](#selectionhookfinetunedlisttype) | Yes | — | Fine-tuned list type. |
+| `programList` | `string[]` | No | `[]` | Program names for the fine-tuned list. |
 
-- `EXCLUDE_CLIPBOARD_CURSOR_DETECT`: Exclude cursor detection for clipboard operations
-- `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content
+**Returns:** `boolean` — `true` if set successfully.
 
-See `SelectionHook.FineTunedListType` constants for details.
+> **Platform:** Windows only.
 
-#### **`setSelectionPassiveMode(passive: boolean): boolean`**
+---
 
-Set passive mode for selection (only triggered by getCurrentSelection, `text-selection` event will not be emitted). Can be called before `start()`.
+### Platform-Specific
 
-#### **`writeToClipboard(text: string): boolean`**
+#### macOS
 
-Write text to the system clipboard. This is useful for implementing custom copy functions. Can be called before `start()`.
+#### `macIsProcessTrusted(): boolean`
 
-Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
+Check if the process is trusted for accessibility. Can be called before `start()`. If the process is not trusted, selection-hook will still run, but it won't respond to any events. Make sure to guide the user through the authorization process before calling `start()`.
 
-#### **`readFromClipboard(): string | null`**
+**Returns:** `boolean` — `true` if the process is trusted for accessibility.
 
-Read text from the system clipboard. Returns clipboard text content as string, or null if clipboard is empty or contains non-text data. Can be called before `start()`.
+> **Platform:** macOS only.
 
-Not supported on Linux. Host applications should use their own clipboard API (e.g., Electron clipboard).
-
-#### **`macIsProcessTrusted(): boolean`**
-
-_macOS Only_
-
-Check if the process is trusted for accessibility. Can be called before `start()`. If the process is not trusted, selection-hook will still run, but it won't respond to any events. Make sure to guide the user through the authorization process before calling start().
-
-#### **`macRequestProcessTrust(): boolean`**
-
-_macOS Only_
+#### `macRequestProcessTrust(): boolean`
 
 Try to request accessibility permissions. Can be called before `start()`. This MAY show a dialog to the user if permissions are not granted.
 
-Note: The return value indicates the current permission status, not the request result.
+**Returns:** `boolean` — The current permission status, not the request result.
 
-#### **`linuxGetEnvInfo(): LinuxEnvInfo | null`**
+> **Platform:** macOS only.
 
-_Linux Only_
+#### Linux
+
+#### `linuxGetEnvInfo(): LinuxEnvInfo | null`
 
 Get Linux environment information. Can be called before `start()`. Returns an object with display protocol, compositor type, input device access status, and root status. All values are detected once at construction time and cached. Returns `null` on non-Linux platforms.
+
+**Returns:** [`LinuxEnvInfo`](#linuxenvinfo) `| null` — Linux environment info, or `null` on non-Linux platforms.
+
+See [`LinuxEnvInfo`](#linuxenvinfo) for the full structure, and [`SelectionHook.CompositorType`](#selectionhookcompositortype) for compositor constants.
 
 ```javascript
 const info = hook.linuxGetEnvInfo();
@@ -135,159 +228,208 @@ const info = hook.linuxGetEnvInfo();
 // }
 ```
 
-See [`LinuxEnvInfo`](#linuxenvinfo) for the full structure, and [`SelectionHook.CompositorType`](#selectionhookcompositortype) for compositor constants.
+> **Platform:** Linux only.
 
-#### **`isRunning(): boolean`**
+---
 
-Check if selection-hook is currently running.
+## Events
 
-#### **`cleanup()`**
+#### `text-selection`
 
-Release resources and stop monitoring.
-
-### Events
-
-#### **`text-selection`**
-
-Emitted when text is selected, see [`TextSelectionData`](#textselectiondata) for `data` structure
+Emitted when text is selected in any application. See [`TextSelectionData`](#textselectiondata) for the `data` structure.
 
 ```javascript
-hook.on("text-selection", (data: TextSelectionData) => {
+hook.on("text-selection", (data) => {
   // data contains selection information
 });
 ```
 
-#### **`mouse-move`**, **`mouse-up`**, **`mouse-down`**
+#### `mouse-move`, `mouse-up`, `mouse-down`
 
-Mouse events, see [`MouseEventData`](#mouseeventdata) for `data` structure
+Mouse events. See [`MouseEventData`](#mouseeventdata) for the `data` structure.
 
 ```javascript
-hook.on("mouse-XXX", (data: MouseEventData) => {
+hook.on("mouse-up", (data) => {
   // data contains mouse coordinates and button info
 });
 ```
 
-#### **`mouse-wheel`**
+#### `mouse-wheel`
 
-Mouse wheel events, see [`MouseWheelEventData`](#mousewheeleventdata) for `data` structure
+Mouse wheel events. See [`MouseWheelEventData`](#mousewheeleventdata) for the `data` structure.
 
 ```javascript
-hook.on("mouse-wheel", (data: MouseWheelEventData) => {
+hook.on("mouse-wheel", (data) => {
   // data contains wheel direction info
 });
 ```
 
-#### **`key-down`**, **`key-up`**
+#### `key-down`, `key-up`
 
-Keyboard events, see [`KeyboardEventData`](#keyboardeventdata) for `data` structure
+Keyboard events. See [`KeyboardEventData`](#keyboardeventdata) for the `data` structure.
 
 ```javascript
-hook.on("key-XXX", (data: KeyboardEventData) => {
+hook.on("key-down", (data) => {
   // data contains key code and modifier info
 });
 ```
 
-#### **`status`**
+#### `status`
 
-Hook status changes
+Hook status changes.
 
 ```javascript
-hook.on("status", (status: string) => {
+hook.on("status", (status) => {
   // status is a string, e.g. "started", "stopped"
 });
 ```
 
-#### **`error`**
+#### `error`
 
-Error events
-Only display errors when `debug` set to `true` when `start()`
+Error events. Only emitted when `debug` is set to `true` in `start()`.
 
 ```javascript
-hook.on("error", (error: Error) => {
+hook.on("error", (error) => {
   // error is an Error object
 });
 ```
 
-### Data Structure
+---
 
-**Note**: All coordinates are in physical coordinates (virtual screen coordinates) in Windows. You can use `screen.screenToDipPoint(point)` in Electron to convert the point to logical coordinates. In macOS and Linux X11, you don't need to do extra work. On Linux Wayland, coordinate accuracy depends on the compositor (see [Linux platform details](LINUX.md)).
+## Types
 
-#### `TextSelectionData`
+> **Coordinate note:**
+> - **Windows:** Coordinates are in physical coordinates (virtual screen coordinates). Use `screen.screenToDipPoint(point)` in Electron to convert to logical coordinates.
+> - **macOS:** Coordinates are in logical coordinates. No conversion needed.
+> - **Linux X11:** Coordinates are in screen coordinates. No conversion needed.
+> - **Linux Wayland:** Coordinate accuracy depends on the compositor (see [Linux platform details](LINUX.md)).
+
+### `Point`
+
+Represents a 2D coordinate point.
+
+```typescript
+{ x: number; y: number }
+```
+
+---
+
+### `SelectionConfig`
+
+Configuration options for `start()`. All fields are optional. Can also be set individually via configuration methods before or after `start()`.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `debug` | `boolean` | `false` | Enable debug logging. |
+| `enableMouseMoveEvent` | `boolean` | `false` | Enable mouse move tracking. Can be set at runtime. |
+| `enableClipboard` | `boolean` | `true` | Enable clipboard fallback. Can be set at runtime. |
+| `selectionPassiveMode` | `boolean` | `false` | Enable passive mode. Can be set at runtime. |
+| `clipboardMode` | [`FilterMode`](#selectionhookfiltermode) | `DEFAULT` | Clipboard filter mode. Can be set at runtime. |
+| `clipboardFilterList` | `string[]` | `[]` | Program list for clipboard mode. Can be set at runtime. |
+| `globalFilterMode` | [`FilterMode`](#selectionhookfiltermode) | `DEFAULT` | Global filter mode. Can be set at runtime. |
+| `globalFilterList` | `string[]` | `[]` | Program list for global filter mode. Can be set at runtime. |
+
+See [`SelectionHook.FilterMode`](#selectionhookfiltermode) for filter mode details.
+
+---
+
+### `TextSelectionData`
 
 Represents text selection information including content, source application, and coordinates.
 
-| Property        | Type              | Description                                                   |
-| --------------- | ----------------- | ------------------------------------------------------------- |
-| `text`          | `string`          | The selected text content                                     |
-| `programName`   | `string`          | Name of the application where selection occurred. Always empty on Linux Wayland. |
-| `startTop`      | `Point`           | First paragraph's top-left coordinates (px)                   |
-| `startBottom`   | `Point`           | First paragraph's bottom-left coordinates (px)                |
-| `endTop`        | `Point`           | Last paragraph's top-right coordinates (px)                   |
-| `endBottom`     | `Point`           | Last paragraph's bottom-right coordinates (px)                |
-| `mousePosStart` | `Point`           | Mouse position when selection started (px)                    |
-| `mousePosEnd`   | `Point`           | Mouse position when selection ended (px)                      |
-| `method`        | `SelectionMethod` | Indicates which method was used to detect the text selection. |
-| `posLevel`      | `PositionLevel`   | Indicates which positional data is provided.                  |
-| `isFullscreen`  | `boolean`         | _macOS Only_ Whether the window is in fullscreen mode         |
+| Property | Type | Description |
+|----------|------|-------------|
+| `text` | `string` | The selected text content. |
+| `programName` | `string` | Name of the application where selection occurred. Always empty on Linux Wayland. |
+| `startTop` | [`Point`](#point) | First paragraph's top-left coordinates (px). |
+| `startBottom` | [`Point`](#point) | First paragraph's bottom-left coordinates (px). |
+| `endTop` | [`Point`](#point) | Last paragraph's top-right coordinates (px). |
+| `endBottom` | [`Point`](#point) | Last paragraph's bottom-right coordinates (px). |
+| `mousePosStart` | [`Point`](#point) | Mouse position when selection started (px). |
+| `mousePosEnd` | [`Point`](#point) | Mouse position when selection ended (px). |
+| `method` | [`SelectionMethod`](#selectionhookselectionmethod) | Indicates which method was used to detect the text selection. |
+| `posLevel` | [`PositionLevel`](#selectionhookpositionlevel) | Indicates which positional data is provided. |
+| `isFullscreen` | `boolean` | Whether the window is in fullscreen mode. _macOS only._ |
 
-Type `Point` is `{ x: number; y: number }`
+> **Linux:** `startTop`/`startBottom`/`endTop`/`endBottom` are always `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because selection bounding rectangles are not available. On Wayland, `mousePosStart`/`mousePosEnd` may also be `-99999` when the coordinate source (libevdev) cannot provide actual screen positions — see [Linux platform details](LINUX.md) for the compositor-dependent fallback chain.
 
-**Linux coordinate availability:** On Linux, `startTop`/`startBottom`/`endTop`/`endBottom` are always `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because selection bounding rectangles are not available. On Linux Wayland, `mousePosStart`/`mousePosEnd` may also be `-99999` when the coordinate source (libevdev) cannot provide actual screen positions — see [Linux platform details](LINUX.md) for the compositor-dependent fallback chain.
+When [`PositionLevel`](#selectionhookpositionlevel) is:
 
-When `PositionLevel` is:
+- `MOUSE_SINGLE`: only `mousePosStart` and `mousePosEnd` are provided, and `mousePosStart` equals `mousePosEnd`.
+- `MOUSE_DUAL`: only `mousePosStart` and `mousePosEnd` are provided. On Linux Wayland, drag selection can achieve `MOUSE_DUAL` when the compositor provides accurate cursor positions at both mouse-down and mouse-up.
+- `SEL_FULL`: all the mouse position and paragraph's coordinates are provided.
 
-- `MOUSE_SINGLE`：only `mousePosStart` and `mousePosEnd` is provided, and `mousePosStart` equals `mousePosEnd`
-- `MOUSE_DUAL`: only `mousePosStart` and `mousePosEnd` is provided. On Linux Wayland, drag selection can achieve `MOUSE_DUAL` when the compositor provides accurate cursor positions at both mouse-down and mouse-up.
-- `SEL_FULL`: all the mouse position and paragraph's coordinates are provided
+---
 
-#### `MouseEventData`
+### `MouseEventData`
 
 Contains mouse click/movement information in screen coordinates.
 
-| Property | Type     | Description                                                                                                                     |
-| -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `x`      | `number` | Horizontal pointer position (px)                                                                                                |
-| `y`      | `number` | Vertical pointer position (px)                                                                                                  |
-| `button` | `number` | Same as WebAPIs' MouseEvent.button <br /> `0`=Left, `1`=Middle, `2`=Right, `3`=Back, `4`=Forward <br /> `-1`=None, `99`=Unknown |
+| Property | Type | Description |
+|----------|------|-------------|
+| `x` | `number` | Horizontal pointer position (px). |
+| `y` | `number` | Vertical pointer position (px). |
+| `button` | `number` | Same as WebAPIs' `MouseEvent.button`. `0`=Left, `1`=Middle, `2`=Right, `3`=Back, `4`=Forward, `-1`=None, `99`=Unknown. |
 
-On Linux Wayland, `x`/`y` may be `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because the input source (libevdev) cannot provide actual screen positions. See [Linux platform details](LINUX.md).
+> **Linux:** On Wayland, `x`/`y` may be `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because the input source (libevdev) cannot provide actual screen positions. See [Linux platform details](LINUX.md).
 
-If `button != -1` when `mouse-move`, which means it's dragging.
+If `button != -1` during a `mouse-move` event, it indicates dragging.
 
-#### `MouseWheelEventData`
+---
+
+### `MouseWheelEventData`
 
 Describes mouse wheel scrolling events.
 
-| Property | Type     | Description                         |
-| -------- | -------- | ----------------------------------- |
-| `button` | `number` | `0`=Vertical, `1`=Horizontal scroll |
-| `flag`   | `number` | `1`=Up/Right, `-1`=Down/Left        |
+| Property | Type | Description |
+|----------|------|-------------|
+| `button` | `number` | `0`=Vertical, `1`=Horizontal scroll. |
+| `flag` | `number` | `1`=Up/Right, `-1`=Down/Left. |
 
-#### `KeyboardEventData`
+---
+
+### `KeyboardEventData`
 
 Represents keyboard key presses/releases.
 
-| Property   | Type      | Description                                                                 |
-| ---------- | --------- | --------------------------------------------------------------------------- |
-| `uniKey`   | `string`  | Unified key name, refer to MDN `KeyboardEvent.key`, converted from `vkCode` |
-| `vkCode`   | `number`  | Virtual key code. Definitions and values vary by platform.                 |
-| `sys`      | `boolean` | Whether modifier keys (Ctrl/Alt/Win/⌘/⌥/Super/Fn) are pressed simultaneously |
-| `scanCode` | `number?` | Hardware scan code. (_Windows Only_)                                        |
-| `flags`    | `number`  | Additional state flags. On Linux: modifier bitmask (0x01=Shift, 0x02=Ctrl, 0x04=Alt, 0x08=Meta) |
-| `type`     | `string?` | Internal event type                                                         |
-| `action`   | `string?` | `"key-down"` or `"key-up"`                                                  |
+| Property | Type | Description |
+|----------|------|-------------|
+| `uniKey` | `string` | Unified key name, refer to MDN `KeyboardEvent.key`, converted from `vkCode`. |
+| `vkCode` | `number` | Virtual key code. Definitions and values vary by platform (see below). |
+| `sys` | `boolean` | Whether modifier keys (Ctrl/Alt/Win/⌘/⌥/Super/Fn) are pressed simultaneously. |
+| `scanCode` | `number?` | Hardware scan code. _Windows only._ |
+| `flags` | `number` | Additional state flags. On Linux: modifier bitmask (`0x01`=Shift, `0x02`=Ctrl, `0x04`=Alt, `0x08`=Meta). |
+| `type` | `string?` | Internal event type. |
+| `action` | `string?` | `"key-down"` or `"key-up"`. |
 
-About vkCode:
+Platform-specific `vkCode` values:
 
-- Windows: VK\_\* values of `vkCode`
-- macOS: kVK\_\* values of `kCGKeyboardEventKeycode`
-- Linux: KEY\_\* values from `<linux/input-event-codes.h>`
+- **Windows**: `VK_*` values of `vkCode`
+- **macOS**: `kVK_*` values of `kCGKeyboardEventKeycode`
+- **Linux**: `KEY_*` values from `<linux/input-event-codes.h>`
 
-### Constants
+---
 
-#### **`SelectionHook.INVALID_COORDINATE`**
+### `LinuxEnvInfo`
 
-Sentinel value (`-99999`) indicating that a coordinate is unavailable or unreliable. On Linux Wayland, mouse event coordinates and selection position coordinates may be set to this value when the input source (libevdev) cannot provide actual screen positions. Check coordinate fields against `SelectionHook.INVALID_COORDINATE` before using them for UI positioning.
+Returned by `linuxGetEnvInfo()`. Contains cached Linux environment information detected at construction time.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `displayProtocol` | `number` | Display protocol ([`SelectionHook.DisplayProtocol`](#selectionhookdisplayprotocol)). |
+| `compositorType` | `number` | Compositor type ([`SelectionHook.CompositorType`](#selectionhookcompositortype)). |
+| `hasInputDeviceAccess` | `boolean` | Whether the user can access input devices (needed for Wayland libevdev input monitoring). Checks `input` group, ACLs, capabilities, and actual device access. Always `true` on X11. |
+| `isRoot` | `boolean` | Whether the process is running as root. |
+
+> **Platform:** Linux only.
+
+---
+
+## Constants
+
+### `SelectionHook.INVALID_COORDINATE`
+
+Sentinel value (`-99999`) indicating that a coordinate is unavailable or unreliable. On Linux Wayland, mouse event coordinates and selection position coordinates may be set to this value when the input source (libevdev) cannot provide actual screen positions. Check coordinate fields against this value before using them for UI positioning.
 
 ```javascript
 if (data.mousePosEnd.x !== SelectionHook.INVALID_COORDINATE) {
@@ -295,85 +437,94 @@ if (data.mousePosEnd.x !== SelectionHook.INVALID_COORDINATE) {
 }
 ```
 
-#### **`SelectionHook.SelectionMethod`**
+---
 
-Indicates which method was used to detect the text selection:
+### `SelectionHook.SelectionMethod`
 
-- `NONE`: No selection detected
-- `UIA`: UI Automation (_Windows_)
-- `ACCESSIBLE`: Accessibility interface (_Windows_)
-- `AXAPI`: Accessibility API (_macOS_)
-- `ATSPI`: Assistive Technology Service Provider Interface (_Linux_, reserved — not currently used, reserved for future implementation)
-- `PRIMARY`: Primary Selection (_Linux_)
-- `CLIPBOARD`: Clipboard fallback
+Indicates which method was used to detect the text selection.
 
-#### **`SelectionHook.PositionLevel`**
+| Constant | Value | Platform | Description |
+|----------|-------|----------|-------------|
+| `NONE` | `0` | — | No selection detected. |
+| `UIA` | `1` | Windows | UI Automation. |
+| `ACCESSIBLE` | `3` | Windows | Accessibility interface. |
+| `AXAPI` | `11` | macOS | Accessibility API. |
+| `ATSPI` | `21` | Linux | Assistive Technology Service Provider Interface. Reserved — not currently used. |
+| `PRIMARY` | `22` | Linux | Primary Selection. |
+| `CLIPBOARD` | `99` | All | Clipboard fallback. |
 
-Indicates which positional data is provided:
+---
 
-- `NONE`: No position information
-- `MOUSE_SINGLE`: Only single mouse position
-- `MOUSE_DUAL`: Mouse start and end positions (when dragging to select)
-- `SEL_FULL`: Full selection coordinates (see [`TextSelectionData`](#textselectiondata) structure for details). Not available on Linux.
-- `SEL_DETAILED`: Detailed selection coordinates (reserved for future use)
+### `SelectionHook.PositionLevel`
 
-#### **`SelectionHook.FilterMode`**
+Indicates which positional data is provided.
 
-Before version `v0.9.16`, this variable was named `ClipboardMode`
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `NONE` | `0` | No position information. |
+| `MOUSE_SINGLE` | `1` | Only single mouse position. |
+| `MOUSE_DUAL` | `2` | Mouse start and end positions (when dragging to select). |
+| `SEL_FULL` | `3` | Full selection coordinates. See [`TextSelectionData`](#textselectiondata) for details. Not available on Linux. |
+| `SEL_DETAILED` | `4` | Detailed selection coordinates. Reserved for future use. |
 
-- `DEFAULT`: The filter mode is disabled
-- `INCLUDE_LIST`: Only the programs in list will pass the filter
-- `EXCLUDE_LIST`: Only the progrmas NOT in in list will pass the filter
+---
 
-#### **`SelectionHook.FineTunedListType`**
+### `SelectionHook.FilterMode`
 
-_Windows Only_
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `DEFAULT` | `0` | The filter mode is disabled. |
+| `INCLUDE_LIST` | `1` | Only the programs in the list will pass the filter. |
+| `EXCLUDE_LIST` | `2` | Only the programs NOT in the list will pass the filter. |
 
-Defines types for fine-tuned application behavior lists:
+---
 
-- `EXCLUDE_CLIPBOARD_CURSOR_DETECT`: Exclude cursor detection for clipboard operations. Useful for applications with custom cursors (e.g., Adobe Acrobat) where cursor shape detection may not work reliably.
-- `INCLUDE_CLIPBOARD_DELAY_READ`: Include delay when reading clipboard content. Useful for applications that modify clipboard content multiple times in quick succession (e.g., Adobe Acrobat).
+### `SelectionHook.FineTunedListType`
 
-#### **`SelectionHook.DisplayProtocol`**
+Defines types for fine-tuned application behavior lists.
 
-_Linux Only_
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `EXCLUDE_CLIPBOARD_CURSOR_DETECT` | `0` | Exclude cursor detection for clipboard operations. Useful for applications with custom cursors (e.g., Adobe Acrobat) where cursor shape detection may not work reliably. |
+| `INCLUDE_CLIPBOARD_DELAY_READ` | `1` | Include delay when reading clipboard content. Useful for applications that modify clipboard content multiple times in quick succession (e.g., Adobe Acrobat). |
 
-Defines the display protocol types used on Linux systems:
+> **Platform:** Windows only.
 
-- `UNKNOWN`: No protocol detected or not applicable
-- `X11`: X11 windowing system protocol
-- `WAYLAND`: Wayland display server protocol
+---
 
-#### **`SelectionHook.CompositorType`**
+### `SelectionHook.DisplayProtocol`
 
-_Linux Only_
+Defines the display protocol types used on Linux systems.
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `UNKNOWN` | `0` | No protocol detected or not applicable. |
+| `X11` | `1` | X11 windowing system protocol. |
+| `WAYLAND` | `2` | Wayland display server protocol. |
+
+> **Platform:** Linux only.
+
+---
+
+### `SelectionHook.CompositorType`
 
 Identifies the compositor. Values represent the **compositor**, not the desktop environment (DE). DE-bundled compositors are detected via `XDG_CURRENT_DESKTOP` (each DE uses exactly one compositor); standalone compositors are detected via their own environment variables.
 
 | Constant | Compositor | Desktop Environment | Detected via | Cursor method |
-|---|---|---|---|---|
+|----------|------------|---------------------|--------------|---------------|
 | `UNKNOWN` | — | — | — | XWayland fallback |
 | `KWIN` | KWin (`kwin_wayland`) | KDE Plasma | `XDG_CURRENT_DESKTOP` contains "KDE" | KWin Scripting DBus |
 | `MUTTER` | mutter (`gnome-shell`) | GNOME | `XDG_CURRENT_DESKTOP` contains "GNOME" | XWayland fallback |
 | `HYPRLAND` | Hyprland | (standalone) | `HYPRLAND_INSTANCE_SIGNATURE` env var | Native IPC socket |
 | `SWAY` | sway | (standalone) | `SWAYSOCK` env var | XWayland fallback |
-| `WLROOTS` | various (labwc, river, …) | (standalone) | `XDG_CURRENT_DESKTOP` contains "wlroots" | XWayland fallback |
+| `WLROOTS` | various (labwc, river, ...) | (standalone) | `XDG_CURRENT_DESKTOP` contains "wlroots" | XWayland fallback |
 | `COSMIC_COMP` | cosmic-comp | COSMIC (System76) | `XDG_CURRENT_DESKTOP` contains "COSMIC" | XWayland fallback |
 
-#### `LinuxEnvInfo`
+> **Platform:** Linux only.
 
-_Linux Only_
+---
 
-Returned by `linuxGetEnvInfo()`. Contains cached Linux environment information detected at construction time.
-
-| Property | Type | Description |
-|---|---|---|
-| `displayProtocol` | `number` | Display protocol (`SelectionHook.DisplayProtocol`) |
-| `compositorType` | `number` | Compositor type (`SelectionHook.CompositorType`) |
-| `hasInputDeviceAccess` | `boolean` | Whether the user can access input devices (needed for Wayland libevdev input monitoring). Checks `input` group, ACLs, capabilities, and actual device access. Always `true` on X11. |
-| `isRoot` | `boolean` | Whether the process is running as root |
-
-### TypeScript Support
+## TypeScript Support
 
 This module includes TypeScript definitions. Import the module in TypeScript as:
 

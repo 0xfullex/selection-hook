@@ -1887,20 +1887,62 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     // so we can skip the key check preprocessing
     if (!is_triggered_by_user)
     {
-        // Check if clipboard sequence number has changed since mouse down
-        // if it's changed, it means user has copied something, we can read it directly
-        if (GetClipboardSequenceNumber() != clipboard_sequence)
+        // Key check preprocessing: user may be pressing copy/cut/paste keys
+        // during text selection. We poll up to ~200ms to determine user intent.
+
+        bool isCtrlPressed = false;
+        bool isCPressed = false;
+        bool isXPressed = false;
+        bool isVPressed = false;
+        int checkCount = 0;
+        const int maxChecks = 5;
+
+        while (checkCount < maxChecks)
         {
-            if (!ReadClipboard(selectionInfo.text) || selectionInfo.text.empty())
+            // Check if clipboard sequence number has changed since mouse down
+            // if it's changed, it means user has copied something, we can read it directly
+            if (GetClipboardSequenceNumber() != clipboard_sequence)
             {
-                return false;
+                if (!ReadClipboard(selectionInfo.text) || selectionInfo.text.empty())
+                {
+                    return false;
+                }
+                return true;
             }
-            return true;
+
+            bool isCtrlPressing = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool isCPressing = (GetAsyncKeyState('C') & 0x8000) != 0;
+            bool isXPressing = (GetAsyncKeyState('X') & 0x8000) != 0;
+            bool isVPressing = (GetAsyncKeyState('V') & 0x8000) != 0;
+
+            // No keys pressed — safe to proceed with clipboard extraction
+            if (!isCtrlPressing && !isCPressing && !isXPressing && !isVPressing)
+            {
+                break;
+            }
+
+            // Keys are pressed — accumulate and keep polling to determine user intent
+            if (isCtrlPressing)
+                isCtrlPressed = true;
+            if (isCPressing)
+                isCPressed = true;
+            if (isXPressing)
+                isXPressed = true;
+            if (isVPressing)
+                isVPressed = true;
+
+            checkCount++;
+            Sleep(40);
         }
 
-        // If any copy/cut/paste related key is held, user is doing their own action — abort
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) || (GetAsyncKeyState('C') & 0x8000) ||
-            (GetAsyncKeyState('X') & 0x8000) || (GetAsyncKeyState('V') & 0x8000))
+        // Timed out with keys still held — abort
+        if (checkCount >= maxChecks)
+        {
+            return false;
+        }
+
+        // Detected Ctrl+C/X/V combo — user is copying/cutting/pasting, don't interfere
+        if (isCtrlPressed && (isCPressed || isXPressed || isVPressed))
         {
             return false;
         }

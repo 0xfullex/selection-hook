@@ -111,7 +111,7 @@ class SelectionHook extends EventEmitter {
 
   /**
    * Start monitoring text selections
-   * @param {boolean} debug Enable debug logging
+   * @param {SelectionConfig} [config] Optional configuration options
    * @returns {boolean} Success status
    */
   start(config = null) {
@@ -150,10 +150,21 @@ class SelectionHook extends EventEmitter {
               }
               break;
             case "mouse-event":
-              this.emit(data.action, data);
+              if (data.action === "mouse-wheel") {
+                const { x, y, button, flag } = data;
+                this.emit(data.action, { x, y, button, flag });
+              } else {
+                const { x, y, button } = data;
+                this.emit(data.action, { x, y, button });
+              }
               break;
             case "keyboard-event":
-              this.emit(data.action, data);
+              {
+                const { uniKey, vkCode, sys, scanCode, flags } = data;
+                const keyData = { uniKey, vkCode, sys, flags };
+                if (scanCode !== undefined) keyData.scanCode = scanCode;
+                this.emit(data.action, keyData);
+              }
               break;
             case "status":
               this.emit("status", data.status);

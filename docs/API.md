@@ -286,7 +286,7 @@ hook.on("status", (status) => {
 
 #### `error`
 
-Error events. Only emitted when `debug` is set to `true` in `start()`.
+Error events. General errors are only emitted when `debug` is set to `true` in `start()`. Fatal errors (e.g., hook startup/shutdown failures) are always emitted regardless of the `debug` setting.
 
 ```javascript
 hook.on("error", (error) => {
@@ -383,8 +383,12 @@ Describes mouse wheel scrolling events.
 
 | Property | Type | Description |
 |----------|------|-------------|
+| `x` | `number` | Horizontal pointer position (px). |
+| `y` | `number` | Vertical pointer position (px). |
 | `button` | `number` | `0`=Vertical, `1`=Horizontal scroll. |
 | `flag` | `number` | `1`=Up/Right, `-1`=Down/Left. |
+
+> **Linux:** On Wayland, `x`/`y` may be `-99999` ([`INVALID_COORDINATE`](#selectionhookinvalid_coordinate)) because the input source (libevdev) cannot provide actual screen positions. See [Linux platform details](LINUX.md).
 
 ---
 
@@ -399,8 +403,6 @@ Represents keyboard key presses/releases.
 | `sys` | `boolean` | Whether modifier keys (Ctrl/Alt/Win/⌘/⌥/Super/Fn) are pressed simultaneously. |
 | `scanCode` | `number?` | Hardware scan code. _Windows only._ |
 | `flags` | `number` | Additional state flags. On Linux: modifier bitmask (`0x01`=Shift, `0x02`=Ctrl, `0x04`=Alt, `0x08`=Meta). |
-| `type` | `string?` | Internal event type. |
-| `action` | `string?` | `"key-down"` or `"key-up"`. |
 
 Platform-specific `vkCode` values:
 
@@ -538,6 +540,7 @@ import {
   MouseWheelEventData,
   KeyboardEventData,
   LinuxEnvInfo,
+  Point,
 } from "selection-hook";
 
 // use `SelectionHookConstructor` for SelectionHook Class

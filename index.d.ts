@@ -9,6 +9,14 @@
 import { EventEmitter } from "events";
 
 /**
+ * Represents a 2D coordinate point in screen coordinates (pixels).
+ */
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/**
  * Text selection data returned by the native module
  *
  * Contains the selected text and its position information.
@@ -25,17 +33,17 @@ export interface TextSelectionData {
   /** The program name that triggered the selection */
   programName: string;
   /** First paragraph's left-top point (x, y) in pixels */
-  startTop: { x: number; y: number };
+  startTop: Point;
   /** First paragraph's left-bottom point (x, y) in pixels */
-  startBottom: { x: number; y: number };
+  startBottom: Point;
   /** Last paragraph's right-top point (x, y) in pixels */
-  endTop: { x: number; y: number };
+  endTop: Point;
   /** Last paragraph's right-bottom point (x, y) in pixels */
-  endBottom: { x: number; y: number };
+  endBottom: Point;
   /** Mouse position when selection started (x, y) in pixels */
-  mousePosStart: { x: number; y: number };
+  mousePosStart: Point;
   /** Mouse position when selection ended (x, y) in pixels */
-  mousePosEnd: { x: number; y: number };
+  mousePosEnd: Point;
   /** Selection method identifier */
   method: (typeof SelectionHook.SelectionMethod)[keyof typeof SelectionHook.SelectionMethod];
   /** Position level identifier */
@@ -59,8 +67,8 @@ export interface MouseEventData {
   y: number;
   /** Mouse button identifier,
    * same as WebAPIs' MouseEvent.button
-   * Left = 0, Middle = 1, Right = 2, Back = 3, Forward = 4,
-   * Unknown = -1
+   * None = -1, Left = 0, Middle = 1, Right = 2, Back = 3, Forward = 4,
+   * Unknown = 99
    */
   button: number;
 }
@@ -69,8 +77,14 @@ export interface MouseEventData {
  * Mouse wheel event data structure
  *
  * Contains information about mouse wheel events.
+ * On Linux Wayland, `x`/`y` may be `-99999` (INVALID_COORDINATE) when
+ * the coordinate source cannot provide screen positions.
  */
 export interface MouseWheelEventData {
+  /** X coordinate of mouse pointer (px) */
+  x: number;
+  /** Y coordinate of mouse pointer (px) */
+  y: number;
   /** Mouse wheel button type
    * 0: Vertical
    * 1: Horizontal
@@ -112,10 +126,6 @@ export interface KeyboardEventData {
    * Linux: Modifier bitmask — 0x01 Shift, 0x02 Ctrl, 0x04 Alt, 0x08 Meta(Super)
    */
   flags: number;
-  /** Internal event type identifier */
-  type?: string;
-  /** Specific keyboard action (e.g., "key-down", "key-up") */
-  action?: string;
 }
 
 /**

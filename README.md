@@ -113,7 +113,7 @@ The `text-selection` event emits an object like:
 }
 ```
 
-See [`examples/node-demo.js`](https://github.com/0xfullex/selection-hook/blob/main/examples/node-demo.js) for detailed usage.
+See the [Guide](docs/GUIDE.md) for in-depth usage patterns, platform setup, and Electron integration. See [`examples/node-demo.js`](https://github.com/0xfullex/selection-hook/blob/main/examples/node-demo.js) for an interactive demo.
 
 ## 🔧 How It Works
 
@@ -124,6 +124,10 @@ See [`examples/node-demo.js`](https://github.com/0xfullex/selection-hook/blob/ma
 | Linux    | PRIMARY selection (X11/Wayland) | — |
 
 Selection Hook uses native OS accessibility APIs to read selected text directly from the focused application — no polling required. The clipboard fallback is enabled by default but only kicks in as a last resort when accessibility APIs can't retrieve the text, so in the vast majority of cases the clipboard remains untouched. If you need to guarantee zero clipboard interference, you can disable the fallback entirely via `disableClipboard()` or `{ enableClipboard: false }` in the start config.
+
+## 📖 Guide
+
+For in-depth usage patterns, platform setup, Electron integration, and configuration — see [docs/GUIDE.md](docs/GUIDE.md).
 
 ## 📚 API Reference
 

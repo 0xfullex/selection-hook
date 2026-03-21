@@ -1,5 +1,9 @@
 # Linux Protocol Implementations
 
+**Part of [selection-hook](https://github.com/0xfullex/selection-hook)** — A Node.js native module for monitoring text selections across applications.
+
+---
+
 This directory contains the X11 and Wayland protocol implementations for selection-hook on Linux.
 
 ## Architecture

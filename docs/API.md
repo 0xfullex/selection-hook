@@ -1,5 +1,11 @@
 # API Reference
 
+**Part of [selection-hook](https://github.com/0xfullex/selection-hook)** — A Node.js native module for monitoring text selections across applications.
+
+> **See also:** [Guide](GUIDE.md) · [Windows Platform Details](WINDOWS.md) · [Linux Platform Details](LINUX.md)
+
+---
+
 - [Constructor](#constructor)
 - [Methods](#methods)
   - [Lifecycle](#lifecycle) — `start()`, `stop()`, `isRunning()`, `cleanup()`
@@ -42,6 +48,15 @@ Configuration methods can be called before `start()` to pre-configure the hook. 
 | `config` | [`SelectionConfig`](#selectionconfig) | No | — | Configuration options. See [`SelectionConfig`](#selectionconfig) for all available fields and defaults. |
 
 **Returns:** `boolean` — `true` if started successfully.
+
+```javascript
+hook.start({
+  debug: true,
+  enableClipboard: false,
+  globalFilterMode: SelectionHook.FilterMode.EXCLUDE_LIST,
+  globalFilterList: ["WindowsTerminal.exe", "cmd.exe"],
+});
+```
 
 See [`SelectionHook.FilterMode`](#selectionhookfiltermode) for filter mode details.
 
@@ -86,6 +101,17 @@ Set passive mode for selection. In passive mode, `text-selection` events will no
 | `passive` | `boolean` | Yes | — | `true` to enable passive mode, `false` to disable. |
 
 **Returns:** `boolean` — `true` if set successfully.
+
+```javascript
+// Enable passive mode — retrieve selections on demand
+hook.setSelectionPassiveMode(true);
+
+// Later, when triggered by a shortcut or key hold:
+const selection = hook.getCurrentSelection();
+if (selection) {
+  console.log("Selected text:", selection.text);
+}
+```
 
 ---
 
@@ -132,6 +158,20 @@ Configure how clipboard fallback works with different programs. See [`SelectionH
 
 **Returns:** `boolean` — `true` if set successfully.
 
+```javascript
+// Only use clipboard fallback for specific apps that need it
+hook.setClipboardMode(SelectionHook.FilterMode.INCLUDE_LIST, [
+  "acrobat.exe", "wps.exe"
+]);
+
+// Prevent clipboard fallback in apps where Ctrl+C has special behavior
+hook.setClipboardMode(SelectionHook.FilterMode.EXCLUDE_LIST, [
+  "code.exe", "devenv.exe"
+]);
+```
+
+> See [Windows Platform Details — Clipboard Fallback](WINDOWS.md#clipboard-fallback) for details on when and why to configure this.
+
 #### `writeToClipboard(text): boolean`
 
 Write text to the system clipboard. Useful for implementing custom copy functions.
@@ -163,6 +203,18 @@ Configure which applications should trigger text selection events. You can inclu
 
 **Returns:** `boolean` — `true` if set successfully.
 
+```javascript
+// Only monitor selections in specific programs
+hook.setGlobalFilterMode(SelectionHook.FilterMode.INCLUDE_LIST, [
+  "chrome.exe", "firefox.exe", "code.exe"
+]);
+
+// Monitor all programs except terminals
+hook.setGlobalFilterMode(SelectionHook.FilterMode.EXCLUDE_LIST, [
+  "WindowsTerminal.exe", "cmd.exe", "powershell.exe"
+]);
+```
+
 > **Linux:** On Wayland, `programName` is always empty so program-based filtering will not work.
 
 #### `setFineTunedList(listType, programList?): boolean`
@@ -178,7 +230,21 @@ For example, you can add `acrobat.exe` to those lists to enable text selected in
 
 **Returns:** `boolean` — `true` if set successfully.
 
-> **Platform:** Windows only.
+```javascript
+// Skip cursor detection for apps with custom cursors
+hook.setFineTunedList(
+  SelectionHook.FineTunedListType.EXCLUDE_CLIPBOARD_CURSOR_DETECT,
+  ["acrobat.exe", "cajviewer.exe"]
+);
+
+// Add clipboard read delay for apps that modify clipboard multiple times
+hook.setFineTunedList(
+  SelectionHook.FineTunedListType.INCLUDE_CLIPBOARD_DELAY_READ,
+  ["acrobat.exe"]
+);
+```
+
+> **Platform:** Windows only. See [Windows Platform Details — App Compatibility](WINDOWS.md#app-compatibility-setfinetunedlist) for when and why to use these lists.
 
 ---
 

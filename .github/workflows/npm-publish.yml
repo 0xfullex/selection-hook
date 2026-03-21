@@ -2,7 +2,7 @@ name: Prebuild and publish Node.js Package
 
 on:
   release:
-    types: [released]
+    types: [published]
 
 jobs:
   build-windows:
@@ -198,5 +198,22 @@ jobs:
             build/release-assets/selection-hook-linux-arm64.node
           fail_on_unmatched_files: true
 
-      # Publish to NPM using OIDC trusted publishing (no token required)
-      - run: npm publish
+      # Publish to npm with dist-tag based on version and release type:
+      #   - beta version (x.y.z-beta.n) + GitHub pre-release → publish with --tag beta
+      #   - stable version (x.y.z) + GitHub release → publish to latest (default)
+      #   - mismatched combinations → skip publish (not an error)
+      - name: Publish to npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          IS_BETA=$([[ "$VERSION" == *"-beta"* ]] && echo "true" || echo "false")
+          IS_PRERELEASE="${{ github.event.release.prerelease }}"
+
+          if [[ "$IS_BETA" == "true" && "$IS_PRERELEASE" == "true" ]]; then
+            echo "Publishing beta version $VERSION to npm with tag 'beta'"
+            npm publish --tag beta
+          elif [[ "$IS_BETA" == "false" && "$IS_PRERELEASE" == "false" ]]; then
+            echo "Publishing stable version $VERSION to npm"
+            npm publish
+          else
+            echo "Skipping publish: version=$VERSION, prerelease=$IS_PRERELEASE"
+          fi

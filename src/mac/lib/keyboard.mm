@@ -150,6 +150,9 @@ static const std::unordered_map<CGKeyCode, std::string> keyCodeMap = {
     {kVK_JIS_Eisu, "Eisu"},
     {kVK_JIS_Kana, "KanaMode"},
 
+    // Function key
+    {kVK_Function, "Fn"},
+
     // Additional system keys (removed undefined PC keyboard constants)
 };
 

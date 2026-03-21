@@ -33,15 +33,14 @@ AXUIElementRef GetFocusedElementFromAppElement(AXUIElementRef appElement);
 AXUIElementRef GetFrontWindowElementFromAppElement(AXUIElementRef appElement);
 
 /**
- * Get program name (bundle identifier or process name) from the active
- * application
+ * Get program name (bundle identifier) from the active application
  */
 bool GetProgramNameFromFrontApp(NSRunningApplication *frontApp, std::string &programName);
 
 /**
  * Check if cursor is I-beam cursor by comparing hotSpot
  */
-bool isIBeamCursor(NSCursor *cursor);
+bool IsIBeamCursor(NSCursor *cursor);
 
 /**
  * Check if the current app's front window is in fullscreen mode

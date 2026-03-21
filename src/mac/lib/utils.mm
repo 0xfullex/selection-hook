@@ -101,7 +101,7 @@ bool GetProgramNameFromFrontApp(NSRunningApplication *frontApp, std::string &pro
 /**
  * Check if cursor is I-beam cursor by comparing hotSpot
  */
-bool isIBeamCursor(NSCursor *cursor)
+bool IsIBeamCursor(NSCursor *cursor)
 {
     if (!cursor)
         return false;

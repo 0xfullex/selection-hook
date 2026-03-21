@@ -29,6 +29,7 @@
 #import <napi.h>
 
 #import <atomic>
+#import <future>
 #import <string>
 #import <thread>
 
@@ -116,8 +117,8 @@ struct TextSelectionInfo
     CGPoint endTop;       ///< Last paragraph right-top (screen coordinates)
     CGPoint endBottom;    ///< Last paragraph right-bottom (screen coordinates)
 
-    CGPoint mousePosStart;  ///< Current mouse position (screen coordinates)
-    CGPoint mousePosEnd;    ///< Mouse down position (screen coordinates)
+    CGPoint mousePosStart;  ///< Mouse position when selection started (screen coordinates)
+    CGPoint mousePosEnd;    ///< Mouse position when selection ended (screen coordinates)
 
     SelectionMethod method;
     SelectionPositionLevel posLevel;
@@ -155,10 +156,11 @@ struct TextSelectionInfo
  */
 struct MouseEventContext
 {
-    CGEventType type;  ///< Mac event type
-    CGPoint pos;       ///< Mouse position
-    int64_t button;    ///< Mouse button
-    int64_t flag;      ///< Mouse extra flag (eg. wheel direction)
+    CGEventType type;      ///< Mac event type
+    CGPoint pos;           ///< Mouse position
+    int64_t button;        ///< Mouse button
+    int64_t flag;          ///< Mouse extra flag (eg. wheel direction)
+    CGEventFlags evFlags;  ///< Modifier flags captured at event time
 };
 
 /**
@@ -236,6 +238,8 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     pid_t running_pid = 0;
 
     CFRunLoopRef eventRunLoop = nullptr;
+    std::promise<CFRunLoopRef> eventRunLoopPromise;
+    std::future<CFRunLoopRef> eventRunLoopFuture;
 
     CFMachPortRef mouseEventTap = nullptr;
     CFMachPortRef keyboardEventTap = nullptr;
@@ -288,17 +292,25 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
  */
 SelectionHook::~SelectionHook()
 {
-    // Stop worker thread
+    // Clear current instance first to prevent queued TSFN callbacks
+    // from dereferencing this object during teardown
+    if (currentInstance == this)
+    {
+        currentInstance = nullptr;
+    }
+
+    // Signal shutdown
     bool was_running = running.exchange(false);
+    mouse_keyboard_running = false;
+
+    // Stop event monitoring thread (blocks until thread exits)
+    StopMouseKeyboardEventThread();
+
+    // Safe to release thread-safe functions only after thread has stopped
     if (was_running && tsfn)
     {
         tsfn.Release();
     }
-
-    // Stop event monitoring
-    StopMouseKeyboardEventThread();
-
-    // Release thread-safe functions if they exist
     if (mouse_tsfn)
     {
         mouse_tsfn.Release();
@@ -306,12 +318,6 @@ SelectionHook::~SelectionHook()
     if (keyboard_tsfn)
     {
         keyboard_tsfn.Release();
-    }
-
-    // Clear current instance if it's us
-    if (currentInstance == this)
-    {
-        currentInstance = nullptr;
     }
 }
 
@@ -790,6 +796,7 @@ bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectio
         // if bunldeId is not found,
         // Could be system process, command line tool, background app or unsigned app
         // We don't handle these cases
+        is_processing.store(false);
         return false;
     }
     // should filter by global filter list
@@ -1247,6 +1254,11 @@ bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::stri
 
             CFRelease(valueRef);
         }
+        else
+        {
+            // Release valueRef for non-CFString types to prevent memory leak
+            CFRelease(valueRef);
+        }
     }
 
     return false;
@@ -1460,6 +1472,10 @@ void SelectionHook::StartMouseKeyboardEventThread()
         return;  // Already running
     }
 
+    // Create a fresh promise/future pair for run loop synchronization
+    eventRunLoopPromise = std::promise<CFRunLoopRef>();
+    eventRunLoopFuture = eventRunLoopPromise.get_future();
+
     event_thread = std::thread(&SelectionHook::MouseKeyboardEventThreadProc, this);
 }
 
@@ -1479,9 +1495,18 @@ void SelectionHook::StopMouseKeyboardEventThread()
         return;
     }
 
-    // Stop the run loop to allow the thread to exit
-    // CFRunLoopStop is thread-safe
-    if (eventRunLoop)
+    // Wait for the event thread to set the run loop reference via promise/future.
+    // This prevents a race where Stop() is called before the thread has started its run loop.
+    // CFRunLoopStop is thread-safe.
+    if (eventRunLoopFuture.valid())
+    {
+        CFRunLoopRef rl = eventRunLoopFuture.get();
+        if (rl)
+        {
+            CFRunLoopStop(rl);
+        }
+    }
+    else if (eventRunLoop)
     {
         CFRunLoopStop(eventRunLoop);
     }
@@ -1495,8 +1520,9 @@ void SelectionHook::StopMouseKeyboardEventThread()
  */
 void SelectionHook::MouseKeyboardEventThreadProc()
 {
-    // Store the run loop reference for cleanup
+    // Store the run loop reference and fulfill the promise for synchronization
     eventRunLoop = CFRunLoopGetCurrent();
+    eventRunLoopPromise.set_value(eventRunLoop);
 
     // Create mouse event tap for global mouse monitoring
     CGEventMask mouseMask = CGEventMaskBit(kCGEventLeftMouseDown) | CGEventMaskBit(kCGEventLeftMouseUp) |
@@ -1570,6 +1596,13 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
         return;
     }
 
+    // Guard against callbacks executing after instance destruction
+    if (!currentInstance)
+    {
+        delete pMouseEvent;
+        return;
+    }
+
     // Get current time in milliseconds
     auto currentTime =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -1604,7 +1637,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 
             lastMouseDownTime = currentTime;
             lastMouseDownPos = currentPos;
-            isLastMouseDownValidCursor = isIBeamCursor([NSCursor currentSystemCursor]);
+            isLastMouseDownValidCursor = IsIBeamCursor([NSCursor currentSystemCursor]);
             currentInstance->clipboard_sequence = GetClipboardSequence();
             break;
         }
@@ -1620,7 +1653,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 double distance = sqrt(dx * dx + dy * dy);
 
                 bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
-                bool isValidCursor = isLastMouseDownValidCursor || isIBeamCursor([NSCursor currentSystemCursor]);
+                bool isValidCursor = isLastMouseDownValidCursor || IsIBeamCursor([NSCursor currentSystemCursor]);
 
                 if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
                 {
@@ -1655,29 +1688,24 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     }
                 }
 
-                // Check if shift key is pressed when mouse up, it's a way to select text
+                // Check if shift key was pressed at event time, it's a way to select text
                 if (!shouldDetectSelection)
                 {
-                    // Get current event flags to check for shift key
-                    CGEventRef currentEvent = CGEventCreate(nullptr);
-                    if (currentEvent)
-                    {
-                        CGEventFlags flags = CGEventGetFlags(currentEvent);
-                        bool isShiftPressed = (flags & kCGEventFlagMaskShift) != 0;
-                        bool isCtrlPressed = (flags & kCGEventFlagMaskControl) != 0;
-                        bool isCmdPressed = (flags & kCGEventFlagMaskCommand) != 0;
-                        bool isOptionPressed = (flags & kCGEventFlagMaskAlternate) != 0;
+                    // Use modifier flags captured at event time (not current system state)
+                    CGEventFlags flags = pMouseEvent->evFlags;
+                    bool isShiftPressed = (flags & kCGEventFlagMaskShift) != 0;
+                    bool isCtrlPressed = (flags & kCGEventFlagMaskControl) != 0;
+                    bool isCmdPressed = (flags & kCGEventFlagMaskCommand) != 0;
+                    bool isOptionPressed = (flags & kCGEventFlagMaskAlternate) != 0;
 
-                        if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed)
+                    if (isShiftPressed && !isCtrlPressed && !isCmdPressed && !isOptionPressed)
+                    {
+                        // Only support IBeamCursor for now
+                        if (isValidCursor)
                         {
-                            // Only support IBeamCursor for now
-                            if (isValidCursor)
-                            {
-                                shouldDetectSelection = true;
-                                detectionType = SelectionDetectType::ShiftClick;
-                            }
+                            shouldDetectSelection = true;
+                            detectionType = SelectionDetectType::ShiftClick;
                         }
-                        CFRelease(currentEvent);
                     }
                 }
                 isLastValidClick = isCurrentValidClick;
@@ -1759,6 +1787,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 
             auto callback = [selectionInfo](Napi::Env env, Napi::Function jsCallback)
             {
+                if (!currentInstance)
+                    return;
                 Napi::Object resultObj = currentInstance->CreateSelectionResultObject(env, selectionInfo);
                 jsCallback.Call({resultObj});
             };
@@ -1891,6 +1921,13 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
     if (!hook || !hook->mouse_keyboard_running || !hook->mouse_tsfn)
         return event;
 
+    // Re-enable the event tap if it was disabled by macOS due to timeout or user input
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput)
+    {
+        CGEventTapEnable(hook->mouseEventTap, true);
+        return event;
+    }
+
     // Skip mouse move events if disabled to reduce CPU usage
     if (type == kCGEventMouseMoved && !hook->is_enabled_mouse_move_event)
         return event;
@@ -1943,9 +1980,12 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
             break;
     }
 
-    // Create mouse event context
-    MouseEventContext *mouseEventCtx =
-        new MouseEventContext{.type = type, .pos = CGEventGetLocation(event), .button = button, .flag = flag};
+    // Create mouse event context with modifier flags captured at event time
+    MouseEventContext *mouseEventCtx = new MouseEventContext{.type = type,
+                                                             .pos = CGEventGetLocation(event),
+                                                             .button = button,
+                                                             .flag = flag,
+                                                             .evFlags = CGEventGetFlags(event)};
 
     // Send to main thread for processing
     hook->mouse_tsfn.NonBlockingCall(mouseEventCtx, ProcessMouseEvent);
@@ -1961,6 +2001,13 @@ CGEventRef SelectionHook::KeyboardEventCallback(CGEventTapProxy proxy, CGEventTy
     SelectionHook *hook = static_cast<SelectionHook *>(refcon);
     if (!hook || !hook->mouse_keyboard_running || !hook->keyboard_tsfn)
         return event;
+
+    // Re-enable the event tap if it was disabled by macOS due to timeout or user input
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput)
+    {
+        CGEventTapEnable(hook->keyboardEventTap, true);
+        return event;
+    }
 
     // Get key code
     CGKeyCode keyCode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);

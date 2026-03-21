@@ -8,7 +8,7 @@
 
 <h1>selection-hook</h1>
 
-<p><strong>The first full-featured, open-source cross-application text selection monitor.</strong></p>
+<p><strong>The first open-source library for full-featured, cross-platform, cross-application text selection monitoring.</strong></p>
 
 [![npm version](https://img.shields.io/npm/v/selection-hook?style=flat)](https://www.npmjs.org/package/selection-hook)
 [![license](https://img.shields.io/npm/l/selection-hook?style=flat)](LICENSE)
@@ -23,6 +23,8 @@
 </div>
 
 Detect when users select text in **any application** — and get the selected text, screen coordinates, and source program name **in real time**. Works across **Windows, macOS, and Linux** using native accessibility APIs that rarely touch the clipboard. Built as a native **Node.js/Electron** addon for production use.
+
+Text selection monitoring has always been proprietary — every existing implementation is locked inside closed-source commercial software. selection-hook is **the first to bring this capability into the open**, with a production-grade implementation that **rivals or surpasses its closed-source counterparts**. It also ships with **built-in global mouse and keyboard event monitoring** across all three platforms — an area where existing open-source solutions are either unmaintained or limited to a single OS.
 
 ## ✨ Key Features
 
@@ -42,7 +44,7 @@ Detect when users select text in **any application** — and get the selected te
 - ♿ **Accessibility tools** — read-aloud or magnify selected text
 - 🛠️ **Developer tools** — inspect or transform selected content on the fly
 
-Most similar tools only work on a single platform. selection-hook gives you one unified API across Windows, macOS, and Linux.
+Most similar tools are closed-source and limited to a single platform. selection-hook is fully open-source with one unified API across Windows, macOS, and Linux.
 
 ## 🖥️ Supported Platforms
 

@@ -32,13 +32,13 @@ export interface TextSelectionData {
   text: string;
   /** The program name that triggered the selection */
   programName: string;
-  /** First paragraph's left-top point (x, y) in pixels */
+  /** First paragraph's top-left point (x, y) in pixels */
   startTop: Point;
-  /** First paragraph's left-bottom point (x, y) in pixels */
+  /** First paragraph's bottom-left point (x, y) in pixels */
   startBottom: Point;
-  /** Last paragraph's right-top point (x, y) in pixels */
+  /** Last paragraph's top-right point (x, y) in pixels */
   endTop: Point;
-  /** Last paragraph's right-bottom point (x, y) in pixels */
+  /** Last paragraph's bottom-right point (x, y) in pixels */
   endBottom: Point;
   /** Mouse position when selection started (x, y) in pixels */
   mousePosStart: Point;

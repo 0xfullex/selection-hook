@@ -249,12 +249,6 @@ function setupKeyboardEventListeners() {
       );
     }
 
-    // Handle Ctrl+C for exit (cross-platform: uniKey is unified across platforms)
-    if (eventData.uniKey === "c" && eventData.sys) {
-      cleanup();
-      return;
-    }
-
     // Special handling for Ctrl key to get current selection in passive mode
     if (eventData.uniKey === "Control" && config.passiveModeEnabled) {
       const currentTime = Date.now();

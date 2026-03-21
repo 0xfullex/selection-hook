@@ -835,6 +835,13 @@ void X11Protocol::XFixesMonitoringThreadProc()
                 // Only handle SetSelectionOwner notifications
                 if (sel_event->subtype == XFixesSetSelectionOwnerNotify)
                 {
+                    // Skip deselection events (owner released PRIMARY selection).
+                    // These carry no useful text data and can cause false matches
+                    // in Path A correlation when an app clears its selection
+                    // before setting a new one (e.g., double-click in konsole).
+                    if (sel_event->owner == X11_None)
+                        continue;
+
                     // Get current time in milliseconds
                     auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    std::chrono::system_clock::now().time_since_epoch())

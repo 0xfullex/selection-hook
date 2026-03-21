@@ -210,9 +210,11 @@ static uint64_t DOUBLE_CLICK_TIME_MS = 500;
 
 // Path A/B correlation window (ms): maximum elapsed time between a mouse gesture
 // and a selection change event for them to be considered related.
-// 300ms is sufficient — XFixes fires within ~5ms on X11, and the Wayland
-// data-control event typically arrives within ~50ms after drag end.
-constexpr uint64_t CORRELATION_WINDOW_MS = 300;
+// Total latency includes TSFN dispatch, app processing, and XFixes notification.
+// Some apps (e.g., Konsole) take ~300ms from gesture to XFixes event, so 500ms
+// provides sufficient margin.  On Wayland, data-control events typically arrive
+// within ~50ms after drag end.
+constexpr uint64_t CORRELATION_WINDOW_MS = 500;
 
 // No-input fallback (Path C): debounce quiet period before firing selection event
 constexpr uint64_t NO_INPUT_DEBOUNCE_MS = 200;
@@ -265,8 +267,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static void OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent);
     static void OnSelectionEventCallback(void *context, SelectionChangeContext *selectionEvent);
 
-    // Emit text selection event (shared by Path A, Path B, and Path C)
-    void EmitSelectionEvent(SelectionDetectType type, Point start, Point end);
+    // Emit text selection event (shared by Path A, Path B, and Path C).
+    // Returns true if the event was successfully emitted, false otherwise.
+    bool EmitSelectionEvent(SelectionDetectType type, Point start, Point end);
 
     // Protocol interface for X11/Wayland abstraction
     std::unique_ptr<ProtocolBase> protocol;
@@ -305,6 +308,12 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Tracks BTN_LEFT and BTN_RIGHT (Wayland left-handed support) to suppress
     // intermediate selection change events during mouse drag.
     std::atomic<bool> is_gesture_button_down{false};
+
+    // Set when a selection change event arrives while the mouse button is held
+    // (during a drag). Cleared at mouse-down and after consumption at mouse-up.
+    // Allows drag gestures to bypass the 300ms correlation window, since apps
+    // may fire XFixes at drag start rather than at mouse-up.
+    std::atomic<bool> had_selection_during_drag{false};
 
     // Pending gesture for Path B (selection change event arrives after mouse-up)
     struct
@@ -613,6 +622,7 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         debounce_thread.join();
     debounce_last_event_time.store(0);
     is_gesture_button_down.store(false);
+    had_selection_during_drag.store(false);
     is_no_input_fallback = false;
 
     // Release thread-safe functions after threads have stopped
@@ -1127,6 +1137,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 
                 // Clear pending gesture (prevent old pending from being triggered by new action)
                 currentInstance->pending_gesture.active = false;
+                currentInstance->had_selection_during_drag.store(false);
 
                 // Record window handle and position at mouse-down for movement detection
                 currentInstance->last_window_handler = currentInstance->protocol->GetActiveWindow();
@@ -1170,12 +1181,22 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         uint64_t upWindow = currentInstance->protocol->GetActiveWindow();
                         if (upWindow && upWindow == currentInstance->last_window_handler)
                         {
+                            // Same window at mouse-down and mouse-up: verify window wasn't
+                            // dragged (moved) to distinguish text selection from window drag.
                             WindowRect currentWindowRect;
                             currentInstance->protocol->GetWindowRect(upWindow, currentWindowRect);
                             if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
                             {
                                 detectionType = SelectionDetectType::Drag;
                             }
+                        }
+                        else if (upWindow && upWindow != currentInstance->last_window_handler)
+                        {
+                            // Active window changed between mouse-down and mouse-up.
+                            // This happens when the user drags to select text in an unfocused
+                            // window — the click causes focus to shift.  Allow the drag gesture;
+                            // XFixes correlation will validate whether a real selection occurred.
+                            detectionType = SelectionDetectType::Drag;
                         }
                     }
                     // Check for double-click selection
@@ -1242,14 +1263,30 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                                 break;
                         }
 
-                        if (lastSelectionEvent > 0 &&
+                        bool emitted = false;
+
+                        // Drag correlation: selection event arrived during drag — directly
+                        // correlated regardless of how long ago (bypasses 300ms window).
+                        if (detectionType == SelectionDetectType::Drag &&
+                            currentInstance->had_selection_during_drag.load())
+                        {
+                            currentInstance->last_selection_event_time.store(0);
+                            currentInstance->had_selection_during_drag.store(false);
+                            lastSelectionEvent = 0;  // Prevent Path A from re-checking consumed timestamp
+                            emitted = currentInstance->EmitSelectionEvent(detectionType, gestureStart, gestureEnd);
+                        }
+
+                        // Path A: selection change event already arrived within correlation window.
+                        // If EmitSelectionEvent fails (e.g., selection data not yet available),
+                        // fall through to Path B to wait for the actual selection event.
+                        if (!emitted && lastSelectionEvent > 0 &&
                             (static_cast<uint64_t>(currentTime) - lastSelectionEvent) < CORRELATION_WINDOW_MS)
                         {
-                            // Path A: selection change event already arrived, fire immediately
                             currentInstance->last_selection_event_time.store(0);  // Consume
-                            currentInstance->EmitSelectionEvent(detectionType, gestureStart, gestureEnd);
+                            emitted = currentInstance->EmitSelectionEvent(detectionType, gestureStart, gestureEnd);
                         }
-                        else
+
+                        if (!emitted)
                         {
                             // Path B: store pending gesture, wait for selection change event
                             currentInstance->pending_gesture.active = true;
@@ -1348,7 +1385,9 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
     //   - Path C: no-input fallback mode (always needs dispatch for debounce)
     if (instance->is_gesture_button_down.load())
     {
-        // Mouse button held — only store timestamp for Path A, skip dispatch
+        // Mouse button held — record that a selection event arrived during drag,
+        // so drag gestures can bypass the 300ms correlation window at mouse-up.
+        instance->had_selection_during_drag.store(true);
         delete event;
         return;
     }
@@ -1470,20 +1509,21 @@ void SelectionHook::DebounceThreadProc()
 }
 
 /**
- * Emit text selection event (shared by Path A, Path B, and Path C)
+ * Emit text selection event (shared by Path A, Path B, and Path C).
+ * Returns true if the event was successfully emitted, false otherwise.
  */
-void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Point end)
+bool SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Point end)
 {
     if (is_selection_passive_mode || is_processing.load())
-        return;
+        return false;
 
     uint64_t activeWindow = protocol->GetActiveWindow();
     if (!activeWindow)
-        return;
+        return false;
 
     TextSelectionInfo selectionInfo;
     if (!GetSelectedText(activeWindow, selectionInfo) || selectionInfo.text.empty())
-        return;
+        return false;
 
     // Set coordinates and posLevel based on detection type
     switch (type)
@@ -1582,6 +1622,8 @@ void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
     {
         tsfn.NonBlockingCall(callback);
     }
+
+    return true;
 }
 
 /**

@@ -41,9 +41,7 @@ struct WindowRect
 // Check if window has moved/resized with 2 pixel tolerance (matches Windows implementation)
 inline bool HasWindowMoved(const WindowRect &current, const WindowRect &last)
 {
-    return (abs(current.x - last.x) > 2 ||
-            abs(current.y - last.y) > 2 ||
-            abs(current.width - last.width) > 2 ||
+    return (abs(current.x - last.x) > 2 || abs(current.y - last.y) > 2 || abs(current.width - last.width) > 2 ||
             abs(current.height - last.height) > 2);
 }
 
@@ -77,12 +75,12 @@ enum class DisplayProtocol
 enum class CompositorType
 {
     Unknown = 0,
-    KWin = 1,        // KDE Plasma's compositor (kwin_wayland)
-    Mutter = 2,      // GNOME's compositor (mutter / gnome-shell)
-    Hyprland = 3,    // Standalone tiling compositor
-    Sway = 4,        // Standalone i3-compatible compositor
-    Wlroots = 5,     // Generic wlroots-based compositors (labwc, river, etc.)
-    CosmicComp = 6   // System76 COSMIC's compositor (cosmic-comp)
+    KWin = 1,       // KDE Plasma's compositor (kwin_wayland)
+    Mutter = 2,     // GNOME's compositor (mutter / gnome-shell)
+    Hyprland = 3,   // Standalone tiling compositor
+    Sway = 4,       // Standalone i3-compatible compositor
+    Wlroots = 5,    // Generic wlroots-based compositors (labwc, river, etc.)
+    CosmicComp = 6  // System76 COSMIC's compositor (cosmic-comp)
 };
 
 // Linux environment information (cached at construction time)
@@ -131,9 +129,9 @@ enum class FilterMode
 
 // Keyboard modifier flags (bitmask for KeyboardEventContext::flags)
 constexpr int MODIFIER_SHIFT = 0x01;
-constexpr int MODIFIER_CTRL  = 0x02;
-constexpr int MODIFIER_ALT   = 0x04;
-constexpr int MODIFIER_META  = 0x08;
+constexpr int MODIFIER_CTRL = 0x02;
+constexpr int MODIFIER_ALT = 0x04;
+constexpr int MODIFIER_META = 0x08;
 
 // Shared modifier key state tracking for X11 and Wayland protocols
 struct ModifierState
@@ -146,10 +144,14 @@ struct ModifierState
     int GetFlags() const
     {
         int flags = 0;
-        if (shift) flags |= MODIFIER_SHIFT;
-        if (ctrl)  flags |= MODIFIER_CTRL;
-        if (alt)   flags |= MODIFIER_ALT;
-        if (super) flags |= MODIFIER_META;
+        if (shift)
+            flags |= MODIFIER_SHIFT;
+        if (ctrl)
+            flags |= MODIFIER_CTRL;
+        if (alt)
+            flags |= MODIFIER_ALT;
+        if (super)
+            flags |= MODIFIER_META;
         return flags;
     }
 
@@ -157,10 +159,22 @@ struct ModifierState
     {
         switch (code)
         {
-            case KEY_LEFTCTRL: case KEY_RIGHTCTRL: ctrl = is_press; break;
-            case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT: shift = is_press; break;
-            case KEY_LEFTALT: case KEY_RIGHTALT: alt = is_press; break;
-            case KEY_LEFTMETA: case KEY_RIGHTMETA: super = is_press; break;
+            case KEY_LEFTCTRL:
+            case KEY_RIGHTCTRL:
+                ctrl = is_press;
+                break;
+            case KEY_LEFTSHIFT:
+            case KEY_RIGHTSHIFT:
+                shift = is_press;
+                break;
+            case KEY_LEFTALT:
+            case KEY_RIGHTALT:
+                alt = is_press;
+                break;
+            case KEY_LEFTMETA:
+            case KEY_RIGHTMETA:
+                super = is_press;
+                break;
         }
     }
 };
@@ -240,9 +254,9 @@ struct SelectionChangeContext
 };
 
 // Input monitoring callback function types
-typedef void (*MouseEventCallback)(void* context, MouseEventContext* mouseEvent);
-typedef void (*KeyboardEventCallback)(void* context, KeyboardEventContext* keyboardEvent);
-typedef void (*SelectionEventCallback)(void* context, SelectionChangeContext* selectionEvent);
+typedef void (*MouseEventCallback)(void *context, MouseEventContext *mouseEvent);
+typedef void (*KeyboardEventCallback)(void *context, KeyboardEventContext *keyboardEvent);
+typedef void (*SelectionEventCallback)(void *context, SelectionChangeContext *selectionEvent);
 
 // Protocol abstraction base class
 // Abstract base class for protocol-specific implementations
@@ -260,15 +274,15 @@ class ProtocolBase
 
     // Window management
     virtual uint64_t GetActiveWindow() = 0;
-    virtual bool GetProgramNameFromWindow(uint64_t window, std::string& programName) = 0;
-    virtual bool GetWindowRect(uint64_t window, WindowRect& rect) = 0;
+    virtual bool GetProgramNameFromWindow(uint64_t window, std::string &programName) = 0;
+    virtual bool GetWindowRect(uint64_t window, WindowRect &rect) = 0;
 
     // Text selection
-    virtual bool GetTextViaPrimary(std::string& text) = 0;
+    virtual bool GetTextViaPrimary(std::string &text) = 0;
 
     // Clipboard operations
-    virtual bool WriteClipboard(const std::string& text) = 0;
-    virtual bool ReadClipboard(std::string& text) = 0;
+    virtual bool WriteClipboard(const std::string &text) = 0;
+    virtual bool ReadClipboard(std::string &text) = 0;
 
     // Modifier key state query (for Shift+Click detection etc.)
     virtual int GetModifierFlags() = 0;
@@ -277,11 +291,11 @@ class ProtocolBase
     virtual Point GetCurrentMousePosition() { return Point(); }
 
     // Set environment info from top-level detection
-    virtual void SetEnvInfo(const LinuxEnvInfo& info) { (void)info; }
+    virtual void SetEnvInfo(const LinuxEnvInfo &info) { (void)info; }
 
     // Input monitoring (for mouse and keyboard events)
     virtual bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
-                                           SelectionEventCallback selectionCallback, void* context) = 0;
+                                           SelectionEventCallback selectionCallback, void *context) = 0;
     virtual void CleanupInputMonitoring() = 0;
     virtual bool StartInputMonitoring() = 0;
     virtual void StopInputMonitoring() = 0;

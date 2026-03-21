@@ -10,9 +10,10 @@ This is a Node.js native module (Node-API/N-API) that monitors text selections a
 - `npm run demo` - Run demo/test
 - `npm run prebuild` - Prebuild all platforms
 - `npm run typecheck` - TypeScript type validation
+- `npm run format` - Format all C++ source files with clang-format
 
 After modifying code, run the relevant checks:
-- C++ code (`src/`) → `npm run rebuild`
+- C++ code (`src/`) → `npm run rebuild` && `npm run format`
 - `index.js` or `index.d.ts` → `npm run typecheck`
 
 ## Architecture

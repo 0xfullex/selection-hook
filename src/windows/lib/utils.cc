@@ -6,6 +6,7 @@
  */
 
 #include "utils.h"
+
 #include <psapi.h>
 
 /**

@@ -108,29 +108,29 @@ struct DBusFunctions
 
     void (*error_init)(DBusError_ABI *) = nullptr;
     void (*error_free)(DBusError_ABI *) = nullptr;
-    void* (*bus_get)(int, DBusError_ABI *) = nullptr;
-    void* (*message_new_method_call)(const char*, const char*, const char*, const char*) = nullptr;
-    void* (*connection_send_with_reply_and_block)(void*, void*, int, DBusError_ABI*) = nullptr;
-    int (*message_iter_init)(void*, DBusMessageIter_ABI*) = nullptr;
-    void (*message_iter_recurse)(DBusMessageIter_ABI*, DBusMessageIter_ABI*) = nullptr;
-    int (*message_iter_get_arg_type)(DBusMessageIter_ABI*) = nullptr;
-    void (*message_iter_get_basic)(DBusMessageIter_ABI*, void*) = nullptr;
-    int (*message_iter_next)(DBusMessageIter_ABI*) = nullptr;
-    void (*message_unref)(void*) = nullptr;
-    const char* (*bus_get_unique_name)(void*) = nullptr;          // Get our DBus unique name
-    int (*message_append_args)(void*, int, ...) = nullptr;        // Append method arguments
-    int (*connection_read_write)(void*, int) = nullptr;           // Read/write poll
-    void* (*connection_pop_message)(void*) = nullptr;             // Pop pending message
-    const char* (*message_get_member)(void*) = nullptr;           // Get message method name
+    void *(*bus_get)(int, DBusError_ABI *) = nullptr;
+    void *(*message_new_method_call)(const char *, const char *, const char *, const char *) = nullptr;
+    void *(*connection_send_with_reply_and_block)(void *, void *, int, DBusError_ABI *) = nullptr;
+    int (*message_iter_init)(void *, DBusMessageIter_ABI *) = nullptr;
+    void (*message_iter_recurse)(DBusMessageIter_ABI *, DBusMessageIter_ABI *) = nullptr;
+    int (*message_iter_get_arg_type)(DBusMessageIter_ABI *) = nullptr;
+    void (*message_iter_get_basic)(DBusMessageIter_ABI *, void *) = nullptr;
+    int (*message_iter_next)(DBusMessageIter_ABI *) = nullptr;
+    void (*message_unref)(void *) = nullptr;
+    const char *(*bus_get_unique_name)(void *) = nullptr;    // Get our DBus unique name
+    int (*message_append_args)(void *, int, ...) = nullptr;  // Append method arguments
+    int (*connection_read_write)(void *, int) = nullptr;     // Read/write poll
+    void *(*connection_pop_message)(void *) = nullptr;       // Pop pending message
+    const char *(*message_get_member)(void *) = nullptr;     // Get message method name
 };
 
 // Read request for proxying receive() through the monitoring thread
 struct ReadRequest
 {
-    void *offer;    // ext or wlr offer pointer
-    int write_fd;   // pipe write end
-    bool pending;   // whether there is a pending request
-    bool done;      // whether the request is completed
+    void *offer;   // ext or wlr offer pointer
+    int write_fd;  // pipe write end
+    bool pending;  // whether there is a pending request
+    bool done;     // whether the request is completed
 };
 
 /**
@@ -195,14 +195,14 @@ class WaylandProtocol : public ProtocolBase
     LinuxEnvInfo env_info;
 
     // XWayland fallback for cursor position
-    Display* xwayland_display = nullptr;
+    Display *xwayland_display = nullptr;
     bool xwayland_tried = false;
 
     // KDE DBus for cursor position (dlopen'd libdbus-1.so.3)
     DBusFunctions dbus_fn;
     bool dbus_tried = false;
-    std::string kde_script_path;    // Temporary KWin script file path
-    std::string kde_bus_name;       // Our DBus unique name (e.g. ":1.234")
+    std::string kde_script_path;  // Temporary KWin script file path
+    std::string kde_bus_name;     // Our DBus unique name (e.g. ":1.234")
 
     // KWin script execution method, auto-detected on first call:
     //   PerScript  — standard KWin: run() on /Scripting/Script{id}
@@ -210,7 +210,12 @@ class WaylandProtocol : public ProtocolBase
     //   ManagerStart — fallback: start() on /Scripting manager
     //                (some Plasma 6 builds don't expose per-script objects)
     //   Unknown    — not yet probed
-    enum class KWinRunMethod { Unknown, PerScript, ManagerStart };
+    enum class KWinRunMethod
+    {
+        Unknown,
+        PerScript,
+        ManagerStart
+    };
     KWinRunMethod kde_run_method = KWinRunMethod::Unknown;
 
     // libevdev helper methods
@@ -230,10 +235,10 @@ class WaylandProtocol : public ProtocolBase
     static bool IsTextMimeType(const char *mime_type);
 
     // Cursor position methods
-    bool GetCursorPositionHyprland(Point& pos);
+    bool GetCursorPositionHyprland(Point &pos);
     bool LoadDBusFunctions();
-    bool GetCursorPositionKDE(Point& pos);
-    bool GetCursorPositionXWayland(Point& pos);
+    bool GetCursorPositionKDE(Point &pos);
+    bool GetCursorPositionXWayland(Point &pos);
 
     // Handle primary selection change (common for both protocols)
     void HandlePrimarySelectionChange();
@@ -241,8 +246,8 @@ class WaylandProtocol : public ProtocolBase
   public:
     // Static callbacks (public for listener table access)
     // Registry callbacks
-    static void RegistryGlobal(void *data, struct wl_registry *registry, uint32_t name,
-                               const char *interface, uint32_t version);
+    static void RegistryGlobal(void *data, struct wl_registry *registry, uint32_t name, const char *interface,
+                               uint32_t version);
     static void RegistryGlobalRemove(void *data, struct wl_registry *registry, uint32_t name);
 
     // ext-data-control device callbacks
@@ -255,8 +260,7 @@ class WaylandProtocol : public ProtocolBase
                                           struct ext_data_control_offer_v1 *offer);
 
     // ext-data-control offer callbacks
-    static void ExtOfferOffer(void *data, struct ext_data_control_offer_v1 *offer,
-                              const char *mime_type);
+    static void ExtOfferOffer(void *data, struct ext_data_control_offer_v1 *offer, const char *mime_type);
 
     // wlr-data-control device callbacks
     static void WlrDeviceDataOffer(void *data, struct zwlr_data_control_device_v1 *device,
@@ -268,8 +272,7 @@ class WaylandProtocol : public ProtocolBase
                                           struct zwlr_data_control_offer_v1 *offer);
 
     // wlr-data-control offer callbacks
-    static void WlrOfferOffer(void *data, struct zwlr_data_control_offer_v1 *offer,
-                              const char *mime_type);
+    static void WlrOfferOffer(void *data, struct zwlr_data_control_offer_v1 *offer, const char *mime_type);
 
     WaylandProtocol()
         : initialized(false),
@@ -304,13 +307,10 @@ class WaylandProtocol : public ProtocolBase
     DisplayProtocol GetProtocol() const override { return DisplayProtocol::Wayland; }
 
     // Modifier key state query
-    int GetModifierFlags() override
-    {
-        return modifier_state.GetFlags();
-    }
+    int GetModifierFlags() override { return modifier_state.GetFlags(); }
 
     // Set environment info from top-level detection
-    void SetEnvInfo(const LinuxEnvInfo& info) override { env_info = info; }
+    void SetEnvInfo(const LinuxEnvInfo &info) override { env_info = info; }
 
     // Get accurate cursor position from compositor
     Point GetCurrentMousePosition() override;
@@ -322,7 +322,8 @@ class WaylandProtocol : public ProtocolBase
 
         if (!InitializeWaylandConnection())
         {
-            fprintf(stderr, "[Wayland] WARNING: Failed to initialize Wayland connection. "
+            fprintf(stderr,
+                    "[Wayland] WARNING: Failed to initialize Wayland connection. "
                     "Selection monitoring will not be available.\n");
             // Don't fail - input monitoring via libevdev can still work
         }
@@ -352,15 +353,14 @@ class WaylandProtocol : public ProtocolBase
             if (dbus_fn.session_bus && dbus_fn.message_new_method_call)
             {
                 const char *sname = "selectionhook_cursor";
-                void *umsg = dbus_fn.message_new_method_call(
-                    "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
+                void *umsg = dbus_fn.message_new_method_call("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting",
+                                                             "unloadScript");
                 if (umsg)
                 {
                     dbus_fn.message_append_args(umsg, 's', &sname, '\0');
                     DBusError_ABI uerr;
                     dbus_fn.error_init(&uerr);
-                    void *ureply = dbus_fn.connection_send_with_reply_and_block(
-                        dbus_fn.session_bus, umsg, 200, &uerr);
+                    void *ureply = dbus_fn.connection_send_with_reply_and_block(dbus_fn.session_bus, umsg, 200, &uerr);
                     dbus_fn.message_unref(umsg);
                     if (ureply)
                         dbus_fn.message_unref(ureply);
@@ -445,7 +445,8 @@ class WaylandProtocol : public ProtocolBase
         {
             if (!InitializeInputDevices())
             {
-                fprintf(stderr, "[Wayland] WARNING: Failed to initialize input devices. "
+                fprintf(stderr,
+                        "[Wayland] WARNING: Failed to initialize input devices. "
                         "Mouse/keyboard events will not be available.\n");
             }
         }
@@ -546,10 +547,8 @@ static const struct zwlr_data_control_offer_v1_listener wlr_offer_listener = {
 
 bool WaylandProtocol::IsTextMimeType(const char *mime_type)
 {
-    return (strcmp(mime_type, "text/plain;charset=utf-8") == 0 ||
-            strcmp(mime_type, "text/plain") == 0 ||
-            strcmp(mime_type, "UTF8_STRING") == 0 ||
-            strcmp(mime_type, "TEXT") == 0);
+    return (strcmp(mime_type, "text/plain;charset=utf-8") == 0 || strcmp(mime_type, "text/plain") == 0 ||
+            strcmp(mime_type, "UTF8_STRING") == 0 || strcmp(mime_type, "TEXT") == 0);
 }
 
 bool WaylandProtocol::InitializeWaylandConnection()
@@ -584,7 +583,8 @@ bool WaylandProtocol::InitializeWaylandConnection()
 
     if (dc_type == DataControlType::None)
     {
-        fprintf(stderr, "[Wayland] WARNING: No data-control protocol available "
+        fprintf(stderr,
+                "[Wayland] WARNING: No data-control protocol available "
                 "(ext-data-control-v1 or wlr-data-control-unstable-v1 v2+). "
                 "Selection monitoring will not work.\n");
         CleanupWaylandConnection();
@@ -693,8 +693,8 @@ void WaylandProtocol::CleanupWaylandConnection()
 // Registry callbacks
 // ============================================================================
 
-void WaylandProtocol::RegistryGlobal(void *data, struct wl_registry *registry, uint32_t name,
-                                     const char *interface, uint32_t version)
+void WaylandProtocol::RegistryGlobal(void *data, struct wl_registry *registry, uint32_t name, const char *interface,
+                                     uint32_t version)
 {
     WaylandProtocol *self = static_cast<WaylandProtocol *>(data);
 
@@ -703,8 +703,8 @@ void WaylandProtocol::RegistryGlobal(void *data, struct wl_registry *registry, u
         // Bind the first seat
         if (!self->wl_seat_monitor)
         {
-            self->wl_seat_monitor = static_cast<struct wl_seat *>(
-                wl_registry_bind(registry, name, &wl_seat_interface, 1));
+            self->wl_seat_monitor =
+                static_cast<struct wl_seat *>(wl_registry_bind(registry, name, &wl_seat_interface, 1));
         }
     }
     else if (strcmp(interface, "ext_data_control_manager_v1") == 0)
@@ -823,8 +823,7 @@ void WaylandProtocol::ExtDevicePrimarySelection(void *data, struct ext_data_cont
     }
 }
 
-void WaylandProtocol::ExtOfferOffer(void *data, struct ext_data_control_offer_v1 *offer,
-                                    const char *mime_type)
+void WaylandProtocol::ExtOfferOffer(void *data, struct ext_data_control_offer_v1 *offer, const char *mime_type)
 {
     WaylandProtocol *self = static_cast<WaylandProtocol *>(data);
 
@@ -884,7 +883,7 @@ void WaylandProtocol::WlrDeviceFinished(void *data, struct zwlr_data_control_dev
 }
 
 void WaylandProtocol::WlrDevicePrimarySelection(void *data, struct zwlr_data_control_device_v1 *device,
-                                                 struct zwlr_data_control_offer_v1 *offer)
+                                                struct zwlr_data_control_offer_v1 *offer)
 {
     WaylandProtocol *self = static_cast<WaylandProtocol *>(data);
 
@@ -922,8 +921,7 @@ void WaylandProtocol::WlrDevicePrimarySelection(void *data, struct zwlr_data_con
     }
 }
 
-void WaylandProtocol::WlrOfferOffer(void *data, struct zwlr_data_control_offer_v1 *offer,
-                                     const char *mime_type)
+void WaylandProtocol::WlrOfferOffer(void *data, struct zwlr_data_control_offer_v1 *offer, const char *mime_type)
 {
     WaylandProtocol *self = static_cast<WaylandProtocol *>(data);
 
@@ -942,9 +940,9 @@ void WaylandProtocol::HandlePrimarySelectionChange()
     if (!selection_callback || !callback_context)
         return;
 
-    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                   std::chrono::system_clock::now().time_since_epoch())
-                   .count();
+    auto now =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
 
     SelectionChangeContext *ctx = new SelectionChangeContext();
     ctx->timestamp_ms = static_cast<uint64_t>(now);
@@ -975,15 +973,13 @@ void WaylandProtocol::WaylandMonitoringThreadProc()
 
                 if (dc_type == DataControlType::Ext && read_request.offer)
                 {
-                    ext_data_control_offer_v1_receive(
-                        (struct ext_data_control_offer_v1 *)read_request.offer,
-                        mime, read_request.write_fd);
+                    ext_data_control_offer_v1_receive((struct ext_data_control_offer_v1 *)read_request.offer, mime,
+                                                      read_request.write_fd);
                 }
                 else if (dc_type == DataControlType::Wlr && read_request.offer)
                 {
-                    zwlr_data_control_offer_v1_receive(
-                        (struct zwlr_data_control_offer_v1 *)read_request.offer,
-                        mime, read_request.write_fd);
+                    zwlr_data_control_offer_v1_receive((struct zwlr_data_control_offer_v1 *)read_request.offer, mime,
+                                                       read_request.write_fd);
                 }
 
                 wl_display_flush(wl_display_monitor);
@@ -1090,8 +1086,7 @@ bool WaylandProtocol::GetTextViaPrimary(std::string &text)
     // Step 4: Wait for monitoring thread to process the request (1s timeout)
     {
         std::unique_lock<std::mutex> lock(read_request_mutex);
-        bool ok = read_request_cv.wait_for(lock, std::chrono::seconds(1),
-                                           [this] { return read_request.done; });
+        bool ok = read_request_cv.wait_for(lock, std::chrono::seconds(1), [this] { return read_request.done; });
         if (!ok)
         {
             // Timeout - close pipe write end if still open
@@ -1265,10 +1260,8 @@ bool WaylandProtocol::IsInputDevice(const std::string &device_path)
     }
 
     // Check if device has mouse/touchpad or keyboard capabilities
-    bool is_mouse = libevdev_has_event_code(dev, EV_KEY, BTN_LEFT) ||
-                    libevdev_has_event_code(dev, EV_REL, REL_X) ||
-                    libevdev_has_event_code(dev, EV_REL, REL_Y) ||
-                    libevdev_has_event_code(dev, EV_ABS, ABS_X) ||
+    bool is_mouse = libevdev_has_event_code(dev, EV_KEY, BTN_LEFT) || libevdev_has_event_code(dev, EV_REL, REL_X) ||
+                    libevdev_has_event_code(dev, EV_REL, REL_Y) || libevdev_has_event_code(dev, EV_ABS, ABS_X) ||
                     libevdev_has_event_code(dev, EV_ABS, ABS_MT_POSITION_X);
 
     bool is_keyboard = libevdev_has_event_code(dev, EV_KEY, KEY_A) || libevdev_has_event_code(dev, EV_KEY, KEY_SPACE);
@@ -1482,8 +1475,7 @@ void WaylandProtocol::ProcessLibevdevEvent(const struct input_event &ev, const I
                 current_mouse_pos.y = ev.value;
             }
 
-            if (ev.code == ABS_X || ev.code == ABS_Y ||
-                ev.code == ABS_MT_POSITION_X || ev.code == ABS_MT_POSITION_Y)
+            if (ev.code == ABS_X || ev.code == ABS_Y || ev.code == ABS_MT_POSITION_X || ev.code == ABS_MT_POSITION_Y)
             {
                 MouseEventContext *mouseEvent = new MouseEventContext();
                 mouseEvent->type = EV_REL;  // Normalize to REL for upstream compatibility
@@ -1528,7 +1520,7 @@ void WaylandProtocol::ProcessLibevdevEvent(const struct input_event &ev, const I
  * Sends "j/cursorpos" command and parses JSON response {"x":N,"y":N}.
  * Socket must be closed immediately to avoid Hyprland 5-second freeze.
  */
-bool WaylandProtocol::GetCursorPositionHyprland(Point& pos)
+bool WaylandProtocol::GetCursorPositionHyprland(Point &pos)
 {
     const char *his = getenv("HYPRLAND_INSTANCE_SIGNATURE");
     if (!his)
@@ -1655,10 +1647,14 @@ bool WaylandProtocol::LoadDBusFunctions()
 
     dbus_fn.lib_handle = lib;
 
-    // Load all required function pointers
-    #define LOAD_DBUS_FN(name, field) \
-        dbus_fn.field = reinterpret_cast<decltype(dbus_fn.field)>(dlsym(lib, "dbus_" #name)); \
-        if (!dbus_fn.field) { fprintf(stderr, "[Wayland] KDE: Missing dbus_%s\n", #name); goto fail; }
+// Load all required function pointers
+#define LOAD_DBUS_FN(name, field)                                                         \
+    dbus_fn.field = reinterpret_cast<decltype(dbus_fn.field)>(dlsym(lib, "dbus_" #name)); \
+    if (!dbus_fn.field)                                                                   \
+    {                                                                                     \
+        fprintf(stderr, "[Wayland] KDE: Missing dbus_%s\n", #name);                       \
+        goto fail;                                                                        \
+    }
 
     LOAD_DBUS_FN(error_init, error_init);
     LOAD_DBUS_FN(error_free, error_free);
@@ -1677,7 +1673,7 @@ bool WaylandProtocol::LoadDBusFunctions()
     LOAD_DBUS_FN(connection_pop_message, connection_pop_message);
     LOAD_DBUS_FN(message_get_member, message_get_member);
 
-    #undef LOAD_DBUS_FN
+#undef LOAD_DBUS_FN
 
     // Get session bus connection
     {
@@ -1686,8 +1682,7 @@ bool WaylandProtocol::LoadDBusFunctions()
         dbus_fn.session_bus = dbus_fn.bus_get(0 /* DBUS_BUS_SESSION */, &err);
         if (!dbus_fn.session_bus)
         {
-            fprintf(stderr, "[Wayland] KDE: Failed to connect to session bus: %s\n",
-                    err.name ? err.name : "unknown");
+            fprintf(stderr, "[Wayland] KDE: Failed to connect to session bus: %s\n", err.name ? err.name : "unknown");
             dbus_fn.error_free(&err);
             goto fail;
         }
@@ -1716,9 +1711,9 @@ bool WaylandProtocol::LoadDBusFunctions()
             goto fail;
         }
         fprintf(f,
-            "let p = workspace.cursorPos;\n"
-            "callDBus(\"%s\", \"/\", \"\", \"cursorpos\", String(p.x) + \",\" + String(p.y));\n",
-            kde_bus_name.c_str());
+                "let p = workspace.cursorPos;\n"
+                "callDBus(\"%s\", \"/\", \"\", \"cursorpos\", String(p.x) + \",\" + String(p.y));\n",
+                kde_bus_name.c_str());
         fclose(f);
     }
 
@@ -1745,7 +1740,7 @@ fail:
  * 4. unloadScript(name) to clean up
  * 5. Parse "x,y" string → Point
  */
-bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
+bool WaylandProtocol::GetCursorPositionKDE(Point &pos)
 {
     if (!LoadDBusFunctions())
         return false;
@@ -1761,14 +1756,13 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
     // Step 0: Unload any previously loaded script with the same name
     // (KWin keeps scripts across process restarts; loadScript returns -1 if name exists)
     {
-        void *umsg = dbus_fn.message_new_method_call(
-            "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
+        void *umsg =
+            dbus_fn.message_new_method_call("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
         if (umsg)
         {
             dbus_fn.message_append_args(umsg, 's', &script_name, '\0');
             dbus_fn.error_init(&err);
-            void *ureply = dbus_fn.connection_send_with_reply_and_block(
-                dbus_fn.session_bus, umsg, 200, &err);
+            void *ureply = dbus_fn.connection_send_with_reply_and_block(dbus_fn.session_bus, umsg, 200, &err);
             dbus_fn.message_unref(umsg);
             if (ureply)
                 dbus_fn.message_unref(ureply);
@@ -1777,21 +1771,16 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
     }
 
     // Step 1: loadScript(String path, String name) → Int32 id
-    void *msg = dbus_fn.message_new_method_call(
-        "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript");
+    void *msg = dbus_fn.message_new_method_call("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript");
     if (!msg)
         return false;
 
     const char *script_path_cstr = kde_script_path.c_str();
     // DBUS_TYPE_STRING = 's' (0x73), DBUS_TYPE_INVALID = '\0'
-    dbus_fn.message_append_args(msg,
-        's', &script_path_cstr,
-        's', &script_name,
-        '\0');
+    dbus_fn.message_append_args(msg, 's', &script_path_cstr, 's', &script_name, '\0');
 
     dbus_fn.error_init(&err);
-    void *reply = dbus_fn.connection_send_with_reply_and_block(
-        dbus_fn.session_bus, msg, 200, &err);
+    void *reply = dbus_fn.connection_send_with_reply_and_block(dbus_fn.session_bus, msg, 200, &err);
     dbus_fn.message_unref(msg);
 
     if (!reply)
@@ -1805,8 +1794,7 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
     int32_t script_id = -1;
     {
         DBusMessageIter_ABI iter;
-        if (dbus_fn.message_iter_init(reply, &iter) &&
-            dbus_fn.message_iter_get_arg_type(&iter) == 'i')
+        if (dbus_fn.message_iter_init(reply, &iter) && dbus_fn.message_iter_get_arg_type(&iter) == 'i')
         {
             dbus_fn.message_iter_get_basic(&iter, &script_id);
         }
@@ -1836,16 +1824,15 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
     {
         // Try per-script path: /Scripting/Script{id} → run()
         char script_obj_path[64];
-        snprintf(script_obj_path, sizeof(script_obj_path),
-                 "/Scripting/Script%d", script_id);
-        msg = dbus_fn.message_new_method_call(
-            "org.kde.KWin", script_obj_path, "org.kde.kwin.Script", "run");
-        if (msg) {
+        snprintf(script_obj_path, sizeof(script_obj_path), "/Scripting/Script%d", script_id);
+        msg = dbus_fn.message_new_method_call("org.kde.KWin", script_obj_path, "org.kde.kwin.Script", "run");
+        if (msg)
+        {
             dbus_fn.error_init(&err);
-            reply = dbus_fn.connection_send_with_reply_and_block(
-                dbus_fn.session_bus, msg, 200, &err);
+            reply = dbus_fn.connection_send_with_reply_and_block(dbus_fn.session_bus, msg, 200, &err);
             dbus_fn.message_unref(msg);
-            if (reply) {
+            if (reply)
+            {
                 dbus_fn.message_unref(reply);
                 script_started = true;
                 kde_run_method = KWinRunMethod::PerScript;
@@ -1857,14 +1844,14 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
     if (!script_started && kde_run_method != KWinRunMethod::PerScript)
     {
         // Fallback: manager-level start() on /Scripting
-        msg = dbus_fn.message_new_method_call(
-            "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "start");
-        if (msg) {
+        msg = dbus_fn.message_new_method_call("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "start");
+        if (msg)
+        {
             dbus_fn.error_init(&err);
-            reply = dbus_fn.connection_send_with_reply_and_block(
-                dbus_fn.session_bus, msg, 200, &err);
+            reply = dbus_fn.connection_send_with_reply_and_block(dbus_fn.session_bus, msg, 200, &err);
             dbus_fn.message_unref(msg);
-            if (reply) {
+            if (reply)
+            {
                 dbus_fn.message_unref(reply);
                 script_started = true;
                 kde_run_method = KWinRunMethod::ManagerStart;
@@ -1891,8 +1878,7 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
             {
                 // Parse argument: single STRING "x,y"
                 DBusMessageIter_ABI iter;
-                if (dbus_fn.message_iter_init(incoming, &iter) &&
-                    dbus_fn.message_iter_get_arg_type(&iter) == 's')
+                if (dbus_fn.message_iter_init(incoming, &iter) && dbus_fn.message_iter_get_arg_type(&iter) == 's')
                 {
                     const char *val = nullptr;
                     dbus_fn.message_iter_get_basic(&iter, &val);
@@ -1916,14 +1902,13 @@ bool WaylandProtocol::GetCursorPositionKDE(Point& pos)
 cleanup:
     // Step 4: unloadScript to clean up
     {
-        void *umsg = dbus_fn.message_new_method_call(
-            "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
+        void *umsg =
+            dbus_fn.message_new_method_call("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript");
         if (umsg)
         {
             dbus_fn.message_append_args(umsg, 's', &script_name, '\0');
             dbus_fn.error_init(&err);
-            void *ureply = dbus_fn.connection_send_with_reply_and_block(
-                dbus_fn.session_bus, umsg, 200, &err);
+            void *ureply = dbus_fn.connection_send_with_reply_and_block(dbus_fn.session_bus, umsg, 200, &err);
             dbus_fn.message_unref(umsg);
             if (ureply)
                 dbus_fn.message_unref(ureply);
@@ -1939,7 +1924,7 @@ cleanup:
  * Opens XWayland display on first call and reuses the connection.
  * Note: cursor position may freeze when cursor is over native Wayland windows.
  */
-bool WaylandProtocol::GetCursorPositionXWayland(Point& pos)
+bool WaylandProtocol::GetCursorPositionXWayland(Point &pos)
 {
     if (!xwayland_tried)
     {
@@ -1966,9 +1951,8 @@ bool WaylandProtocol::GetCursorPositionXWayland(Point& pos)
     int root_x, root_y, win_x, win_y;
     unsigned int mask_return;
 
-    if (XQueryPointer(xwayland_display, DefaultRootWindow(xwayland_display),
-                      &root_return, &child_return, &root_x, &root_y,
-                      &win_x, &win_y, &mask_return))
+    if (XQueryPointer(xwayland_display, DefaultRootWindow(xwayland_display), &root_return, &child_return, &root_x,
+                      &root_y, &win_x, &win_y, &mask_return))
     {
         pos = Point(root_x, root_y);
         return true;

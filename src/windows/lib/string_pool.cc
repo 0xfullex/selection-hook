@@ -6,7 +6,9 @@
  */
 
 #include "string_pool.h"
+
 #include <windows.h>
+
 #include <algorithm>
 
 // Converts wide string to UTF-8 using buffer pooling
@@ -23,8 +25,8 @@ std::string StringPool::WideToUtf8(const std::wstring &wstr)
     std::string &buffer = GetBuffer(utf8Size + 1);
     buffer[utf8Size] = '\0';
 
-    int result = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.length()),
-                                     &buffer[0], utf8Size, NULL, NULL);
+    int result = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.length()), &buffer[0], utf8Size,
+                                     NULL, NULL);
     if (result <= 0)
         return "";
 
@@ -45,8 +47,7 @@ std::wstring StringPool::Utf8ToWide(const std::string &utf8)
     std::wstring &buffer = GetWideBuffer(wideSize + 1);
     buffer[wideSize] = L'\0';
 
-    int result = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.length()),
-                                     &buffer[0], wideSize);
+    int result = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.length()), &buffer[0], wideSize);
     if (result <= 0)
         return L"";
 
@@ -70,7 +71,7 @@ std::string &StringPool::GetBuffer(size_t minSize)
         {
             bestSize = pair.first;
             if (bestSize == minSize)
-                break; // Perfect match
+                break;  // Perfect match
         }
     }
 
@@ -83,8 +84,7 @@ std::string &StringPool::GetBuffer(size_t minSize)
 
     // Create new buffer with power-of-2 sizing (but not smaller than minSize)
     size_t size = 1;
-    while (size < minSize)
-        size *= 2;
+    while (size < minSize) size *= 2;
 
     pool[size] = std::string(size, '\0');
     return pool[size];
@@ -107,7 +107,7 @@ std::wstring &StringPool::GetWideBuffer(size_t minSize)
         {
             bestSize = pair.first;
             if (bestSize == minSize)
-                break; // Perfect match
+                break;  // Perfect match
         }
     }
 
@@ -120,8 +120,7 @@ std::wstring &StringPool::GetWideBuffer(size_t minSize)
 
     // Create new buffer with power-of-2 sizing (but not smaller than minSize)
     size_t size = 1;
-    while (size < minSize)
-        size *= 2;
+    while (size < minSize) size *= 2;
 
     pool[size] = std::wstring(size, L'\0');
     return pool[size];

@@ -1,15 +1,15 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
-#include <mutex>
 
 /**
  * UTF-8 conversion buffer pool to reduce memory allocations
  */
 class StringPool
 {
-public:
+  public:
     /**
      * Convert wide string to UTF-8 using pooled buffers
      */
@@ -20,7 +20,7 @@ public:
      */
     static std::wstring Utf8ToWide(const std::string &utf8);
 
-private:
+  private:
     /**
      * Get or create an appropriately sized buffer
      */

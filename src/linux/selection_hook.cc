@@ -1004,7 +1004,8 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
     resultObj.Set(Napi::String::New(env, "posLevel"), Napi::Number::New(env, static_cast<int>(selectionInfo.posLevel)));
 
     // Helper: output real coordinate when valid, INVALID_COORDINATE otherwise
-    auto setCoord = [&](const char* xKey, const char* yKey, const Point& p) {
+    auto setCoord = [&](const char *xKey, const char *yKey, const Point &p)
+    {
         resultObj.Set(xKey, Napi::Number::New(env, p.valid ? p.x : INVALID_COORDINATE));
         resultObj.Set(yKey, Napi::Number::New(env, p.valid ? p.y : INVALID_COORDINATE));
     };
@@ -1517,40 +1518,50 @@ void SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
 
         switch (type)
         {
-            case SelectionDetectType::Drag: {
-                if (queried_mouse_down_pos.valid && accuratePos.valid) {
+            case SelectionDetectType::Drag:
+            {
+                if (queried_mouse_down_pos.valid && accuratePos.valid)
+                {
                     // XWayland frozen: position unchanged despite physical drag → stale coordinates
-                    if (accuratePos.x == queried_mouse_down_pos.x &&
-                        accuratePos.y == queried_mouse_down_pos.y) {
+                    if (accuratePos.x == queried_mouse_down_pos.x && accuratePos.y == queried_mouse_down_pos.y)
+                    {
                         selectionInfo.mousePosStart.valid = false;
                         selectionInfo.mousePosEnd.valid = false;
                         selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
-                    } else {
+                    }
+                    else
+                    {
                         // Both start (mouse-down) and end (emission) are accurate
                         selectionInfo.mousePosStart = queried_mouse_down_pos;
                         selectionInfo.mousePosEnd = accuratePos;
                         selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
                     }
-                } else if (accuratePos.valid) {
+                }
+                else if (accuratePos.valid)
+                {
                     // Only emission-time position is accurate
                     selectionInfo.mousePosEnd = accuratePos;
                     selectionInfo.mousePosStart = accuratePos;  // start = end
                     selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
-                } else {
+                }
+                else
+                {
                     // Both invalid (no compositor IPC, no XWayland)
                     selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
                 }
                 break;
             }
             case SelectionDetectType::DoubleClick:
-                if (accuratePos.valid) {
+                if (accuratePos.valid)
+                {
                     selectionInfo.mousePosStart = accuratePos;
                     selectionInfo.mousePosEnd = accuratePos;
                 }
                 // posLevel stays MouseSingle (double-click is always single point)
                 break;
             case SelectionDetectType::ShiftClick:
-                if (accuratePos.valid) {
+                if (accuratePos.valid)
+                {
                     selectionInfo.mousePosEnd = accuratePos;
                     selectionInfo.mousePosStart = accuratePos;  // start = end
                 }

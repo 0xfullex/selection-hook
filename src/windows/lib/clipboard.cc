@@ -6,6 +6,7 @@
  */
 
 #include "clipboard.h"
+
 #include <vector>
 
 /**

@@ -16,18 +16,18 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <X11/extensions/Xfixes.h>
 #include <X11/extensions/XTest.h>
+#include <X11/extensions/Xfixes.h>
 #include <X11/extensions/record.h>
 #include <X11/keysym.h>
 
 // System headers
-#include <cerrno>
 #include <sys/epoll.h>
 #include <sys/select.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <thread>
 
@@ -53,15 +53,15 @@ constexpr long X11_None = None;
 class X11Protocol : public ProtocolBase
 {
   private:
-    Display* display;
+    Display *display;
     int screen;
     Window root;
 
     // XRecord related
     XRecordContext record_context;
-    XRecordRange* record_range;
-    Display* record_display;   // Dedicated Display connection for XRecord
-    Display* control_display;  // Separate Display connection for control operations
+    XRecordRange *record_range;
+    Display *record_display;   // Dedicated Display connection for XRecord
+    Display *control_display;  // Separate Display connection for control operations
     bool record_initialized;
 
     // Thread management
@@ -71,13 +71,13 @@ class X11Protocol : public ProtocolBase
     // Callback functions
     MouseEventCallback mouse_callback;
     KeyboardEventCallback keyboard_callback;
-    void* callback_context;
+    void *callback_context;
 
     // Modifier key state tracking
     ModifierState modifier_state;
 
     // XFixes related
-    Display* xfixes_display;
+    Display *xfixes_display;
     int xfixes_event_base;
     int xfixes_error_base;
     bool xfixes_initialized;
@@ -89,8 +89,8 @@ class X11Protocol : public ProtocolBase
     bool InitializeXRecord();
     void CleanupXRecord();
     void XRecordMonitoringThreadProc();
-    static void XRecordDataCallback(XPointer closure, XRecordInterceptData* data);
-    void ProcessXRecordData(XRecordInterceptData* data);
+    static void XRecordDataCallback(XPointer closure, XRecordInterceptData *data);
+    void ProcessXRecordData(XRecordInterceptData *data);
 
     // XFixes helper methods
     bool InitializeXFixes();
@@ -126,10 +126,7 @@ class X11Protocol : public ProtocolBase
     DisplayProtocol GetProtocol() const override { return DisplayProtocol::X11; }
 
     // Modifier key state query
-    int GetModifierFlags() override
-    {
-        return modifier_state.GetFlags();
-    }
+    int GetModifierFlags() override { return modifier_state.GetFlags(); }
 
     // Initialization and cleanup
     bool Initialize() override
@@ -167,14 +164,14 @@ class X11Protocol : public ProtocolBase
         Atom type;
         int format;
         unsigned long nitems, bytes_after;
-        unsigned char* data = nullptr;
+        unsigned char *data = nullptr;
 
         if (XGetWindowProperty(display, root, net_active_window, 0, 1, False, XA_WINDOW, &type, &format, &nitems,
                                &bytes_after, &data) == Success)
         {
             if (data)
             {
-                active_window = *(Window*)data;
+                active_window = *(Window *)data;
                 XFree(data);
             }
         }
@@ -182,7 +179,7 @@ class X11Protocol : public ProtocolBase
         return static_cast<uint64_t>(active_window);
     }
 
-    bool GetWindowRect(uint64_t window, WindowRect& rect) override
+    bool GetWindowRect(uint64_t window, WindowRect &rect) override
     {
         if (!display || !window)
             return false;
@@ -206,7 +203,7 @@ class X11Protocol : public ProtocolBase
         return true;
     }
 
-    bool GetProgramNameFromWindow(uint64_t window, std::string& programName) override
+    bool GetProgramNameFromWindow(uint64_t window, std::string &programName) override
     {
         if (!display || !window)
             return false;
@@ -230,7 +227,7 @@ class X11Protocol : public ProtocolBase
         }
 
         // Fallback to window name
-        char* window_name = nullptr;
+        char *window_name = nullptr;
         if (XFetchName(display, x11Window, &window_name) && window_name)
         {
             programName = std::string(window_name);
@@ -242,7 +239,7 @@ class X11Protocol : public ProtocolBase
     }
 
     // Shared helper: read a named X11 selection into text
-    bool ReadSelection(const char* selectionName, const char* propertyName, std::string& text)
+    bool ReadSelection(const char *selectionName, const char *propertyName, std::string &text)
     {
         if (!display)
             return false;
@@ -269,14 +266,14 @@ class X11Protocol : public ProtocolBase
                     Atom actual_type;
                     int actual_format;
                     unsigned long nitems, bytes_after;
-                    unsigned char* data = nullptr;
+                    unsigned char *data = nullptr;
 
                     if (XGetWindowProperty(display, window, property, 0, LONG_MAX, False, AnyPropertyType, &actual_type,
                                            &actual_format, &nitems, &bytes_after, &data) == Success)
                     {
                         if (actual_type == utf8_string && data && nitems > 0)
                         {
-                            text = std::string(reinterpret_cast<char*>(data), nitems);
+                            text = std::string(reinterpret_cast<char *>(data), nitems);
                             success = true;
                         }
                         if (data)
@@ -293,13 +290,10 @@ class X11Protocol : public ProtocolBase
     }
 
     // Text selection
-    bool GetTextViaPrimary(std::string& text) override
-    {
-        return ReadSelection("PRIMARY", "SELECTION_DATA", text);
-    }
+    bool GetTextViaPrimary(std::string &text) override { return ReadSelection("PRIMARY", "SELECTION_DATA", text); }
 
     // Clipboard operations
-    bool WriteClipboard(const std::string& text) override
+    bool WriteClipboard(const std::string &text) override
     {
         if (!display)
             return false;
@@ -320,7 +314,7 @@ class X11Protocol : public ProtocolBase
             // Store the text for later retrieval
             Atom property = XInternAtom(display, "CLIPBOARD_DATA", False);
             XChangeProperty(display, window, property, XA_STRING, 8, PropModeReplace,
-                            reinterpret_cast<const unsigned char*>(text.c_str()), text.length());
+                            reinterpret_cast<const unsigned char *>(text.c_str()), text.length());
         }
 
         XFlush(display);
@@ -333,14 +327,11 @@ class X11Protocol : public ProtocolBase
         return success;
     }
 
-    bool ReadClipboard(std::string& text) override
-    {
-        return ReadSelection("CLIPBOARD", "CLIPBOARD_DATA", text);
-    }
+    bool ReadClipboard(std::string &text) override { return ReadSelection("CLIPBOARD", "CLIPBOARD_DATA", text); }
 
     // Input monitoring implementation using XRecord + XFixes
     bool InitializeInputMonitoring(MouseEventCallback mouseCallback, KeyboardEventCallback keyboardCallback,
-                                   SelectionEventCallback selectionCb, void* context) override
+                                   SelectionEventCallback selectionCb, void *context) override
     {
         if (!display)
             return false;
@@ -359,7 +350,8 @@ class X11Protocol : public ProtocolBase
         // If XFixes fails, print warning but don't block startup
         if (!InitializeXFixes())
         {
-            fprintf(stderr, "[XFixes] WARNING: Failed to initialize XFixes extension. "
+            fprintf(stderr,
+                    "[XFixes] WARNING: Failed to initialize XFixes extension. "
                     "Selection change detection will not work.\n");
         }
 
@@ -433,7 +425,7 @@ class X11Protocol : public ProtocolBase
     }
 
     // X11-specific methods
-    Display* GetDisplay() const { return display; }
+    Display *GetDisplay() const { return display; }
     Window GetRootWindow() const { return root; }
     int GetScreen() const { return screen; }
 
@@ -454,7 +446,6 @@ class X11Protocol : public ProtocolBase
 
         return Point();
     }
-
 };
 
 // XRecord helper methods implementation
@@ -580,16 +571,16 @@ void X11Protocol::XRecordMonitoringThreadProc()
 }
 
 // Static callback function for XRecord
-void X11Protocol::XRecordDataCallback(XPointer closure, XRecordInterceptData* data)
+void X11Protocol::XRecordDataCallback(XPointer closure, XRecordInterceptData *data)
 {
-    X11Protocol* instance = reinterpret_cast<X11Protocol*>(closure);
+    X11Protocol *instance = reinterpret_cast<X11Protocol *>(closure);
     if (instance && data)
     {
         instance->ProcessXRecordData(data);
     }
 }
 
-void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
+void X11Protocol::ProcessXRecordData(XRecordInterceptData *data)
 {
     if (!data || !data->data)
         return;
@@ -601,7 +592,7 @@ void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
         unsigned char event_type = data->data[0] & 0x7f;  // Remove the send_event bit
 
         // Extract basic event data from the 8-byte protocol data
-        unsigned char* event_data = data->data;
+        unsigned char *event_data = data->data;
 
         switch (event_type)
         {
@@ -617,7 +608,7 @@ void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
                     // Just use current mouse position and button from second byte
                     unsigned char button = event_data[1];
 
-                    MouseEventContext* mouseEvent = new MouseEventContext();
+                    MouseEventContext *mouseEvent = new MouseEventContext();
                     mouseEvent->value = (event_type == ButtonPress) ? 1 : 0;
                     mouseEvent->pos = current_pos;  // Use actual mouse position
 
@@ -702,7 +693,7 @@ void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
                     Point new_pos = GetCurrentMousePosition();
 
                     // Generate mouse move event with absolute position
-                    MouseEventContext* mouseEvent = new MouseEventContext();
+                    MouseEventContext *mouseEvent = new MouseEventContext();
                     mouseEvent->type = EV_REL;
                     mouseEvent->code = REL_X;
                     mouseEvent->value = 0;  // No delta calculation without previous position
@@ -730,7 +721,7 @@ void X11Protocol::ProcessXRecordData(XRecordInterceptData* data)
                     // Build modifier flags bitmask
                     int flags = modifier_state.GetFlags();
 
-                    KeyboardEventContext* keyboardEvent = new KeyboardEventContext();
+                    KeyboardEventContext *keyboardEvent = new KeyboardEventContext();
                     keyboardEvent->type = EV_KEY;
                     keyboardEvent->code = linux_keycode;
                     keyboardEvent->value = is_press ? 1 : 0;
@@ -783,8 +774,7 @@ bool X11Protocol::InitializeXFixes()
     // Subscribe to PRIMARY selection owner changes on root window
     Window xfixes_root = DefaultRootWindow(xfixes_display);
     Atom primary = XInternAtom(xfixes_display, "PRIMARY", False);
-    XFixesSelectSelectionInput(xfixes_display, xfixes_root, primary,
-                               XFixesSetSelectionOwnerNotifyMask);
+    XFixesSelectSelectionInput(xfixes_display, xfixes_root, primary, XFixesSetSelectionOwnerNotifyMask);
     XFlush(xfixes_display);
 
     xfixes_initialized = true;
@@ -840,7 +830,7 @@ void X11Protocol::XFixesMonitoringThreadProc()
             // Check if this is an XFixes SelectionNotify event
             if (event.type == xfixes_event_base + XFixesSelectionNotify)
             {
-                XFixesSelectionNotifyEvent* sel_event = (XFixesSelectionNotifyEvent*)&event;
+                XFixesSelectionNotifyEvent *sel_event = (XFixesSelectionNotifyEvent *)&event;
 
                 // Only handle SetSelectionOwner notifications
                 if (sel_event->subtype == XFixesSetSelectionOwnerNotify)
@@ -851,7 +841,7 @@ void X11Protocol::XFixesMonitoringThreadProc()
                                    .count();
 
                     // Create selection change context and dispatch via callback
-                    SelectionChangeContext* ctx = new SelectionChangeContext();
+                    SelectionChangeContext *ctx = new SelectionChangeContext();
                     ctx->timestamp_ms = static_cast<uint64_t>(now);
 
                     if (selection_callback && callback_context)

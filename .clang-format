@@ -6,3 +6,5 @@ AllowShortIfStatementsOnASingleLine: Never
 AllowShortBlocksOnASingleLine: Empty
 AllowShortFunctionsOnASingleLine: Inline
 AccessModifierOffset: -2
+DerivePointerAlignment: false
+PointerAlignment: Right

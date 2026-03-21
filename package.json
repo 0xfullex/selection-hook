@@ -30,7 +30,8 @@
     "prebuild:linux:x64": "prebuildify --napi --platform=linux --arch=x64",
     "prebuild:linux:arm64": "prebuildify --napi --platform=linux --arch=arm64",
     "demo": "node --trace-deprecation --force-node-api-uncaught-exceptions-policy=true examples/node-demo.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "format": "find src -name '*.cc' -o -name '*.mm' -o -name '*.h' | xargs clang-format -i"
   },
   "keywords": [
     "node",

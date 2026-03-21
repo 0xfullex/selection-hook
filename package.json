@@ -9,6 +9,13 @@
   },
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
   "scripts": {
     "install": "node-gyp-build",
     "rebuild": "node-gyp rebuild",
@@ -22,7 +29,8 @@
     "prebuild:linux": "npm run prebuild:linux:x64 && npm run prebuild:linux:arm64",
     "prebuild:linux:x64": "prebuildify --napi --platform=linux --arch=x64",
     "prebuild:linux:arm64": "prebuildify --napi --platform=linux --arch=arm64",
-    "demo": "node --trace-deprecation --force-node-api-uncaught-exceptions-policy=true examples/node-demo.js"
+    "demo": "node --trace-deprecation --force-node-api-uncaught-exceptions-policy=true examples/node-demo.js",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "node",
@@ -47,8 +55,10 @@
     "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
     "node-gyp": "^11.2.0",
-    "prebuildify": "^6.0.1"
+    "prebuildify": "^6.0.1",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"

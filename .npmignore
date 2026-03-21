@@ -7,3 +7,4 @@ bin
 .vscode
 .cursorrules
 .clang-format
+tsconfig.json

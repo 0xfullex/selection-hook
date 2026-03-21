@@ -23,131 +23,131 @@ static constexpr char SHIFTED_NUMBERS[] = ")!@#$%^&*(";
 
 // Static mapping for virtual key codes to MDN KeyboardEvent.key values
 // MDN standard: modifier keys return the same value regardless of left/right
-static const std::unordered_map<DWORD, const std::string*> vkCodeMaps = {
+static const std::unordered_map<DWORD, std::string> vkCodeMaps = {
     // Control keys
-    {VK_LCONTROL, &CONTROL_KEY},
-    {VK_RCONTROL, &CONTROL_KEY},
-    {VK_CONTROL, &CONTROL_KEY},
+    {VK_LCONTROL, CONTROL_KEY},
+    {VK_RCONTROL, CONTROL_KEY},
+    {VK_CONTROL, CONTROL_KEY},
 
     // Alt keys
-    {VK_LMENU, &ALT_KEY},
-    {VK_RMENU, &ALT_KEY},
-    {VK_MENU, &ALT_KEY},
+    {VK_LMENU, ALT_KEY},
+    {VK_RMENU, ALT_KEY},
+    {VK_MENU, ALT_KEY},
 
     // Shift keys
-    {VK_LSHIFT, &SHIFT_KEY},
-    {VK_RSHIFT, &SHIFT_KEY},
-    {VK_SHIFT, &SHIFT_KEY},
+    {VK_LSHIFT, SHIFT_KEY},
+    {VK_RSHIFT, SHIFT_KEY},
+    {VK_SHIFT, SHIFT_KEY},
 
     // Windows keys
-    {VK_LWIN, &META_KEY},
-    {VK_RWIN, &META_KEY},
+    {VK_LWIN, META_KEY},
+    {VK_RWIN, META_KEY},
 
     // Lock keys
-    {VK_CAPITAL, new std::string("CapsLock")},
-    {VK_NUMLOCK, new std::string("NumLock")},
-    {VK_SCROLL, new std::string("ScrollLock")},
+    {VK_CAPITAL, "CapsLock"},
+    {VK_NUMLOCK, "NumLock"},
+    {VK_SCROLL, "ScrollLock"},
 
     // Function keys
-    {VK_F1, new std::string("F1")},
-    {VK_F2, new std::string("F2")},
-    {VK_F3, new std::string("F3")},
-    {VK_F4, new std::string("F4")},
-    {VK_F5, new std::string("F5")},
-    {VK_F6, new std::string("F6")},
-    {VK_F7, new std::string("F7")},
-    {VK_F8, new std::string("F8")},
-    {VK_F9, new std::string("F9")},
-    {VK_F10, new std::string("F10")},
-    {VK_F11, new std::string("F11")},
-    {VK_F12, new std::string("F12")},
-    {VK_F13, new std::string("F13")},
-    {VK_F14, new std::string("F14")},
-    {VK_F15, new std::string("F15")},
-    {VK_F16, new std::string("F16")},
-    {VK_F17, new std::string("F17")},
-    {VK_F18, new std::string("F18")},
-    {VK_F19, new std::string("F19")},
-    {VK_F20, new std::string("F20")},
-    {VK_F21, new std::string("F21")},
-    {VK_F22, new std::string("F22")},
-    {VK_F23, new std::string("F23")},
-    {VK_F24, new std::string("F24")},
+    {VK_F1, "F1"},
+    {VK_F2, "F2"},
+    {VK_F3, "F3"},
+    {VK_F4, "F4"},
+    {VK_F5, "F5"},
+    {VK_F6, "F6"},
+    {VK_F7, "F7"},
+    {VK_F8, "F8"},
+    {VK_F9, "F9"},
+    {VK_F10, "F10"},
+    {VK_F11, "F11"},
+    {VK_F12, "F12"},
+    {VK_F13, "F13"},
+    {VK_F14, "F14"},
+    {VK_F15, "F15"},
+    {VK_F16, "F16"},
+    {VK_F17, "F17"},
+    {VK_F18, "F18"},
+    {VK_F19, "F19"},
+    {VK_F20, "F20"},
+    {VK_F21, "F21"},
+    {VK_F22, "F22"},
+    {VK_F23, "F23"},
+    {VK_F24, "F24"},
 
     // Navigation keys
-    {VK_HOME, new std::string("Home")},
-    {VK_END, new std::string("End")},
-    {VK_PRIOR, new std::string("PageUp")},
-    {VK_NEXT, new std::string("PageDown")},
-    {VK_UP, new std::string("ArrowUp")},
-    {VK_DOWN, new std::string("ArrowDown")},
-    {VK_LEFT, new std::string("ArrowLeft")},
-    {VK_RIGHT, new std::string("ArrowRight")},
+    {VK_HOME, "Home"},
+    {VK_END, "End"},
+    {VK_PRIOR, "PageUp"},
+    {VK_NEXT, "PageDown"},
+    {VK_UP, "ArrowUp"},
+    {VK_DOWN, "ArrowDown"},
+    {VK_LEFT, "ArrowLeft"},
+    {VK_RIGHT, "ArrowRight"},
 
     // Editing keys
-    {VK_INSERT, new std::string("Insert")},
-    {VK_DELETE, new std::string("Delete")},
-    {VK_BACK, new std::string("Backspace")},
+    {VK_INSERT, "Insert"},
+    {VK_DELETE, "Delete"},
+    {VK_BACK, "Backspace"},
 
     // Whitespace keys
-    {VK_SPACE, new std::string(" ")},
-    {VK_TAB, new std::string("Tab")},
-    {VK_RETURN, new std::string("Enter")},
+    {VK_SPACE, " "},
+    {VK_TAB, "Tab"},
+    {VK_RETURN, "Enter"},
 
     // Escape key
-    {VK_ESCAPE, new std::string("Escape")},
+    {VK_ESCAPE, "Escape"},
 
     // Print Screen
-    {VK_SNAPSHOT, new std::string("PrintScreen")},
+    {VK_SNAPSHOT, "PrintScreen"},
 
     // Pause/Break
-    {VK_PAUSE, new std::string("Pause")},
+    {VK_PAUSE, "Pause"},
 
     // Context menu
-    {VK_APPS, new std::string("ContextMenu")},
+    {VK_APPS, "ContextMenu"},
 
     // Numeric keypad keys
-    {VK_NUMPAD0, new std::string("0")},
-    {VK_NUMPAD1, new std::string("1")},
-    {VK_NUMPAD2, new std::string("2")},
-    {VK_NUMPAD3, new std::string("3")},
-    {VK_NUMPAD4, new std::string("4")},
-    {VK_NUMPAD5, new std::string("5")},
-    {VK_NUMPAD6, new std::string("6")},
-    {VK_NUMPAD7, new std::string("7")},
-    {VK_NUMPAD8, new std::string("8")},
-    {VK_NUMPAD9, new std::string("9")},
-    {VK_DECIMAL, new std::string(".")},
-    {VK_ADD, new std::string("+")},
-    {VK_SUBTRACT, new std::string("-")},
-    {VK_MULTIPLY, new std::string("*")},
-    {VK_DIVIDE, new std::string("/")},
-    {VK_SEPARATOR, new std::string(",")},
-    {VK_CLEAR, new std::string("Clear")},
+    {VK_NUMPAD0, "0"},
+    {VK_NUMPAD1, "1"},
+    {VK_NUMPAD2, "2"},
+    {VK_NUMPAD3, "3"},
+    {VK_NUMPAD4, "4"},
+    {VK_NUMPAD5, "5"},
+    {VK_NUMPAD6, "6"},
+    {VK_NUMPAD7, "7"},
+    {VK_NUMPAD8, "8"},
+    {VK_NUMPAD9, "9"},
+    {VK_DECIMAL, "."},
+    {VK_ADD, "+"},
+    {VK_SUBTRACT, "-"},
+    {VK_MULTIPLY, "*"},
+    {VK_DIVIDE, "/"},
+    {VK_SEPARATOR, ","},
+    {VK_CLEAR, "Clear"},
 
     // Media keys
-    {VK_VOLUME_MUTE, new std::string("AudioVolumeMute")},
-    {VK_VOLUME_DOWN, new std::string("AudioVolumeDown")},
-    {VK_VOLUME_UP, new std::string("AudioVolumeUp")},
-    {VK_MEDIA_NEXT_TRACK, new std::string("MediaTrackNext")},
-    {VK_MEDIA_PREV_TRACK, new std::string("MediaTrackPrevious")},
-    {VK_MEDIA_STOP, new std::string("MediaStop")},
-    {VK_MEDIA_PLAY_PAUSE, new std::string("MediaPlayPause")},
+    {VK_VOLUME_MUTE, "AudioVolumeMute"},
+    {VK_VOLUME_DOWN, "AudioVolumeDown"},
+    {VK_VOLUME_UP, "AudioVolumeUp"},
+    {VK_MEDIA_NEXT_TRACK, "MediaTrackNext"},
+    {VK_MEDIA_PREV_TRACK, "MediaTrackPrevious"},
+    {VK_MEDIA_STOP, "MediaStop"},
+    {VK_MEDIA_PLAY_PAUSE, "MediaPlayPause"},
 
     // Browser keys
-    {VK_BROWSER_BACK, new std::string("BrowserBack")},
-    {VK_BROWSER_FORWARD, new std::string("BrowserForward")},
-    {VK_BROWSER_REFRESH, new std::string("BrowserRefresh")},
-    {VK_BROWSER_STOP, new std::string("BrowserStop")},
-    {VK_BROWSER_SEARCH, new std::string("BrowserSearch")},
-    {VK_BROWSER_FAVORITES, new std::string("BrowserFavorites")},
-    {VK_BROWSER_HOME, new std::string("BrowserHome")},
+    {VK_BROWSER_BACK, "BrowserBack"},
+    {VK_BROWSER_FORWARD, "BrowserForward"},
+    {VK_BROWSER_REFRESH, "BrowserRefresh"},
+    {VK_BROWSER_STOP, "BrowserStop"},
+    {VK_BROWSER_SEARCH, "BrowserSearch"},
+    {VK_BROWSER_FAVORITES, "BrowserFavorites"},
+    {VK_BROWSER_HOME, "BrowserHome"},
 
     // Application launcher keys
-    {VK_LAUNCH_MAIL, new std::string("LaunchMail")},
-    {VK_LAUNCH_MEDIA_SELECT, new std::string("LaunchMediaPlayer")},
-    {VK_LAUNCH_APP1, new std::string("LaunchApplication1")},
-    {VK_LAUNCH_APP2, new std::string("LaunchApplication2")}};
+    {VK_LAUNCH_MAIL, "LaunchMail"},
+    {VK_LAUNCH_MEDIA_SELECT, "LaunchMediaPlayer"},
+    {VK_LAUNCH_APP1, "LaunchApplication1"},
+    {VK_LAUNCH_APP2, "LaunchApplication2"}};
 
 // Optimized OEM key mappings with pre-allocated strings
 struct OemKeyMapping
@@ -193,13 +193,13 @@ static thread_local KeyStateCache keyStateCache = {false, false, 0};
  * @param flags Additional flags from the keyboard hook
  * @return The corresponding KeyboardEvent.key string value
  */
-std::string convertVkCodeToUniKey(DWORD vkCode, DWORD scanCode, DWORD flags)
+std::string convertKeyCodeToUniKey(DWORD vkCode, DWORD scanCode, DWORD flags)
 {
     // First, check if the key is in our static mapping
     auto it = vkCodeMaps.find(vkCode);
     if (it != vkCodeMaps.end())
     {
-        return *(it->second);
+        return it->second;
     }
 
     // Handle alphanumeric keys and symbols with optimized logic

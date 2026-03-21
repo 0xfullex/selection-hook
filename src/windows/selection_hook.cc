@@ -367,6 +367,12 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
  */
 SelectionHook::~SelectionHook()
 {
+    // Clear current instance first to prevent TSFN callbacks from using a dying object
+    if (currentInstance == this)
+    {
+        currentInstance = nullptr;
+    }
+
     // Stop worker thread
     bool was_running = running.exchange(false);
     if (was_running && tsfn)
@@ -399,12 +405,6 @@ SelectionHook::~SelectionHook()
         {
             keyboard_tsfn.Release();
         }
-    }
-
-    // Clear current instance if it's us
-    if (currentInstance == this)
-    {
-        currentInstance = nullptr;
     }
 
     // Release UI Automation
@@ -870,7 +870,7 @@ void SelectionHook::ProcessStringArrayToList(const Napi::Array &array, std::vect
  */
 void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *pMouseEvent)
 {
-    if (!currentInstance->ShouldProcessGetSelection())
+    if (!currentInstance || !currentInstance->ShouldProcessGetSelection())
     {
         delete pMouseEvent;
         return;
@@ -1187,7 +1187,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
  */
 void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *pKeyboardEvent)
 {
-    if (!currentInstance->ShouldProcessGetSelection())
+    if (!currentInstance || !currentInstance->ShouldProcessGetSelection())
     {
         delete pKeyboardEvent;
         return;
@@ -1224,7 +1224,7 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
     {
         // Convert virtual key code to MDN KeyboardEvent.key value
         // cost: ~5us, max 100us (<5%)
-        std::string uniKey = convertVkCodeToUniKey(vkCode, scanCode, flags);
+        std::string uniKey = convertKeyCodeToUniKey(vkCode, scanCode, flags);
 
         Napi::Object resultObj = Napi::Object::New(env);
         resultObj.Set(Napi::String::New(env, "type"), Napi::String::New(env, "keyboard-event"));
@@ -1887,74 +1887,20 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     // so we can skip the key check preprocessing
     if (!is_triggered_by_user)
     {
-        // we will do the key check preprocessing
-        // because user may press some keys but not intent to copy text
-        // so we wait max about 200ms to check this
-
-        bool isCtrlPressed = false;
-        bool isCPressed = false;
-        bool isXPressed = false;
-        bool isVPressed = false;
-        bool isCtrlPressing = false;
-        bool isCPressing = false;
-        bool isXPressing = false;
-        bool isVPressing = false;
-        int checkCount = 0;
-        const int maxChecks = 5;
-
-        while (checkCount < maxChecks)
+        // Check if clipboard sequence number has changed since mouse down
+        // if it's changed, it means user has copied something, we can read it directly
+        if (GetClipboardSequenceNumber() != clipboard_sequence)
         {
-            // Check if clipboard sequence number has changed since mouse down
-            // if it's changed, it means user has copied something, we can read it directly
-            if (GetClipboardSequenceNumber() != clipboard_sequence)
-            {
-                // Try to read from clipboard directly
-                if (!ReadClipboard(selectionInfo.text) || selectionInfo.text.empty())
-                {
-                    return false;
-                }
-                return true;
-            }
-
-            isCtrlPressing = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            isCPressing = (GetAsyncKeyState('C') & 0x8000) != 0;
-            isXPressing = (GetAsyncKeyState('X') & 0x8000) != 0;
-            isVPressing = (GetAsyncKeyState('V') & 0x8000) != 0;
-
-            // if no key is pressing, we can break to go on
-            if (!isCtrlPressing && !isCPressing && !isXPressing && !isVPressing)
-            {
-                break;
-            }
-            // if any of the keys are pressing,
-            // but it's not triggered by user,
-            // we will not process
-            else if (!is_triggered_by_user)
+            if (!ReadClipboard(selectionInfo.text) || selectionInfo.text.empty())
             {
                 return false;
             }
-
-            if (isCtrlPressing)
-                isCtrlPressed = true;
-            if (isCPressing)
-                isCPressed = true;
-            if (isXPressing)
-                isXPressed = true;
-            if (isVPressing)
-                isVPressed = true;
-
-            checkCount++;
-            Sleep(40);  // Small delay between checks
+            return true;
         }
 
-        // wait for user copy timeout, still some key(Ctrl, C, X, V) is pressing
-        if (checkCount >= maxChecks)
-        {
-            return false;
-        }
-
-        // if it's a user copy behavior, we will do nothing
-        if (isCtrlPressed && (isCPressed || isXPressed || isVPressed))
+        // If any copy/cut/paste related key is held, user is doing their own action — abort
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) || (GetAsyncKeyState('C') & 0x8000) ||
+            (GetAsyncKeyState('X') & 0x8000) || (GetAsyncKeyState('V') & 0x8000))
         {
             return false;
         }
@@ -1984,6 +1930,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     {
         if (ShouldKeyInterruptViaClipboard())
         {
+            if (!existingContent.empty())
+                WriteClipboard(existingContent);
             return false;
         }
 
@@ -2034,6 +1982,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
     if (ShouldKeyInterruptViaClipboard())
     {
+        if (!existingContent.empty())
+            WriteClipboard(existingContent);
         return false;
     }
 
@@ -2078,6 +2028,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
     if (ShouldKeyInterruptViaClipboard())
     {
+        if (!existingContent.empty())
+            WriteClipboard(existingContent);
         return false;
     }
 
@@ -2199,7 +2151,13 @@ bool SelectionHook::SetTextRangeCoordinates(IUIAutomationTextRange *pRange, Text
     {
         // Access rect array data directly for better performance
         double *pRects = nullptr;
-        SafeArrayAccessData(pRectArray, (void **)&pRects);
+        HRESULT accessHr = SafeArrayAccessData(pRectArray, (void **)&pRects);
+
+        if (FAILED(accessHr) || !pRects)
+        {
+            SafeArrayDestroy(pRectArray);
+            return false;
+        }
 
         LONG lowerBound, upperBound;
         SafeArrayGetLBound(pRectArray, 1, &lowerBound);
@@ -2237,7 +2195,9 @@ bool SelectionHook::SetTextRangeCoordinates(IUIAutomationTextRange *pRange, Text
             }
         }
 
-        // If we found valid rectangles
+        bool found = false;
+
+        // If we found valid rectangles, populate selectionInfo before releasing the array
         if (firstValidRectIndex >= 0 && lastValidRectIndex >= 0)
         {
             // Use first valid rectangle's top-left as start position (first paragraph left-top)
@@ -2261,11 +2221,13 @@ bool SelectionHook::SetTextRangeCoordinates(IUIAutomationTextRange *pRange, Text
             selectionInfo.endTop.y = static_cast<LONG>(pRects[lastValidRectIndex + 1]);          // top
 
             selectionInfo.posLevel = SelectionPositionLevel::Full;
-
-            SafeArrayUnaccessData(pRectArray);
-            SafeArrayDestroy(pRectArray);
-            return true;
+            found = true;
         }
+
+        // Always release the array lock and destroy, regardless of whether valid rects were found
+        SafeArrayUnaccessData(pRectArray);
+        SafeArrayDestroy(pRectArray);
+        return found;
     }
 
     return false;
@@ -2326,6 +2288,15 @@ DWORD WINAPI SelectionHook::MouseKeyboardHookThreadProc(LPVOID lpParam)
     HHOOK mouseHook = SetWindowsHookEx(WH_MOUSE_LL, MouseHookCallback, NULL, 0);
     HHOOK keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardHookCallback, NULL, 0);
 
+    if (!mouseHook)
+    {
+        fprintf(stderr, "[selection-hook] SetWindowsHookEx(WH_MOUSE_LL) failed, error: %lu\n", GetLastError());
+    }
+    if (!keyboardHook)
+    {
+        fprintf(stderr, "[selection-hook] SetWindowsHookEx(WH_KEYBOARD_LL) failed, error: %lu\n", GetLastError());
+    }
+
     // Message loop
     while (GetMessage(&msg, NULL, 0, 0) > 0)
     {
@@ -2348,9 +2319,8 @@ DWORD WINAPI SelectionHook::MouseKeyboardHookThreadProc(LPVOID lpParam)
         break;
     }
 
-    instance->mouse_tsfn.Release();
-    instance->keyboard_tsfn.Release();
-    return GetLastError();
+    // TSFN lifecycle is managed by Stop()/destructor on the main thread
+    return 0;
 }
 
 /**
@@ -2406,10 +2376,10 @@ LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, L
  */
 void SelectionHook::EnableDpiAwareness()
 {
-    // 定义 SetProcessDpiAwareness 函数指针类型
+    // Define the SetProcessDpiAwareness function pointer type
     typedef HRESULT(WINAPI * SetProcessDpiAwareness_t)(PROCESS_DPI_AWARENESS);
 
-    // 尝试从 Shcore.dll 加载新函数
+    // Try to load the new function from Shcore.dll
     HMODULE shcore = LoadLibraryA("Shcore.dll");
     if (shcore)
     {

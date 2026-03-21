@@ -28,4 +28,4 @@
  * @return The corresponding KeyboardEvent.key string value (e.g., "a", "Enter", "Control")
  *         Returns "Unidentified" for unknown or unmappable keys
  */
-std::string convertVkCodeToUniKey(DWORD vkCode, DWORD scanCode = 0, DWORD flags = 0);
+std::string convertKeyCodeToUniKey(DWORD vkCode, DWORD scanCode = 0, DWORD flags = 0);

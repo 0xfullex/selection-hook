@@ -85,8 +85,14 @@ bool WriteClipboard(const std::wstring &content)
             {
                 memcpy(pText, content.c_str(), size);
                 GlobalUnlock(hData);
-                SetClipboardData(CF_UNICODETEXT, hData);
-                success = true;
+                if (SetClipboardData(CF_UNICODETEXT, hData) != nullptr)
+                {
+                    success = true;
+                }
+                else
+                {
+                    GlobalFree(hData);
+                }
             }
             else
             {

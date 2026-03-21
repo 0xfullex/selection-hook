@@ -135,8 +135,12 @@ export interface SelectionConfig {
   selectionPassiveMode?: boolean;
   /** Mode for clipboard fallback behavior */
   clipboardMode?: (typeof SelectionHook.FilterMode)[keyof typeof SelectionHook.FilterMode];
+  /** Mode for global filter behavior */
+  globalFilterMode?: (typeof SelectionHook.FilterMode)[keyof typeof SelectionHook.FilterMode];
   /** List of program names for clipboard mode filtering */
-  programList?: string[];
+  clipboardFilterList?: string[];
+  /** List of program names for global filter mode filtering */
+  globalFilterList?: string[];
 }
 
 /**

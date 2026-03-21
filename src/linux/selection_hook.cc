@@ -58,6 +58,9 @@
 // Keyboard utility for Linux key code conversion
 #include "lib/keyboard.h"
 
+// Utility functions
+#include "lib/utils.h"
+
 /**
  * Factory function to create protocol instances
  */
@@ -763,7 +766,7 @@ Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
         // Get selected text
         TextSelectionInfo selectionInfo;
         is_triggered_by_user = true;
-        if (!GetSelectedText(activeWindow, selectionInfo) || selectionInfo.text.empty())
+        if (!GetSelectedText(activeWindow, selectionInfo) || IsTrimmedEmpty(selectionInfo.text))
         {
             is_triggered_by_user = false;
             return env.Null();
@@ -934,7 +937,7 @@ bool SelectionHook::GetTextViaPrimary(uint64_t window, TextSelectionInfo &select
 
     // Try to get text from primary selection
     std::string selectedText;
-    if (protocol->GetTextViaPrimary(selectedText) && !selectedText.empty())
+    if (protocol->GetTextViaPrimary(selectedText) && !IsTrimmedEmpty(selectedText))
     {
         selectionInfo.text = selectedText;
         return true;
@@ -1522,7 +1525,7 @@ bool SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
         return false;
 
     TextSelectionInfo selectionInfo;
-    if (!GetSelectedText(activeWindow, selectionInfo) || selectionInfo.text.empty())
+    if (!GetSelectedText(activeWindow, selectionInfo) || IsTrimmedEmpty(selectionInfo.text))
         return false;
 
     // Set coordinates and posLevel based on detection type

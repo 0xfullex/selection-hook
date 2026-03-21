@@ -60,7 +60,8 @@
             "src/linux/protocols/wayland.cc",
             "src/linux/protocols/wayland/ext-data-control-v1-protocol.c",
             "src/linux/protocols/wayland/wlr-data-control-unstable-v1-protocol.c",
-            "src/linux/lib/keyboard.cc"
+            "src/linux/lib/keyboard.cc",
+            "src/linux/lib/utils.cc"
           ],
           "libraries": [
             "-levdev",

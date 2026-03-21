@@ -9,21 +9,15 @@
 
 #include <psapi.h>
 
+#include <algorithm>
+#include <cwctype>
+
 /**
  * Check if string is empty after trimming whitespace
  */
 bool IsTrimmedEmpty(const std::wstring &text)
 {
-    if (text.empty())
-    {
-        return true;
-    }
-
-    std::wstring trimmedText = text;
-    trimmedText.erase(0, trimmedText.find_first_not_of(L" \t\n\r"));
-    trimmedText.erase(trimmedText.find_last_not_of(L" \t\n\r") + 1);
-
-    return trimmedText.empty();
+    return std::all_of(text.cbegin(), text.cend(), [](wchar_t c) { return std::iswspace(c); });
 }
 
 /**

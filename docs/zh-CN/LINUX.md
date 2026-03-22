@@ -77,10 +77,10 @@ if (info && !info.hasInputDeviceAccess) {
 
 **无输入设备访问时的回退（Wayland）：**
 
-当输入设备不可访问时，selection-hook 会回退到 **data-control 防抖模式**（路径 C）。在此模式下，文本选区仅通过 Wayland data-control 协议事件检测，防抖时间为 200ms。这意味着：
+当输入设备不可访问时，selection-hook 会回退到 **data-control 防抖模式**（路径 C）。在此模式下，文本选区仅通过 Wayland data-control 协议事件检测，使用短时防抖。这意味着：
 
 - 鼠标/键盘事件**不会**被触发
-- 选区检测仍然有效，但延迟略高（用户完成选择后约 200ms）
+- 选区检测仍然有效，但延迟略高（用户完成选择后有短暂延迟）
 - `posLevel` 将为 `MOUSE_SINGLE`（在检测时从合成器查询光标位置，如果不可用则为 `-99999`）
 - `programName` 始终为空（Wayland 限制）
 

@@ -176,7 +176,7 @@ const info = hook.linuxGetEnvInfo();
 
    2b. info.hasInputDeviceAccess === false?
        └─→ ⚠️ 降级模式（data-control 防抖）：
-            - 文本选区仍然可用，但有约 200ms 延迟
+            - 文本选区仍然可用，但有轻微延迟
             - 鼠标/键盘事件不可用
             - posLevel 最高为 MOUSE_SINGLE
             → 提示用户：运行 `sudo usermod -aG input $USER` 并重新登录。
@@ -198,7 +198,7 @@ const info = hook.linuxGetEnvInfo();
 | 条件 | 影响 | 应对措施 |
 |---|---|---|
 | GNOME Wayland | 选区监听不可用 | 通知用户；建议切换到 X11 会话或其他合成器 |
-| 无输入设备访问权限 | 无鼠标/键盘事件；选区延迟约 200ms | 提示用户加入 `input` 组 |
+| 无输入设备访问权限 | 无鼠标/键盘事件；选区略有延迟 | 提示用户加入 `input` 组 |
 | XWayland 回退合成器 | 光标坐标在原生 Wayland 窗口上可能冻结 | 检查 `INVALID_COORDINATE`；在 Electron 中回退到 `screen.getCursorScreenPoint()` |
 | `programName` 始终为空 | 使用程序名称的 `setGlobalFilterMode()` 无效 | 在 Wayland 上跳过基于程序名称的过滤 |
 | 无文本范围坐标 | `posLevel` 最高为 `MOUSE_DUAL`；`startTop`/`endBottom` 始终为 `-99999` | 调整 UI 定位以适应无段落坐标的情况 |

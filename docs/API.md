@@ -361,7 +361,7 @@ hook.on("error", (error) => {
 > **Coordinate note:** All coordinates are returned as **screen coordinates** — the raw values from each platform's display system. To convert to **logical coordinates (DIP)** for UI positioning:
 > - **Windows:** Use `screen.screenToDipPoint(point)` in Electron.
 > - **macOS:** No conversion needed — screen coordinates are already logical on macOS. Note: `screen.screenToDipPoint()` is not available on macOS.
-> - **Linux:** Use `screen.screenToDipPoint(point)` in Electron — works for both X11 (real conversion on HiDPI) and Wayland (safe no-op). Coordinates may be `-99999` when unavailable on Wayland. See [Coordinate Systems and HiDPI Scaling](LINUX.md#coordinate-systems-and-hidpi-scaling) for details.
+> - **Linux:** Use `screen.screenToDipPoint(point)` in Electron — works uniformly for both X11 and Wayland sessions. Coordinates may be `-99999` when unavailable on Wayland. See [Coordinate Systems and HiDPI Scaling](LINUX.md#coordinate-systems-and-hidpi-scaling) for details.
 
 ### `Point`
 

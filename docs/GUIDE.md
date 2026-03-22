@@ -473,9 +473,7 @@ function onShortcutPressed() {
       return point; // macOS: screen coordinates are already logical
     }
     // Windows & Linux: convert screen coordinates → logical coordinates (DIP)
-    // - Windows: real conversion
-    // - Linux X11: real conversion on HiDPI
-    // - Linux Wayland: no-op (screen coordinates are already logical)
+    // Works uniformly across X11 and Wayland sessions
     return screen.screenToDipPoint(point);
   }
   ```

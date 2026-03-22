@@ -475,9 +475,7 @@ function onShortcutPressed() {
       return point; // macOS：屏幕坐标已经是逻辑坐标
     }
     // Windows 和 Linux：屏幕坐标 → 逻辑坐标（DIP）
-    // - Windows：真实转换
-    // - Linux X11：HiDPI 下真实转换
-    // - Linux Wayland：透传（屏幕坐标已经是逻辑坐标）
+    // X11 和 Wayland 会话均可统一使用
     return screen.screenToDipPoint(point);
   }
   ```

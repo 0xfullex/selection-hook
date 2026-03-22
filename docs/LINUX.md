@@ -99,37 +99,43 @@ Selection monitoring relies on Wayland data-control protocols. The library prefe
 
 #### Cursor Position
 
-Wayland does not provide a standard API for global cursor position queries. We use compositor-specific IPC with a multi-level fallback chain:
+Wayland's security model does not provide a standard API for querying global cursor position. To maximize coordinate availability, selection-hook uses every available method with a multi-level fallback chain:
 
-1. **Compositor-native IPC** (if available)
-2. **XWayland fallback** — `XQueryPointer` on the XWayland display
-3. **libevdev accumulated** — device-relative deltas (last resort, inaccurate)
+1. **Compositor-native IPC** — asks the compositor directly (KDE, Hyprland)
+2. **XWayland fallback** — `XQueryPointer` on the XWayland X display
+3. **Unavailable** — returns `-99999` (`INVALID_COORDINATE`)
 
 | Compositor | Method | Accuracy | Notes |
 |---|---|---|---|
-| **KDE Plasma 6** | ✅ KWin Scripting DBus | Accurate logical coordinates | Loads a JS script that reads `workspace.cursorPos` and calls back via DBus. Auto-detects per-script `run()` vs manager `start()` for different Plasma 6 builds |
-| **KDE Plasma 5** | ✅ KWin Scripting DBus | Accurate logical coordinates | Same approach as Plasma 6, compatible with both KWin DBus API variants |
-| **Hyprland** | ✅ Native IPC | Accurate logical coordinates | `hyprctl cursorpos` via Unix socket (`$HYPRLAND_INSTANCE_SIGNATURE`) |
+| **KDE Plasma 6** | ✅ KWin Scripting DBus | Accurate | Loads a JS script that reads `workspace.cursorPos` and calls back via DBus. Auto-detects per-script `run()` vs manager `start()` for different Plasma 6 builds |
+| **KDE Plasma 5** | ✅ KWin Scripting DBus | Accurate | Same approach as Plasma 6, compatible with both KWin DBus API variants |
+| **Hyprland** | ✅ Native IPC | Accurate | `hyprctl cursorpos` via Unix socket (`$HYPRLAND_INSTANCE_SIGNATURE`) |
 | **Sway** | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
 | **wlroots-based** (labwc, river, etc.) | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
 | **COSMIC** | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
 | **GNOME** (Mutter) | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
 
+**Compositor IPC vs XWayland — different coverage:**
+
+- **Compositor IPC** queries the compositor itself, so it works regardless of which window the cursor is on — XWayland windows, native Wayland windows, desktop, panel, etc.
+- **XWayland `XQueryPointer`** only receives pointer events when the cursor is over XWayland windows. When the cursor moves to a native Wayland window, XWayland stops receiving pointer updates and `XQueryPointer` returns the last known position (frozen).
+
+This is why compositor IPC is preferred when available — it provides accurate coordinates globally.
+
 **XWayland fallback details:**
 - Requires `DISPLAY` environment variable (XWayland must be running)
-- Uses `XQueryPointer` on the XWayland X display
 - Coordinates track correctly when the cursor is over XWayland windows, but may freeze at the last known position when the cursor moves over native Wayland windows
-- If XWayland is unavailable, falls back to libevdev accumulated coordinates (device-relative, not screen coordinates)
+- If XWayland is unavailable, coordinates are reported as `-99999`
 
 **Coordinate unavailability (`INVALID_COORDINATE = -99999`):**
 
-On Wayland, mouse event coordinates (`x`, `y`) come from libevdev hardware events (relative deltas or absolute hardware values) which do not represent actual screen positions. These coordinates are reported as `-99999` (`SelectionHook.INVALID_COORDINATE`) to clearly indicate they are unavailable. Always check coordinate fields against this sentinel value before using them for positioning.
+On Wayland, mouse event coordinates (`x`, `y`) come from libevdev hardware events (relative deltas or absolute hardware values) which do not represent actual screen positions. These coordinates are always reported as `-99999` (`SelectionHook.INVALID_COORDINATE`). Always check coordinate fields against this sentinel value before using them for positioning.
 
 For text selection events, the coordinate fallback chain works as follows:
-- **Compositor IPC** (Hyprland, KDE): provides accurate logical coordinates → real values
-- **XWayland**: provides accurate coordinates when cursor is over XWayland windows → real values
+- **Compositor IPC** (Hyprland, KDE): accurate coordinates → real values
+- **XWayland**: accurate coordinates when cursor is over XWayland windows → real values
 - **XWayland frozen**: detected when mouse-down and mouse-up queries return identical coordinates despite physical movement → `-99999`
-- **No IPC, no XWayland**: libevdev values → `-99999`
+- **No IPC, no XWayland**: → `-99999`
 
 For drag selections on Wayland, the library queries the compositor at both mouse-down and mouse-up, enabling `MOUSE_DUAL` position level when both queries succeed and coordinates differ (indicating the cursor actually moved between XWayland/compositor-tracked windows).
 
@@ -156,22 +162,32 @@ In all cases, Electron's `screen.screenToDipPoint()` correctly converts these sc
 
 ### Wayland
 
-On Wayland, screen coordinates from all sources are already **logical coordinates** (DIP). No conversion is needed:
+As described [above](#cursor-position), the two available cursor position sources on Wayland return coordinates in **different coordinate spaces**:
 
-| Source | Notes |
-|---|---|
-| Hyprland IPC (`j/cursorpos`) | Compositor logical coordinates |
-| KDE KWin Scripting (`workspace.cursorPos`) | Compositor logical coordinates |
-| XWayland `XQueryPointer` | Logical coordinates — XWayland's X screen uses the compositor's logical dimensions (e.g., 1920×1080 for a 3840×2160 display at 200%) |
+- **Compositor IPC** (KDE, Hyprland): returns **logical coordinates** — the compositor's own DPI-independent coordinate space
+- **XWayland `XQueryPointer`**: returns **screen coordinates** — the XWayland X11 server's coordinate space, which depends on how the compositor configures XWayland scaling
+
+On HiDPI displays, these two spaces can differ. For example, on KDE at 150% with a 3840×2160 display, the compositor's logical space is 2560×1440 while XWayland's screen space is 3840×2160. If selection-hook returned these different coordinate spaces as-is, consumers would get inconsistent coordinates depending on which source was used internally.
+
+To solve this, selection-hook **normalizes all Wayland coordinates to screen coordinates** (the XWayland X11 coordinate space). Compositor IPC logical coordinates are automatically multiplied by the detected XWayland scale factor to match the XWayland screen space. The scale factor is computed using the same signals that Electron/Chromium reads: `Xft.dpi` and `GDK_SCALE`.
+
+| Source | Raw coordinates | After normalization |
+|---|---|---|
+| Compositor IPC (KDE, Hyprland) | Logical coordinates | × xwayland_scale → screen coordinates |
+| XWayland `XQueryPointer` | Screen coordinates | No conversion needed |
+
+When there is no HiDPI scaling (or compositor upscaling mode is used), `xwayland_scale = 1.0` and the normalization is a no-op.
+
+This ensures that on Wayland, coordinates behave the same as on X11 — consumers can uniformly use `screen.screenToDipPoint()` to convert to logical coordinates (DIP), regardless of whether the session is X11 or Wayland.
 
 ### Converting screen coordinates to logical coordinates (DIP)
 
 #### In Electron
 
-Electron provides `screen.screenToDipPoint(point)` on **Windows and Linux** (not available on macOS — macOS screen coordinates are already logical). On Linux, this function handles both X11 and Wayland correctly:
+Electron provides `screen.screenToDipPoint(point)` on **Windows and Linux** (not available on macOS — macOS screen coordinates are already logical). When using `--ozone-platform=x11` (recommended for Electron on Wayland), this function correctly converts coordinates from both X11 and Wayland sessions:
 
-- **X11:** Converts screen coordinates to logical coordinates (DIP) using the detected scale factor
-- **Wayland:** Returns the input unchanged (safe no-op, since screen coordinates are already logical)
+- **X11 session:** Converts screen coordinates to logical coordinates (DIP) using the detected scale factor
+- **Wayland session with `--ozone-platform=x11`:** selection-hook returns coordinates in XWayland screen space (after internal conversion), and `screenToDipPoint()` converts them to DIP using the same scale factor
 
 Recommended cross-platform pattern:
 
@@ -184,9 +200,7 @@ function getLogicalPoint(point) {
     return point; // macOS: screen coordinates are already logical
   }
   // Windows & Linux: convert screen coordinates → logical coordinates (DIP)
-  // - Windows: real conversion
-  // - Linux X11: real conversion on HiDPI
-  // - Linux Wayland: no-op (screen coordinates are already logical)
+  // Works uniformly across X11 and Wayland sessions
   return screen.screenToDipPoint(point);
 }
 ```
@@ -209,7 +223,7 @@ logical_point = display_dip_origin + (screen_point - display_screen_origin) / sc
 
 Where `display_screen_origin` is the display's origin in X11 screen coordinate space (from XRandR), and `display_dip_origin` is the display's origin in logical coordinate space. For single-monitor setups, both origins are typically `(0, 0)`, simplifying the formula to `logical_point = screen_point / scale_factor`.
 
-On Wayland, no conversion is needed — screen coordinates from compositor IPC and XWayland are already logical.
+On Wayland, selection-hook already converts compositor IPC coordinates to XWayland screen space internally. The same `screen_point / scale_factor` formula applies when using `--ozone-platform=x11`.
 
 ## API Behavior on Linux
 

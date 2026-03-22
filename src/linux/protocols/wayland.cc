@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
@@ -38,6 +39,7 @@
 
 // X11 headers for XWayland cursor position fallback
 #include <X11/Xlib.h>
+#include <X11/Xresource.h>
 
 // Unix socket headers for Hyprland IPC
 #include <sys/socket.h>
@@ -205,6 +207,7 @@ class WaylandProtocol : public ProtocolBase
     // XWayland fallback for cursor position
     Display *xwayland_display = nullptr;
     bool xwayland_tried = false;
+    double xwayland_scale = 1.0;  // Scale factor for converting compositor IPC logical coords to X11 screen coords
 
     // KDE DBus for cursor position (dlopen'd libdbus-1.so.3)
     DBusFunctions dbus_fn;
@@ -243,6 +246,7 @@ class WaylandProtocol : public ProtocolBase
     static bool IsTextMimeType(const char *mime_type);
 
     // Cursor position methods
+    void EnsureXWaylandInitialized();
     bool GetCursorPositionHyprland(Point &pos);
     bool LoadDBusFunctions();
     bool GetCursorPositionKDE(Point &pos);
@@ -2025,29 +2029,81 @@ cleanup:
 }
 
 /**
+ * Initialize XWayland connection and detect scale factor.
+ * Called lazily on first cursor position query. Detects the XWayland scale factor
+ * by reading Xft.dpi and GDK_SCALE to match Electron/Chromium's screenToDipPoint() formula:
+ *   scale = max(1, gdk_monitor_get_scale_factor) × (Xft.dpi / 96.0)
+ * On non-GNOME XWayland, gdk_monitor_get_scale_factor comes from GDK_SCALE env var (default 1).
+ */
+void WaylandProtocol::EnsureXWaylandInitialized()
+{
+    if (xwayland_tried)
+        return;
+    xwayland_tried = true;
+
+    const char *display_env = getenv("DISPLAY");
+    if (!display_env)
+    {
+        fprintf(stderr, "[Wayland] XWayland: DISPLAY not set, fallback unavailable\n");
+        return;
+    }
+
+    xwayland_display = XOpenDisplay(display_env);
+    if (!xwayland_display)
+    {
+        fprintf(stderr, "[Wayland] XWayland: Failed to open display %s\n", display_env);
+        return;
+    }
+
+    // Detect XWayland scale factor from Xft.dpi X resource
+    double xft_dpi = 96.0;
+    char *rms = XResourceManagerString(xwayland_display);
+    if (rms)
+    {
+        XrmInitialize();
+        XrmDatabase db = XrmGetStringDatabase(rms);
+        if (db)
+        {
+            char *type = nullptr;
+            XrmValue value;
+            if (XrmGetResource(db, "Xft.dpi", "Xft.Dpi", &type, &value))
+            {
+                double dpi = atof(value.addr);
+                if (dpi > 0)
+                {
+                    xft_dpi = dpi;
+                }
+            }
+            XrmDestroyDatabase(db);
+        }
+    }
+
+    // Check GDK_SCALE env var (accounts for manual user configuration)
+    int gdk_scale = 1;
+    const char *gdk_scale_env = getenv("GDK_SCALE");
+    if (gdk_scale_env)
+    {
+        int val = atoi(gdk_scale_env);
+        if (val > 1)
+            gdk_scale = val;
+    }
+
+    xwayland_scale = gdk_scale * (xft_dpi / 96.0);
+
+    if (xwayland_scale != 1.0)
+    {
+        printf("[Wayland] XWayland scale factor: %.2f (Xft.dpi=%.0f, GDK_SCALE=%d)\n", xwayland_scale, xft_dpi,
+               gdk_scale);
+    }
+}
+
+/**
  * Get cursor position via XWayland (XQueryPointer on XWayland display).
- * Opens XWayland display on first call and reuses the connection.
  * Note: cursor position may freeze when cursor is over native Wayland windows.
  */
 bool WaylandProtocol::GetCursorPositionXWayland(Point &pos)
 {
-    if (!xwayland_tried)
-    {
-        xwayland_tried = true;
-        const char *display_env = getenv("DISPLAY");
-        if (display_env)
-        {
-            xwayland_display = XOpenDisplay(display_env);
-            if (!xwayland_display)
-            {
-                fprintf(stderr, "[Wayland] XWayland: Failed to open display %s\n", display_env);
-            }
-        }
-        else
-        {
-            fprintf(stderr, "[Wayland] XWayland: DISPLAY not set, fallback unavailable\n");
-        }
-    }
+    EnsureXWaylandInitialized();
 
     if (!xwayland_display)
         return false;
@@ -2069,28 +2125,48 @@ bool WaylandProtocol::GetCursorPositionXWayland(Point &pos)
 /**
  * Get current mouse position using the best available method.
  * Fallback chain: Compositor IPC → XWayland → libevdev accumulated value.
+ *
+ * Compositor IPC returns logical coordinates (DIP), while XWayland XQueryPointer
+ * returns X11 screen coordinates. When XWayland uses app-driven scaling (e.g., KDE default),
+ * these differ by xwayland_scale. We convert IPC coordinates to X11 screen coordinates
+ * so that Electron's screenToDipPoint() can correctly convert back to DIP.
  */
 Point WaylandProtocol::GetCurrentMousePosition()
 {
+    EnsureXWaylandInitialized();
+
     Point pos;
 
-    // 1. Compositor-specific IPC (for compositors that support direct cursor query)
+    // 1. Compositor-specific IPC (returns logical coordinates)
+    bool from_compositor_ipc = false;
     switch (env_info.compositorType)
     {
         case CompositorType::Hyprland:
-            if (GetCursorPositionHyprland(pos))
-                return pos;
+            from_compositor_ipc = GetCursorPositionHyprland(pos);
             break;
         case CompositorType::KWin:
-            if (GetCursorPositionKDE(pos))
-                return pos;
+            from_compositor_ipc = GetCursorPositionKDE(pos);
             break;
         // Sway, Mutter, Wlroots, CosmicComp, Unknown → fall through to XWayland
         default:
             break;
     }
 
-    // 2. XWayland fallback (works across compositors when XWayland is available)
+    if (from_compositor_ipc)
+    {
+        // Convert logical coordinates to XWayland screen coordinates.
+        // This matches Electron's screenToDipPoint() which divides by the same scale factor,
+        // ensuring: logical × scale / scale = logical (correct DIP).
+        // When compositor upscaling is used (Mode A), xwayland_scale is 1.0 (no-op).
+        if (xwayland_scale != 1.0)
+        {
+            pos.x = static_cast<int>(std::round(pos.x * xwayland_scale));
+            pos.y = static_cast<int>(std::round(pos.y * xwayland_scale));
+        }
+        return pos;
+    }
+
+    // 2. XWayland fallback (already in X11 screen coordinates)
     if (GetCursorPositionXWayland(pos))
         return pos;
 

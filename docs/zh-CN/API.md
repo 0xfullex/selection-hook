@@ -363,7 +363,7 @@ hook.on("error", (error) => {
 > **坐标说明：** 所有坐标均以**屏幕坐标**返回 — 即各平台显示系统提供的原始值。要转换为用于 UI 定位的**逻辑坐标（DIP）**：
 > - **Windows：** 在 Electron 中使用 `screen.screenToDipPoint(point)`。
 > - **macOS：** 无需转换 — macOS 的屏幕坐标已经是逻辑坐标。注意：`screen.screenToDipPoint()` 在 macOS 上不可用。
-> - **Linux：** 在 Electron 中使用 `screen.screenToDipPoint(point)` — X11（HiDPI 下进行真实转换）和 Wayland（安全的透传）均可使用。Wayland 上坐标不可用时为 `-99999`。详见[坐标体系与 HiDPI 缩放](LINUX.md#坐标体系与-hidpi-缩放)。
+> - **Linux：** 在 Electron 中使用 `screen.screenToDipPoint(point)` — X11 和 Wayland 会话均可统一使用。Wayland 上坐标不可用时为 `-99999`。详见[坐标体系与 HiDPI 缩放](LINUX.md#坐标体系与-hidpi-缩放)。
 
 ### `Point`
 

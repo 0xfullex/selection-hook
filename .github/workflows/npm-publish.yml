@@ -8,14 +8,13 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
           cache: 'npm'
-      - uses: ilammy/msvc-dev-cmd@v1
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run prebuild:win
       # Prepare Windows release assets
       - name: Prepare Windows release assets
@@ -35,7 +34,7 @@ jobs:
           }
       # Upload Windows release assets
       - name: Upload Windows Release Assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-release-assets
           path: build/release-assets/*
@@ -43,15 +42,15 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
           cache: 'npm'
       - name: Install Python setuptools
         run: brew install python-setuptools
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run prebuild:mac
       # Prepare macOS release assets
       - name: Prepare macOS release assets
@@ -72,7 +71,7 @@ jobs:
 
       # Upload macOS release assets
       - name: Upload macOS Release Assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-release-assets
           path: build/release-assets/*
@@ -87,8 +86,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
@@ -97,7 +96,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libevdev-dev libx11-dev libxtst-dev libxfixes-dev libwayland-dev
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run prebuild:linux:${{ matrix.arch }}
       - name: Prepare Linux release assets
         run: |
@@ -109,7 +108,7 @@ jobs:
             exit 1
           fi
       - name: Upload Linux Release Assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-release-assets-${{ matrix.arch }}
           path: build/release-assets/*
@@ -121,8 +120,8 @@ jobs:
       id-token: write # Required for OIDC trusted publishing
       contents: write # Required for uploading release assets
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
@@ -131,25 +130,25 @@ jobs:
 
       # Download all release assets
       - name: Download Windows release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: windows-release-assets
           path: build/release-assets/
 
       - name: Download macOS release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-release-assets
           path: build/release-assets/
 
       - name: Download Linux x64 release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-release-assets-x64
           path: build/release-assets/
 
       - name: Download Linux arm64 release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-release-assets-arm64
           path: build/release-assets/
@@ -186,17 +185,9 @@ jobs:
 
       # Upload all release assets to GitHub release
       - name: Upload Release Assets
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
-          files: |
-            build/release-assets/selection-hook-win32-x64.node
-            build/release-assets/selection-hook-win32-arm64.node
-            build/release-assets/selection-hook-darwin-x64.node
-            build/release-assets/selection-hook-darwin-arm64.node
-            build/release-assets/selection-hook-linux-x64.node
-            build/release-assets/selection-hook-linux-arm64.node
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" build/release-assets/*.node --clobber
 
       # Publish to npm with dist-tag based on version and release type:
       #   - beta version (x.y.z-beta.n) + GitHub pre-release → publish with --tag beta

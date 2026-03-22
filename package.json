@@ -1,6 +1,6 @@
 {
   "name": "selection-hook",
-  "version": "2.0.0-test.1",
+  "version": "2.0.0",
   "description": "The first open-source library for cross-application text selection monitoring and global input event hooks. Works with Node.js and Electron.",
   "author": "0xfullex",
   "repository": {

@@ -99,7 +99,7 @@ No special setup required. Selection-hook works out of the box on Windows 7+.
 
 Some applications with custom cursors or special clipboard behavior may need additional configuration via [`setFineTunedList()`](API.md#setfinetunedlistlisttype-programlist-boolean). See [Windows Platform Details](WINDOWS.md) for the full explanation of when and how to configure this.
 
-**Coordinates** are in physical (virtual screen) coordinates. In Electron, convert with `screen.screenToDipPoint()`. See [Coordinate Handling](#coordinate-handling).
+**Coordinates** are in screen coordinates. In Electron, convert to logical coordinates (DIP) with `screen.screenToDipPoint()`. See [Coordinate Handling](#coordinate-handling).
 
 ### macOS
 
@@ -140,7 +140,7 @@ On macOS, Chrome/Chromium-based browsers and Electron apps do not expose their a
 
 **Other macOS notes:**
 - `setFineTunedList()` has no effect on macOS
-- Coordinates are in logical coordinates — no conversion needed
+- Screen coordinates are already logical — no conversion needed
 - The `isFullscreen` field in `TextSelectionData` is only available on macOS
 
 ### Linux
@@ -182,7 +182,7 @@ const info = hook.linuxGetEnvInfo();
    2c. info.hasInputDeviceAccess === true:
        └─→ ✅ Full functionality available.
             Cursor position accuracy depends on compositor:
-            - KWIN, HYPRLAND → accurate screen coordinates
+            - KWIN, HYPRLAND → accurate logical coordinates
             - SWAY, WLROOTS, COSMIC → XWayland fallback (may freeze)
             → Check INVALID_COORDINATE on coordinates.
 
@@ -284,10 +284,10 @@ hook.on("text-selection", (data) => {
     return;
   }
 
-  // Windows: convert physical → logical coordinates
-  const point = process.platform === "win32"
-    ? screen.screenToDipPoint({ x: data.endBottom.x, y: data.endBottom.y })
-    : { x: data.endBottom.x, y: data.endBottom.y };
+  // Windows & Linux: convert screen → logical coordinates (DIP)
+  const point = process.platform === "darwin"
+    ? { x: data.endBottom.x, y: data.endBottom.y }
+    : screen.screenToDipPoint({ x: data.endBottom.x, y: data.endBottom.y });
 
   positionToolbar(point.x, point.y);
 });
@@ -469,10 +469,15 @@ function onShortcutPressed() {
   ```javascript
   function getLogicalPoint(point) {
     if (point.x === SelectionHook.INVALID_COORDINATE) return null;
-    if (process.platform === "win32") {
-      // Electron: convert physical → logical
-      return screen.screenToDipPoint(point);
+    if (process.platform === "darwin") {
+      return point; // macOS: screen coordinates are already logical
     }
-    return point; // macOS and Linux: already logical/screen coordinates
+    // Windows & Linux: convert screen coordinates → logical coordinates (DIP)
+    // - Windows: real conversion
+    // - Linux X11: real conversion on HiDPI
+    // - Linux Wayland: no-op (screen coordinates are already logical)
+    return screen.screenToDipPoint(point);
   }
   ```
+
+  > See [Coordinate Systems and HiDPI Scaling](../LINUX.md#coordinate-systems-and-hidpi-scaling) for details on Linux coordinate behavior.

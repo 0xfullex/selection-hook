@@ -101,7 +101,7 @@ if (data.mousePosEnd.x !== SelectionHook.INVALID_COORDINATE) {
 
 某些使用自定义光标或特殊剪贴板行为的应用程序可能需要通过 [`setFineTunedList()`](API.md#setfinetunedlistlisttype-programlist-boolean) 进行额外配置。关于何时以及如何配置的完整说明，请参阅 [Windows 平台详情](WINDOWS.md)。
 
-**坐标**使用物理坐标（虚拟屏幕坐标）。在 Electron 中，使用 `screen.screenToDipPoint()` 进行转换。参见[坐标处理](#坐标处理)。
+**坐标**使用屏幕坐标。在 Electron 中，使用 `screen.screenToDipPoint()` 转换为逻辑坐标（DIP）。参见[坐标处理](#坐标处理)。
 
 ### macOS
 
@@ -142,7 +142,7 @@ if (!systemPreferences.isTrustedAccessibilityClient(false)) {
 
 **其他 macOS 说明：**
 - `setFineTunedList()` 在 macOS 上无效
-- 坐标使用逻辑坐标 — 无需转换
+- 屏幕坐标已经是逻辑坐标 — 无需转换
 - `TextSelectionData` 中的 `isFullscreen` 字段仅在 macOS 上可用
 
 ### Linux
@@ -184,7 +184,7 @@ const info = hook.linuxGetEnvInfo();
    2c. info.hasInputDeviceAccess === true:
        └─→ ✅ 完整功能可用。
             光标位置精度取决于合成器：
-            - KWIN, HYPRLAND → 精确的屏幕坐标
+            - KWIN, HYPRLAND → 精确的逻辑坐标
             - SWAY, WLROOTS, COSMIC → XWayland 回退（可能冻结）
             → 检查坐标的 INVALID_COORDINATE。
 
@@ -286,10 +286,10 @@ hook.on("text-selection", (data) => {
     return;
   }
 
-  // Windows：将物理坐标转换为逻辑坐标
-  const point = process.platform === "win32"
-    ? screen.screenToDipPoint({ x: data.endBottom.x, y: data.endBottom.y })
-    : { x: data.endBottom.x, y: data.endBottom.y };
+  // Windows 和 Linux：将屏幕坐标转换为逻辑坐标（DIP）
+  const point = process.platform === "darwin"
+    ? { x: data.endBottom.x, y: data.endBottom.y }
+    : screen.screenToDipPoint({ x: data.endBottom.x, y: data.endBottom.y });
 
   positionToolbar(point.x, point.y);
 });
@@ -471,10 +471,15 @@ function onShortcutPressed() {
   ```javascript
   function getLogicalPoint(point) {
     if (point.x === SelectionHook.INVALID_COORDINATE) return null;
-    if (process.platform === "win32") {
-      // Electron：将物理坐标转换为逻辑坐标
-      return screen.screenToDipPoint(point);
+    if (process.platform === "darwin") {
+      return point; // macOS：屏幕坐标已经是逻辑坐标
     }
-    return point; // macOS 和 Linux：已经是逻辑坐标/屏幕坐标
+    // Windows 和 Linux：屏幕坐标 → 逻辑坐标（DIP）
+    // - Windows：真实转换
+    // - Linux X11：HiDPI 下真实转换
+    // - Linux Wayland：透传（屏幕坐标已经是逻辑坐标）
+    return screen.screenToDipPoint(point);
   }
   ```
+
+  > 关于 Linux 坐标行为的详细信息，请参见[坐标体系与 HiDPI 缩放](../LINUX.md#坐标体系与-hidpi-缩放)。

@@ -33,7 +33,7 @@ Selection text on Linux is obtained exclusively via **PRIMARY selection** — th
 |---|---|---|
 | Selection monitoring | ✅ Working | XFixes `SelectionNotify` on PRIMARY selection |
 | Input events (mouse/keyboard) | ✅ Working | XRecord extension |
-| Cursor position | ✅ Accurate | `XQueryPointer` — screen coordinates |
+| Cursor position | ✅ Accurate | `XQueryPointer` — screen coordinates (see [Coordinate Systems](#coordinate-systems-and-hidpi-scaling)) |
 | Program name | ✅ Working | `WM_CLASS` property |
 | Window rect | ✅ Working | `XGetWindowAttributes` + `XTranslateCoordinates` |
 
@@ -107,9 +107,9 @@ Wayland does not provide a standard API for global cursor position queries. We u
 
 | Compositor | Method | Accuracy | Notes |
 |---|---|---|---|
-| **KDE Plasma 6** | ✅ KWin Scripting DBus | Accurate screen coordinates | Loads a JS script that reads `workspace.cursorPos` and calls back via DBus. Auto-detects per-script `run()` vs manager `start()` for different Plasma 6 builds |
-| **KDE Plasma 5** | ✅ KWin Scripting DBus | Accurate screen coordinates | Same approach as Plasma 6, compatible with both KWin DBus API variants |
-| **Hyprland** | ✅ Native IPC | Accurate screen coordinates | `hyprctl cursorpos` via Unix socket (`$HYPRLAND_INSTANCE_SIGNATURE`) |
+| **KDE Plasma 6** | ✅ KWin Scripting DBus | Accurate logical coordinates | Loads a JS script that reads `workspace.cursorPos` and calls back via DBus. Auto-detects per-script `run()` vs manager `start()` for different Plasma 6 builds |
+| **KDE Plasma 5** | ✅ KWin Scripting DBus | Accurate logical coordinates | Same approach as Plasma 6, compatible with both KWin DBus API variants |
+| **Hyprland** | ✅ Native IPC | Accurate logical coordinates | `hyprctl cursorpos` via Unix socket (`$HYPRLAND_INSTANCE_SIGNATURE`) |
 | **Sway** | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
 | **wlroots-based** (labwc, river, etc.) | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
 | **COSMIC** | ⚠️ XWayland fallback | Partial | Coordinates may freeze when cursor is over native Wayland windows |
@@ -126,12 +126,90 @@ Wayland does not provide a standard API for global cursor position queries. We u
 On Wayland, mouse event coordinates (`x`, `y`) come from libevdev hardware events (relative deltas or absolute hardware values) which do not represent actual screen positions. These coordinates are reported as `-99999` (`SelectionHook.INVALID_COORDINATE`) to clearly indicate they are unavailable. Always check coordinate fields against this sentinel value before using them for positioning.
 
 For text selection events, the coordinate fallback chain works as follows:
-- **Compositor IPC** (Hyprland, KDE): provides accurate screen coordinates → real values
+- **Compositor IPC** (Hyprland, KDE): provides accurate logical coordinates → real values
 - **XWayland**: provides accurate coordinates when cursor is over XWayland windows → real values
 - **XWayland frozen**: detected when mouse-down and mouse-up queries return identical coordinates despite physical movement → `-99999`
 - **No IPC, no XWayland**: libevdev values → `-99999`
 
 For drag selections on Wayland, the library queries the compositor at both mouse-down and mouse-up, enabling `MOUSE_DUAL` position level when both queries succeed and coordinates differ (indicating the cursor actually moved between XWayland/compositor-tracked windows).
+
+## Coordinate Systems and HiDPI Scaling
+
+selection-hook returns **screen coordinates** on all platforms — the raw values from the display system. On standard (1x) displays, screen coordinates equal logical coordinates. On HiDPI displays with scaling, you may need to convert to **logical coordinates (DIP)** for correct UI positioning.
+
+### X11
+
+On X11, screen coordinates come from `XQueryPointer` — the cursor position relative to the root window in the X server's coordinate space. Whether these match logical coordinates depends on how scaling is configured:
+
+| Scaling method | Screen coordinate range | Example (1920×1080 native display) |
+|---|---|---|
+| No scaling (100%) | Same as native resolution = logical | 0–1920, 0–1080 |
+| `xrandr --scale` (e.g., 2×2) | Scaled virtual resolution (larger than native) | 0–3840, 0–2160 |
+| `Xft.dpi` only (e.g., 192) | Same as native resolution | 0–1920, 0–1080 |
+| KDE app-level scaling (`QT_SCREEN_SCALE_FACTORS`) | Same as native resolution | 0–1920, 0–1080 |
+
+- **`xrandr --scale`** changes the X11 virtual resolution. GNOME on X11 uses this for fractional scaling. Screen coordinates are in the enlarged virtual space.
+- **`Xft.dpi`** and **app-level scaling** (`GDK_SCALE`, `QT_SCREEN_SCALE_FACTORS`) only affect how applications render — the X11 coordinate space stays the same.
+- Desktop environments often combine multiple methods (e.g., GNOME uses `xrandr --scale` + `Xft.dpi` together).
+
+In all cases, Electron's `screen.screenToDipPoint()` correctly converts these screen coordinates to logical coordinates (DIP).
+
+### Wayland
+
+On Wayland, screen coordinates from all sources are already **logical coordinates** (DIP). No conversion is needed:
+
+| Source | Notes |
+|---|---|
+| Hyprland IPC (`j/cursorpos`) | Compositor logical coordinates |
+| KDE KWin Scripting (`workspace.cursorPos`) | Compositor logical coordinates |
+| XWayland `XQueryPointer` | Logical coordinates — XWayland's X screen uses the compositor's logical dimensions (e.g., 1920×1080 for a 3840×2160 display at 200%) |
+
+### Converting screen coordinates to logical coordinates (DIP)
+
+#### In Electron
+
+Electron provides `screen.screenToDipPoint(point)` on **Windows and Linux** (not available on macOS — macOS screen coordinates are already logical). On Linux, this function handles both X11 and Wayland correctly:
+
+- **X11:** Converts screen coordinates to logical coordinates (DIP) using the detected scale factor
+- **Wayland:** Returns the input unchanged (safe no-op, since screen coordinates are already logical)
+
+Recommended cross-platform pattern:
+
+```javascript
+const { screen } = require("electron");
+
+function getLogicalPoint(point) {
+  if (point.x === SelectionHook.INVALID_COORDINATE) return null;
+  if (process.platform === "darwin") {
+    return point; // macOS: screen coordinates are already logical
+  }
+  // Windows & Linux: convert screen coordinates → logical coordinates (DIP)
+  // - Windows: real conversion
+  // - Linux X11: real conversion on HiDPI
+  // - Linux Wayland: no-op (screen coordinates are already logical)
+  return screen.screenToDipPoint(point);
+}
+```
+
+> **Note:** `screen.screenToDipPoint()` was added for Linux in Electron 35.3.0. On macOS, the method is `undefined` — do not call it unconditionally across all platforms.
+
+#### Outside Electron (reference)
+
+For non-Electron environments on X11, you can compute logical coordinates manually. Electron/Chromium determines the scale factor as:
+
+```
+scale_factor = gdk_monitor_get_scale_factor × (Xft.dpi / 96.0)
+```
+
+Then converts per-display:
+
+```
+logical_point = display_dip_origin + (screen_point - display_screen_origin) / scale_factor
+```
+
+Where `display_screen_origin` is the display's origin in X11 screen coordinate space (from XRandR), and `display_dip_origin` is the display's origin in logical coordinate space. For single-monitor setups, both origins are typically `(0, 0)`, simplifying the formula to `logical_point = screen_point / scale_factor`.
+
+On Wayland, no conversion is needed — screen coordinates from compositor IPC and XWayland are already logical.
 
 ## API Behavior on Linux
 
@@ -149,7 +227,7 @@ The following APIs have different behavior on Linux compared to Windows/macOS:
 | `programName` in events | ✅ Via `WM_CLASS` | Always `""` | Wayland security model restriction |
 | `startTop/startBottom/endTop/endBottom` | Always `-99999` | Always `-99999` | Selection bounding rectangles not available. Check against `INVALID_COORDINATE`. |
 | `posLevel` | `MOUSE_SINGLE` or `MOUSE_DUAL` | `MOUSE_SINGLE` or `MOUSE_DUAL` | Wayland drag can achieve `MOUSE_DUAL` when compositor provides accurate positions at both mouse-down and mouse-up. Never reaches `SEL_FULL` on Linux. |
-| `mousePosStart` / `mousePosEnd` | ✅ Screen coordinates | Compositor-dependent | May be `-99999` when unavailable. See compositor compatibility table. |
+| `mousePosStart` / `mousePosEnd` | ✅ Screen coordinates | Compositor-dependent | May be `-99999` when unavailable. See compositor compatibility table and [Coordinate Systems](#coordinate-systems-and-hidpi-scaling). |
 
 ## Hint for Electron Applications
 

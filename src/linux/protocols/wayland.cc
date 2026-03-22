@@ -178,6 +178,14 @@ class WaylandProtocol : public ProtocolBase
     struct zwlr_data_control_offer_v1 *current_wlr_offer;
     bool has_text_mime;
 
+    // Offer use-after-free protection: when GetTextViaPrimary holds a reference to the
+    // current offer (between copying it and submitting the read request), the destruction
+    // of the offer is deferred until the monitoring thread can safely destroy it.
+    // All Wayland protocol calls (including _destroy) must happen on the monitoring thread.
+    bool offer_in_use = false;
+    std::vector<struct ext_data_control_offer_v1 *> deferred_destroy_ext;
+    std::vector<struct zwlr_data_control_offer_v1 *> deferred_destroy_wlr;
+
     // Pending offer (temporary, before primary_selection event confirms it)
     void *pending_offer;
     bool pending_has_text;
@@ -629,7 +637,7 @@ void WaylandProtocol::CleanupWaylandConnection()
         wlr_dc_device = nullptr;
     }
 
-    // Destroy current offers
+    // Destroy current offers and any deferred destroys
     {
         std::lock_guard<std::mutex> lock(primary_offer_mutex);
         if (current_ext_offer)
@@ -642,6 +650,10 @@ void WaylandProtocol::CleanupWaylandConnection()
             zwlr_data_control_offer_v1_destroy(current_wlr_offer);
             current_wlr_offer = nullptr;
         }
+        for (auto *offer : deferred_destroy_ext) ext_data_control_offer_v1_destroy(offer);
+        deferred_destroy_ext.clear();
+        for (auto *offer : deferred_destroy_wlr) zwlr_data_control_offer_v1_destroy(offer);
+        deferred_destroy_wlr.clear();
         has_text_mime = false;
     }
 
@@ -789,10 +801,19 @@ void WaylandProtocol::ExtDevicePrimarySelection(void *data, struct ext_data_cont
     {
         std::lock_guard<std::mutex> lock(self->primary_offer_mutex);
 
-        // Destroy previous offer
+        // Destroy previous offer (defer if GetTextViaPrimary holds a reference)
         if (self->current_ext_offer)
         {
-            ext_data_control_offer_v1_destroy(self->current_ext_offer);
+            if (self->offer_in_use)
+            {
+                // GetTextViaPrimary is reading from this offer — defer destruction
+                // to the monitoring thread (Wayland protocol calls are not thread-safe)
+                self->deferred_destroy_ext.push_back(self->current_ext_offer);
+            }
+            else
+            {
+                ext_data_control_offer_v1_destroy(self->current_ext_offer);
+            }
             self->current_ext_offer = nullptr;
         }
 
@@ -890,10 +911,19 @@ void WaylandProtocol::WlrDevicePrimarySelection(void *data, struct zwlr_data_con
     {
         std::lock_guard<std::mutex> lock(self->primary_offer_mutex);
 
-        // Destroy previous offer
+        // Destroy previous offer (defer if GetTextViaPrimary holds a reference)
         if (self->current_wlr_offer)
         {
-            zwlr_data_control_offer_v1_destroy(self->current_wlr_offer);
+            if (self->offer_in_use)
+            {
+                // GetTextViaPrimary is reading from this offer — defer destruction
+                // to the monitoring thread (Wayland protocol calls are not thread-safe)
+                self->deferred_destroy_wlr.push_back(self->current_wlr_offer);
+            }
+            else
+            {
+                zwlr_data_control_offer_v1_destroy(self->current_wlr_offer);
+            }
             self->current_wlr_offer = nullptr;
         }
 
@@ -963,6 +993,18 @@ void WaylandProtocol::WaylandMonitoringThreadProc()
 
     while (wayland_monitoring_running)
     {
+        // Flush deferred offer destroys (must happen on monitoring thread)
+        {
+            std::lock_guard<std::mutex> lock(primary_offer_mutex);
+            if (!offer_in_use)
+            {
+                for (auto *offer : deferred_destroy_ext) ext_data_control_offer_v1_destroy(offer);
+                deferred_destroy_ext.clear();
+                for (auto *offer : deferred_destroy_wlr) zwlr_data_control_offer_v1_destroy(offer);
+                deferred_destroy_wlr.clear();
+            }
+        }
+
         // Check for pending read requests from main thread
         {
             std::lock_guard<std::mutex> lock(read_request_mutex);
@@ -991,11 +1033,29 @@ void WaylandProtocol::WaylandMonitoringThreadProc()
         }
         read_request_cv.notify_all();
 
-        // Prepare for reading from Wayland fd
-        // Flush pending requests before select
-        while (wl_display_prepare_read(wl_display_monitor) != 0)
+        // Prepare for reading from Wayland fd.
+        // wl_display_prepare_read returns -1 when there are pending events to dispatch.
+        // After a fatal error (e.g. server disconnect), dispatch_pending returns -1 without
+        // draining the queue, so we must check its return value to avoid an infinite loop.
         {
-            wl_display_dispatch_pending(wl_display_monitor);
+            bool ready = false;
+            while (true)
+            {
+                if (wl_display_prepare_read(wl_display_monitor) == 0)
+                {
+                    ready = true;
+                    break;
+                }
+                if (!wayland_monitoring_running || wl_display_dispatch_pending(wl_display_monitor) < 0)
+                    break;
+            }
+            if (!ready)
+            {
+                // Shutdown requested or fatal Wayland error — no read lock held, safe to exit
+                if (wayland_monitoring_running)
+                    fprintf(stderr, "[Wayland] wl_display_dispatch_pending() failed, exiting monitoring thread\n");
+                break;
+            }
         }
         wl_display_flush(wl_display_monitor);
 
@@ -1040,6 +1100,33 @@ void WaylandProtocol::WaylandMonitoringThreadProc()
             break;
         }
     }
+
+    // Thread is exiting — flush any remaining deferred destroys
+    {
+        std::lock_guard<std::mutex> lock(primary_offer_mutex);
+        for (auto *offer : deferred_destroy_ext) ext_data_control_offer_v1_destroy(offer);
+        deferred_destroy_ext.clear();
+        for (auto *offer : deferred_destroy_wlr) zwlr_data_control_offer_v1_destroy(offer);
+        deferred_destroy_wlr.clear();
+    }
+
+    // Thread is exiting — unblock any pending GetTextViaPrimary that is waiting on read_request_cv.
+    // Without this, GetTextViaPrimary would wait for its full 1s timeout if the thread exits
+    // due to a fatal Wayland error while a read request is in flight.
+    {
+        std::lock_guard<std::mutex> lock(read_request_mutex);
+        if (read_request.pending)
+        {
+            if (read_request.write_fd >= 0)
+            {
+                close(read_request.write_fd);
+                read_request.write_fd = -1;
+            }
+            read_request.pending = false;
+            read_request.done = true;
+        }
+    }
+    read_request_cv.notify_all();
 }
 
 // ============================================================================
@@ -1053,7 +1140,9 @@ bool WaylandProtocol::GetTextViaPrimary(std::string &text)
 
     void *offer_to_read = nullptr;
 
-    // Step 1: Lock and check if we have a valid offer with text MIME
+    // Step 1: Lock and check if we have a valid offer with text MIME.
+    // Mark offer_in_use to prevent ExtDevicePrimarySelection/WlrDevicePrimarySelection
+    // from destroying the offer while we are setting up the read request.
     {
         std::lock_guard<std::mutex> lock(primary_offer_mutex);
 
@@ -1067,7 +1156,23 @@ bool WaylandProtocol::GetTextViaPrimary(std::string &text)
 
         if (!offer_to_read)
             return false;
+
+        offer_in_use = true;
     }
+
+    // RAII guard to clear offer_in_use on all exit paths.
+    // Deferred destroys are NOT flushed here — Wayland protocol calls (_destroy) must
+    // happen on the monitoring thread.  The monitoring thread flushes them at the top of
+    // its loop when it sees !offer_in_use and non-empty deferred vectors.
+    struct OfferGuard
+    {
+        WaylandProtocol *self;
+        ~OfferGuard()
+        {
+            std::lock_guard<std::mutex> lock(self->primary_offer_mutex);
+            self->offer_in_use = false;
+        }
+    } offer_guard{this};
 
     // Step 2: Create pipe
     int fds[2];
@@ -1304,7 +1409,7 @@ bool WaylandProtocol::SetupInputDevice(const std::string &device_path)
     if (epoll_fd >= 0)
     {
         struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLET;  // Edge-triggered mode
+        ev.events = EPOLLIN;  // Level-triggered mode (not EPOLLET) — avoids event loss from partial drain
         ev.data.fd = fd;
 
         if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)

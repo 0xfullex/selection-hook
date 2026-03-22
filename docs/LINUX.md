@@ -75,10 +75,10 @@ if (info && !info.hasInputDeviceAccess) {
 
 **Fallback without input device access (Wayland):**
 
-When input devices are not accessible, selection-hook falls back to **data-control debounce mode** (Path C). In this mode, text selection is detected solely via the Wayland data-control protocol events with a 300ms debounce. This means:
+When input devices are not accessible, selection-hook falls back to **data-control debounce mode** (Path C). In this mode, text selection is detected solely via the Wayland data-control protocol events with a 200ms debounce. This means:
 
 - Mouse/keyboard events will **not** be emitted
-- Selection detection still works but with slightly higher latency (~300ms after the user finishes selecting)
+- Selection detection still works but with slightly higher latency (~200ms after the user finishes selecting)
 - `posLevel` will be `MOUSE_SINGLE` (cursor position queried from compositor at the time of detection, or `-99999` if unavailable)
 - `programName` remains empty (Wayland limitation)
 

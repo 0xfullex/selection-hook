@@ -174,7 +174,7 @@ const info = hook.linuxGetEnvInfo();
 
    2b. info.hasInputDeviceAccess === false?
        └─→ ⚠️ Degraded mode (data-control debounce):
-            - Text selection still works, but with ~300ms delay
+            - Text selection still works, but with ~200ms delay
             - Mouse/keyboard events are NOT available
             - posLevel is at most MOUSE_SINGLE
             → Prompt user: run `sudo usermod -aG input $USER` and re-login.
@@ -196,7 +196,7 @@ const info = hook.linuxGetEnvInfo();
 | Condition | Impact | What to Do |
 |---|---|---|
 | GNOME Wayland | Selection monitoring unavailable | Inform user; suggest switching to X11 session or another compositor |
-| No input device access | No mouse/keyboard events; selection delayed ~300ms | Prompt user to join the `input` group |
+| No input device access | No mouse/keyboard events; selection delayed ~200ms | Prompt user to join the `input` group |
 | XWayland fallback compositor | Cursor coordinates may freeze over native Wayland windows | Check `INVALID_COORDINATE`; fall back to `screen.getCursorScreenPoint()` in Electron |
 | `programName` always empty | `setGlobalFilterMode()` with program names has no effect | Skip program-name-based filtering on Wayland |
 | No text range coordinates | `posLevel` is at most `MOUSE_DUAL`; `startTop`/`endBottom` always `-99999` | Adapt UI positioning to work without paragraph coordinates |

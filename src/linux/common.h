@@ -204,8 +204,8 @@ struct TextSelectionInfo
     Point endTop;       ///< Last paragraph right-top (screen coordinates)
     Point endBottom;    ///< Last paragraph right-bottom (screen coordinates)
 
-    Point mousePosStart;  ///< Current mouse position (screen coordinates)
-    Point mousePosEnd;    ///< Mouse down position (screen coordinates)
+    Point mousePosStart;  ///< Mouse position when selection started (screen coordinates)
+    Point mousePosEnd;    ///< Mouse position when selection ended (screen coordinates)
 
     SelectionMethod method;
     SelectionPositionLevel posLevel;

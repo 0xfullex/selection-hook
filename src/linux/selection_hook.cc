@@ -314,7 +314,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // Set when a selection change event arrives while the mouse button is held
     // (during a drag). Cleared at mouse-down and after consumption at mouse-up.
-    // Allows drag gestures to bypass the 300ms correlation window, since apps
+    // Allows drag gestures to bypass the 500ms correlation window, since apps
     // may fire XFixes at drag start rather than at mouse-up.
     std::atomic<bool> had_selection_during_drag{false};
 
@@ -1058,7 +1058,10 @@ void SelectionHook::OnMouseEventCallback(void *context, MouseEventContext *mouse
         instance->is_gesture_button_down.store(mouseEvent->value == 1);
     }
 
-    instance->mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent);
+    if (instance->mouse_tsfn.NonBlockingCall(mouseEvent, ProcessMouseEvent) != napi_ok)
+    {
+        delete mouseEvent;  // Queue full or closing — callback won't fire, prevent leak
+    }
 }
 
 void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent)
@@ -1070,7 +1073,10 @@ void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext 
         return;
     }
 
-    instance->keyboard_tsfn.NonBlockingCall(keyboardEvent, ProcessKeyboardEvent);
+    if (instance->keyboard_tsfn.NonBlockingCall(keyboardEvent, ProcessKeyboardEvent) != napi_ok)
+    {
+        delete keyboardEvent;  // Queue full or closing — callback won't fire, prevent leak
+    }
 }
 
 /**
@@ -1079,7 +1085,8 @@ void SelectionHook::OnKeyboardEventCallback(void *context, KeyboardEventContext 
  */
 void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *pMouseEvent)
 {
-    if (!pMouseEvent || !currentInstance)
+    // During TSFN drain at shutdown, env is null — just free the data
+    if (!env || !pMouseEvent || !currentInstance)
     {
         delete pMouseEvent;
         return;
@@ -1108,7 +1115,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             // On Wayland, libevdev reads raw physical button codes from /dev/input,
             // bypassing libinput's left-handed swap. The gesture-selection correlation
             // mechanism (requiring both a gesture AND a selection-change event within
-            // 300ms) naturally filters out right-click actions that don't produce
+            // 500ms) naturally filters out right-click actions that don't produce
             // text selections.
 
             // On X11, XRecord captures post-swap logical events, so left-handed
@@ -1269,14 +1276,18 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         bool emitted = false;
 
                         // Drag correlation: selection event arrived during drag — directly
-                        // correlated regardless of how long ago (bypasses 300ms window).
+                        // correlated regardless of how long ago (bypasses 500ms window).
                         if (detectionType == SelectionDetectType::Drag &&
                             currentInstance->had_selection_during_drag.load())
                         {
-                            currentInstance->last_selection_event_time.store(0);
                             currentInstance->had_selection_during_drag.store(false);
-                            lastSelectionEvent = 0;  // Prevent Path A from re-checking consumed timestamp
                             emitted = currentInstance->EmitSelectionEvent(detectionType, gestureStart, gestureEnd);
+                            if (emitted)
+                            {
+                                // Consume timestamps only on success to allow Path A retry on failure
+                                currentInstance->last_selection_event_time.store(0);
+                                lastSelectionEvent = 0;
+                            }
                         }
 
                         // Path A: selection change event already arrived within correlation window.
@@ -1389,7 +1400,7 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
     if (instance->is_gesture_button_down.load())
     {
         // Mouse button held — record that a selection event arrived during drag,
-        // so drag gestures can bypass the 300ms correlation window at mouse-up.
+        // so drag gestures can bypass the 500ms correlation window at mouse-up.
         instance->had_selection_during_drag.store(true);
         delete event;
         return;
@@ -1398,7 +1409,10 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
     // Dispatch to main thread for Path B / Path C processing
     if (instance->running.load() && instance->selection_tsfn)
     {
-        instance->selection_tsfn.NonBlockingCall(event, ProcessSelectionEvent);
+        if (instance->selection_tsfn.NonBlockingCall(event, ProcessSelectionEvent) != napi_ok)
+        {
+            delete event;  // Queue full or closing — callback won't fire, prevent leak
+        }
     }
     else
     {
@@ -1416,7 +1430,8 @@ void SelectionHook::OnSelectionEventCallback(void *context, SelectionChangeConte
  */
 void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function, SelectionChangeContext *pEvent)
 {
-    if (!pEvent || !currentInstance)
+    // During TSFN drain at shutdown, env is null — just free the data
+    if (!env || !pEvent || !currentInstance)
     {
         delete pEvent;
         return;
@@ -1425,15 +1440,23 @@ void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function
     if (currentInstance->pending_gesture.active)
     {
         // Use selection event timestamp (not wall clock "now") to avoid false expiry
-        // under main-thread load when ThreadSafeFunction callback is delayed
-        if ((pEvent->timestamp_ms - currentInstance->pending_gesture.timestamp) < CORRELATION_WINDOW_MS)
+        // under main-thread load when ThreadSafeFunction callback is delayed.
+        // Note: pEvent->timestamp_ms is captured in the protocol thread (at XFixes/data-control
+        // event time), while pending_gesture.timestamp is captured later in the main thread
+        // (at ProcessMouseEvent time).  The selection event timestamp is often slightly earlier,
+        // so we use signed arithmetic to handle either ordering correctly.
+        int64_t delta = (int64_t)pEvent->timestamp_ms - (int64_t)currentInstance->pending_gesture.timestamp;
+        if (std::abs(delta) < (int64_t)CORRELATION_WINDOW_MS)
         {
             // Path B: pending gesture confirmed by selection change event
             currentInstance->last_selection_event_time.store(0);  // Consume
-            currentInstance->EmitSelectionEvent(currentInstance->pending_gesture.type,
-                                                currentInstance->pending_gesture.mousePosStart,
-                                                currentInstance->pending_gesture.mousePosEnd);
+            bool path_b_emitted = currentInstance->EmitSelectionEvent(currentInstance->pending_gesture.type,
+                                                                      currentInstance->pending_gesture.mousePosStart,
+                                                                      currentInstance->pending_gesture.mousePosEnd);
+            // Always clear pending gesture regardless of success — keeping it active risks
+            // misattributing a future unrelated selection event to this stale gesture.
             currentInstance->pending_gesture.active = false;
+            (void)path_b_emitted;  // return value captured for observability; drop is accepted
         }
         else
         {
@@ -1634,7 +1657,8 @@ bool SelectionHook::EmitSelectionEvent(SelectionDetectType type, Point start, Po
  */
 void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *pKeyboardEvent)
 {
-    if (!pKeyboardEvent)
+    // During TSFN drain at shutdown, env is null — just free the data
+    if (!env || !pKeyboardEvent)
     {
         delete pKeyboardEvent;
         return;

@@ -557,17 +557,10 @@ void X11Protocol::XRecordMonitoringThreadProc()
     if (!record_display || !record_initialized)
         return;
 
-    // Enable XRecord context (this will block until disabled)
-    // The thread will be interrupted when XRecordDisableContext is called from StopInputMonitoring
-    while (input_monitoring_running && record_display && record_context != X11_None)
-    {
-        XRecordEnableContext(record_display, record_context, XRecordDataCallback, (XPointer)this);
-
-        // If we reach here, it means XRecordEnableContext returned (was disabled)
-        // Check if we should continue or exit
-        if (!input_monitoring_running)
-            break;
-    }
+    // Enable XRecord context — blocks until XRecordDisableContext is called from StopInputMonitoring.
+    // Per the XRecord spec, re-enabling an already-enabled context produces BadMatch,
+    // so this must be a single call, not a retry loop.
+    XRecordEnableContext(record_display, record_context, XRecordDataCallback, (XPointer)this);
 }
 
 // Static callback function for XRecord

@@ -147,3 +147,15 @@ hook.setFineTunedList(
 **解决方法：**
 - **焦点监控（推荐）：** 在应用层监控全局窗口焦点变化事件，当焦点切换到提升权限的窗口时，关闭划词弹窗。
 - **UIAccess：** [UIAccess](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works#uiaccess-for-ui-automation-applications) 进程可以跨所有完整性级别接收钩子事件，而无需以管理员身份运行。要求：可执行文件 manifest 中包含 `uiAccess="true"`、受信任的数字签名、安装在安全位置（`Program Files` 或 `Windows\System32`）。
+
+### Electron 同进程文本选择
+
+当 selection-hook 运行在 Electron 主线程上时，**同进程**文本选择存在潜在风险：
+
+**第一层 — 剪贴板回退阻塞主线程：** 剪贴板回退会模拟 Ctrl+C 并进入阻塞的 `Sleep()` 轮询循环等待剪贴板变化。如果在 Electron 主线程上运行，主线程被阻塞，Electron 无法处理模拟的按键——导致死锁。只要 UI Automation 或 IAccessible 能成功提取文本，此问题不会触发。
+
+**第二层 — `--disable-renderer-accessibility` 触发死锁：** 部分 Electron 应用使用此标志来规避 [Chromium accessibility 崩溃 bug](https://issues.chromium.org/issues/40809069)。但它会完全禁用渲染进程的 accessibility tree，导致 UI Automation 和 IAccessible 失败，迫使 selection-hook 进入剪贴板回退路径，触发第一层的死锁。
+
+在**其他应用程序**中的文本选择不受影响。
+
+**解决方法：** 使用 Electron 的 [`utilityProcess`](https://www.electronjs.org/docs/latest/api/utility-process) 或 `child_process` 在独立进程中运行 selection-hook。这样 Electron 主线程可以正常处理模拟的按键，而 selection-hook 在自己的进程中等待剪贴板变化。

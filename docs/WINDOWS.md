@@ -145,3 +145,15 @@ Due to [User Interface Privilege Isolation (UIPI)](https://learn.microsoft.com/e
 **Workarounds:**
 - **Focus monitoring (recommended):** Monitor global window focus change events at the application level to detect when focus moves to an elevated window, then dismiss the selection popup.
 - **UIAccess:** A [UIAccess](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works#uiaccess-for-ui-automation-applications) process can receive hook events across all integrity levels without running as administrator. Requires: `uiAccess="true"` in the executable manifest, a trusted digital signature, and installation in a secure location (`Program Files` or `Windows\System32`).
+
+### Electron Same-Process Text Selection
+
+When selection-hook runs on Electron's main thread, there is a latent risk with **same-process** text selection:
+
+**Layer 1 — Clipboard fallback blocks the main thread:** The clipboard fallback simulates Ctrl+C and enters a blocking `Sleep()` poll loop waiting for the clipboard to change. If this runs on Electron's main thread, the main thread is blocked, so Electron cannot process the simulated keypress — resulting in a deadlock. This does not occur as long as UI Automation or IAccessible successfully extracts the text first.
+
+**Layer 2 — `--disable-renderer-accessibility` forces the deadlock:** Some Electron apps use this flag to work around a [Chromium accessibility crash](https://issues.chromium.org/issues/40809069). However, it completely disables the renderer's accessibility tree, causing UI Automation and IAccessible to fail. This forces selection-hook into the clipboard fallback path, triggering the Layer 1 deadlock.
+
+Text selection in **other applications** is not affected.
+
+**Workaround:** Run selection-hook in a separate process using Electron's [`utilityProcess`](https://www.electronjs.org/docs/latest/api/utility-process) or `child_process`. This allows the Electron main thread to process simulated keypresses while selection-hook waits for the clipboard change in its own process.

@@ -92,7 +92,7 @@ ClipboardBackup BackupClipboard()
             {
                 NSData *data = [item dataForType:type];
                 if (data == nil)
-                    continue; // Unresolvable promised type, skip
+                    continue;  // Unresolvable promised type, skip
 
                 const uint8_t *bytes = static_cast<const uint8_t *>([data bytes]);
                 NSUInteger length = [data length];
@@ -121,7 +121,7 @@ ClipboardBackup BackupClipboard()
 bool RestoreClipboard(const ClipboardBackup &backup)
 {
     if (!backup.HasData())
-        return true; // Nothing to restore
+        return true;  // Nothing to restore
 
     @autoreleasepool
     {

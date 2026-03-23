@@ -21,25 +21,24 @@ static bool IsSkippedFormat(UINT format)
 {
     switch (format)
     {
-    // Synthesized from CF_UNICODETEXT
-    case CF_TEXT:
-    case CF_OEMTEXT:
-    case CF_LOCALE:
-    // Synthesized from CF_DIB
-    case CF_BITMAP:
-    case CF_PALETTE:
-    // Synthesized from CF_ENHMETAFILE
-    case CF_METAFILEPICT:
-    // Handle is always NULL
-    case CF_OWNERDISPLAY:
-        return true;
-    default:
-        break;
+        // Synthesized from CF_UNICODETEXT
+        case CF_TEXT:
+        case CF_OEMTEXT:
+        case CF_LOCALE:
+        // Synthesized from CF_DIB
+        case CF_BITMAP:
+        case CF_PALETTE:
+        // Synthesized from CF_ENHMETAFILE
+        case CF_METAFILEPICT:
+        // Handle is always NULL
+        case CF_OWNERDISPLAY:
+            return true;
+        default:
+            break;
     }
 
     // CF_DSP* display formats (for clipboard viewers only, non-standard handles)
-    if (format == CF_DSPTEXT || format == CF_DSPBITMAP || format == CF_DSPMETAFILEPICT ||
-        format == CF_DSPENHMETAFILE)
+    if (format == CF_DSPTEXT || format == CF_DSPBITMAP || format == CF_DSPMETAFILEPICT || format == CF_DSPENHMETAFILE)
         return true;
 
     // Private format range: handle type is application-defined, cannot safely GlobalLock
@@ -168,7 +167,7 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
     {
         if (!isClipboardOpened)
             CloseClipboard();
-        return true; // Success, but clipboard was empty
+        return true;  // Success, but clipboard was empty
     }
 
     backup.isEmpty = false;
@@ -206,7 +205,7 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
 
         SIZE_T dataSize = GlobalSize(hData);
         if (dataSize == 0)
-            continue; // Non-HGLOBAL handle returns 0, safely skip
+            continue;  // Non-HGLOBAL handle returns 0, safely skip
 
         void *pData = GlobalLock(hData);
         if (!pData)
@@ -237,7 +236,7 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
 bool RestoreClipboard(const ClipboardBackup &backup)
 {
     if (!backup.HasData())
-        return true; // Nothing to restore
+        return true;  // Nothing to restore
 
     if (!OpenClipboard(nullptr))
         return false;
@@ -249,13 +248,12 @@ bool RestoreClipboard(const ClipboardBackup &backup)
         // CF_ENHMETAFILE uses HENHMETAFILE, not HGLOBAL
         if (entry.format == CF_ENHMETAFILE)
         {
-            HENHMETAFILE hEmf =
-                SetEnhMetaFileBits(static_cast<UINT>(entry.dataSize), entry.data.data());
+            HENHMETAFILE hEmf = SetEnhMetaFileBits(static_cast<UINT>(entry.dataSize), entry.data.data());
             if (hEmf)
             {
                 if (SetClipboardData(CF_ENHMETAFILE, hEmf) == nullptr)
                 {
-                    DeleteEnhMetaFile(hEmf); // Not GlobalFree -- this is a GDI handle
+                    DeleteEnhMetaFile(hEmf);  // Not GlobalFree -- this is a GDI handle
                 }
             }
             continue;
@@ -278,7 +276,7 @@ bool RestoreClipboard(const ClipboardBackup &backup)
 
         if (SetClipboardData(entry.format, hData) == nullptr)
         {
-            GlobalFree(hData); // On failure, we must free the handle ourselves
+            GlobalFree(hData);  // On failure, we must free the handle ourselves
         }
         // On success, system owns hData -- do NOT free
     }

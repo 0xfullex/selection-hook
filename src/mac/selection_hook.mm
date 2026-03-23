@@ -985,7 +985,14 @@ bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSele
     }
 
     if (!clipboardChanged)
+    {
+        if (clipboardBackup.HasData())
+        {
+            RestoreClipboard(clipboardBackup);
+            clipboard_sequence = GetClipboardSequence();
+        }
         return false;
+    }
 
     // Read the new clipboard content
     std::string newContent;

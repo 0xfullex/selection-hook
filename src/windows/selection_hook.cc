@@ -1973,7 +1973,10 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
         if (ShouldKeyInterruptViaClipboard())
         {
             if (clipboardBackup.HasData())
+            {
                 RestoreClipboard(clipboardBackup);
+                clipboard_sequence = GetClipboardSequenceNumber();
+            }
             return false;
         }
 
@@ -2013,7 +2016,10 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
             bool readSuccess = ReadClipboard(selectionInfo.text);
 
             if (clipboardBackup.HasData())
+            {
                 RestoreClipboard(clipboardBackup);
+                clipboard_sequence = GetClipboardSequenceNumber();
+            }
 
             if (!readSuccess || selectionInfo.text.empty())
                 return false;
@@ -2025,7 +2031,10 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     if (ShouldKeyInterruptViaClipboard())
     {
         if (clipboardBackup.HasData())
+        {
             RestoreClipboard(clipboardBackup);
+            clipboard_sequence = GetClipboardSequenceNumber();
+        }
         return false;
     }
 
@@ -2056,7 +2065,10 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     if (!hasNewContent)
     {
         if (clipboardBackup.HasData())
+        {
             RestoreClipboard(clipboardBackup);
+            clipboard_sequence = GetClipboardSequenceNumber();
+        }
         return false;
     }
 
@@ -2071,7 +2083,10 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     if (ShouldKeyInterruptViaClipboard())
     {
         if (clipboardBackup.HasData())
+        {
             RestoreClipboard(clipboardBackup);
+            clipboard_sequence = GetClipboardSequenceNumber();
+        }
         return false;
     }
 
@@ -2080,7 +2095,10 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
     // Restore previous clipboard content (all formats)
     if (clipboardBackup.HasData())
+    {
         RestoreClipboard(clipboardBackup);
+        clipboard_sequence = GetClipboardSequenceNumber();
+    }
 
     if (!readSuccess || selectionInfo.text.empty())
         return false;

@@ -255,7 +255,7 @@ bool RestoreClipboard(const ClipboardBackup &backup)
             {
                 if (SetClipboardData(CF_ENHMETAFILE, hEmf) == nullptr)
                 {
-                    DeleteEnhMetaFile(hEmf); // Not GlobalFree — this is a GDI handle
+                    DeleteEnhMetaFile(hEmf); // Not GlobalFree -- this is a GDI handle
                 }
             }
             continue;
@@ -280,7 +280,7 @@ bool RestoreClipboard(const ClipboardBackup &backup)
         {
             GlobalFree(hData); // On failure, we must free the handle ourselves
         }
-        // On success, system owns hData — do NOT free
+        // On success, system owns hData -- do NOT free
     }
 
     CloseClipboard();

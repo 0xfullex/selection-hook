@@ -44,6 +44,7 @@ Each platform has `selection_hook.cc/.mm` (main implementation) and `lib/` (util
 - Ask permission before modifying files beyond the scope of the task
 - Cross-platform implementations should use consistent function names, method names, and variable names across `src/windows/`, `src/mac/`, and `src/linux/` unless they are platform-specific
 - Never attempt to `git add` files that are listed in `.gitignore`, even with `-f`
+- Use only ASCII characters in source code files (including comments). Avoid non-ASCII characters like em-dash (`—`), curly quotes, etc. to prevent MSVC C4819 warnings on non-Unicode code pages
 
 ### Keeping docs in sync
 

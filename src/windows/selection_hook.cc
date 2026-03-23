@@ -1950,11 +1950,11 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
     // The MFC ID_EDIT_COPY message will make JetBrains IDEs crash, so we abandon this method
 
-    // Save existing clipboard content
-    std::wstring existingContent;
+    // Save ALL existing clipboard content (all formats, not just text)
+    ClipboardBackup clipboardBackup;
     if (OpenClipboard(nullptr))
     {
-        ReadClipboard(existingContent, true);
+        BackupClipboard(clipboardBackup, true);
         EmptyClipboard();
         CloseClipboard();
     }
@@ -1972,8 +1972,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     {
         if (ShouldKeyInterruptViaClipboard())
         {
-            if (!existingContent.empty())
-                WriteClipboard(existingContent);
+            if (clipboardBackup.HasData())
+                RestoreClipboard(clipboardBackup);
             return false;
         }
 
@@ -2012,8 +2012,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
             bool readSuccess = ReadClipboard(selectionInfo.text);
 
-            if (!existingContent.empty())
-                WriteClipboard(existingContent);
+            if (clipboardBackup.HasData())
+                RestoreClipboard(clipboardBackup);
 
             if (!readSuccess || selectionInfo.text.empty())
                 return false;
@@ -2024,8 +2024,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
     if (ShouldKeyInterruptViaClipboard())
     {
-        if (!existingContent.empty())
-            WriteClipboard(existingContent);
+        if (clipboardBackup.HasData())
+            RestoreClipboard(clipboardBackup);
         return false;
     }
 
@@ -2055,8 +2055,8 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
     // Handle case when no clipboard update was detected
     if (!hasNewContent)
     {
-        if (!existingContent.empty())
-            WriteClipboard(existingContent);
+        if (clipboardBackup.HasData())
+            RestoreClipboard(clipboardBackup);
         return false;
     }
 
@@ -2070,17 +2070,17 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
 
     if (ShouldKeyInterruptViaClipboard())
     {
-        if (!existingContent.empty())
-            WriteClipboard(existingContent);
+        if (clipboardBackup.HasData())
+            RestoreClipboard(clipboardBackup);
         return false;
     }
 
     // Read the new clipboard content
     bool readSuccess = ReadClipboard(selectionInfo.text);
 
-    // Restore previous clipboard content
-    if (!existingContent.empty())
-        WriteClipboard(existingContent);
+    // Restore previous clipboard content (all formats)
+    if (clipboardBackup.HasData())
+        RestoreClipboard(clipboardBackup);
 
     if (!readSuccess || selectionInfo.text.empty())
         return false;

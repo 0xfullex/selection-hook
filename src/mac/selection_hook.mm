@@ -962,9 +962,8 @@ bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSele
 
     // no new copied message or read clipboard failed, we need to send Cmd+C to copy
     clipboard_sequence = newClipboardSequence;
-    // Store current clipboard content to restore later
-    std::string originalContent;
-    bool hasOriginalContent = ReadClipboard(originalContent);
+    // Store ALL current clipboard content to restore later (all formats, not just text)
+    ClipboardBackup clipboardBackup = BackupClipboard();
 
     // Send Cmd+C to copy selected text
     if (!SendCopyKey(frontApp.processIdentifier))
@@ -992,10 +991,11 @@ bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSele
     std::string newContent;
     if (!ReadClipboard(newContent) || IsTrimmedEmpty(newContent))
     {
-        // Restore original clipboard if possible
-        if (hasOriginalContent)
+        // Restore original clipboard if possible (all formats)
+        if (clipboardBackup.HasData())
         {
-            WriteClipboard(originalContent);
+            RestoreClipboard(clipboardBackup);
+            clipboard_sequence = GetClipboardSequence();
         }
 
         return false;
@@ -1004,10 +1004,11 @@ bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSele
     // Store the copied text
     selectionInfo.text = newContent;
 
-    // Restore original clipboard content
-    if (hasOriginalContent && originalContent != newContent)
+    // Restore original clipboard content (all formats)
+    if (clipboardBackup.HasData())
     {
-        WriteClipboard(originalContent);
+        RestoreClipboard(clipboardBackup);
+        clipboard_sequence = GetClipboardSequence();
     }
 
     return true;

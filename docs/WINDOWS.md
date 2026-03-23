@@ -133,3 +133,15 @@ hook.setFineTunedList(
   ["acrobat.exe"]
 );
 ```
+
+---
+
+## Known Limitations
+
+### Elevated (Administrator) Windows
+
+Due to [User Interface Privilege Isolation (UIPI)](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works), a non-elevated process cannot receive low-level hook events from windows running with administrator privileges. This means text selection is not detected when interacting with elevated applications (e.g., Task Manager, or apps launched via "Run as administrator").
+
+**Workarounds:**
+- **Focus monitoring (recommended):** Monitor global window focus change events at the application level to detect when focus moves to an elevated window, then dismiss the selection popup.
+- **UIAccess:** A [UIAccess](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works#uiaccess-for-ui-automation-applications) process can receive hook events across all integrity levels without running as administrator. Requires: `uiAccess="true"` in the executable manifest, a trusted digital signature, and installation in a secure location (`Program Files` or `Windows\System32`).

@@ -135,3 +135,15 @@ hook.setFineTunedList(
   ["acrobat.exe"]
 );
 ```
+
+---
+
+## 已知限制
+
+### 提升权限（管理员）窗口
+
+由于 [用户界面特权隔离（UIPI）](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works)，非提升权限的进程无法接收来自以管理员权限运行的窗口的低级钩子事件。这意味着与提升权限的应用程序交互时（例如任务管理器，或通过"以管理员身份运行"启动的应用），无法检测到文本选择。
+
+**解决方法：**
+- **焦点监控（推荐）：** 在应用层监控全局窗口焦点变化事件，当焦点切换到提升权限的窗口时，关闭划词弹窗。
+- **UIAccess：** [UIAccess](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works#uiaccess-for-ui-automation-applications) 进程可以跨所有完整性级别接收钩子事件，而无需以管理员身份运行。要求：可执行文件 manifest 中包含 `uiAccess="true"`、受信任的数字签名、安装在安全位置（`Program Files` 或 `Windows\System32`）。

@@ -15,6 +15,7 @@ This is a Node.js native module (Node-API/N-API) that monitors text selections a
 After modifying code, run the relevant checks:
 - C++ code (`src/`) → `npm run rebuild` && `npm run format`
 - `index.js` or `index.d.ts` → `npm run typecheck`
+- `package.json` → `npm install` (to keep `package-lock.json` in sync)
 
 ## Architecture
 

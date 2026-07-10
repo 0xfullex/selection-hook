@@ -24,7 +24,7 @@ User selects text
 └─────────────────────────┘
 ```
 
-1. **UI Automation (UIA)** — Preferred method. Reads selected text directly from the application's UI automation tree. Works with modern applications that implement the UIA text pattern.
+1. **UI Automation (UIA)** — Preferred method. Reads selected text directly from the application's UI automation tree. Works with modern applications that implement the UIA text pattern. If the focused element does not hold the selection (e.g. a web page container with `tabindex` receives focus), ancestors are also checked for the selection.
 2. **IAccessible** — Falls back to the older Windows accessibility interface for legacy applications.
 3. **Clipboard Fallback** — Last resort. Simulates keyboard shortcuts to copy selected text to the clipboard, then reads it. See [Clipboard Fallback](#clipboard-fallback) for details.
 

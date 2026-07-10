@@ -920,6 +920,52 @@ bool SelectionHook::GetTextViaAXAPI(NSRunningApplication *frontApp, TextSelectio
         }
     }
 
+    // Strategy 3: Walk up the ancestor chain and retry
+    // In web browsers (Chromium), a container with tabindex receives AX focus, and a selection
+    // spanning multiple child nodes (e.g. across table rows) is only reported by an ancestor
+    // (usually the AXWebArea). See issue #18.
+    if (!result)
+    {
+        // The web area is usually within a few levels above the focused element
+        const int maxWalkUpLevels = 10;
+
+        AXUIElementRef current = focusedElement;
+        CFRetain(current);
+
+        for (int level = 0; level < maxWalkUpLevels && !result; level++)
+        {
+            AXUIElementRef parent = nullptr;
+            AXError error = AXUIElementCopyAttributeValue(current, kAXParentAttribute, (CFTypeRef *)&parent);
+            CFRelease(current);
+            current = nullptr;
+
+            if (error != kAXErrorSuccess || !parent)
+                break;
+
+            current = parent;
+
+            std::string ancestorText;
+            if (GetSelectedTextFromElement(current, ancestorText))
+            {
+                if (!ancestorText.empty() && !IsTrimmedEmpty(ancestorText))
+                {
+                    selectionInfo.text = ancestorText;
+
+                    // Try to get selection bounds from the ancestor and set coordinates in selectionInfo
+                    if (!SetTextRangeCoordinates(current, selectionInfo))
+                    {
+                        selectionInfo.posLevel = SelectionPositionLevel::None;
+                    }
+
+                    result = true;
+                }
+            }
+        }
+
+        if (current)
+            CFRelease(current);
+    }
+
     // if we can't get text by AXAPI, we have to do final try for special cases
     if (!result)
     {

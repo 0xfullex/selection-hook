@@ -34,6 +34,7 @@
 #include <shellapi.h>  // For SHQueryUserNotificationState
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <thread>
@@ -226,6 +227,8 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Core functionality methods
     bool GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selectionInfo);
+    bool TryGetTextViaTextPattern(IUIAutomationElement *pElement, TextSelectionInfo &selectionInfo,
+                                  bool allowDocumentFallback);
     bool GetTextViaAccessible(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool ShouldProcessGetSelection();  // check if we should get text based on system state
@@ -1415,6 +1418,177 @@ bool SelectionHook::ShouldProcessViaClipboard(HWND hwnd, std::wstring &programNa
 }
 
 /**
+ * Remove the object replacement character (U+FFFC) from extracted text
+ * UIA TextPattern providers return this marker for embedded objects (images, icons),
+ * while the native Ctrl+C copy simply skips them
+ */
+static void RemoveObjectReplacementChars(std::wstring &text)
+{
+    if (text.empty())
+        return;
+
+    constexpr wchar_t OBJECT_REPLACEMENT_CHAR = 0xFFFC;
+    text.erase(std::remove(text.begin(), text.end(), OBJECT_REPLACEMENT_CHAR), text.end());
+}
+
+/**
+ * Try to get the selected text from a UIA element via TextPattern
+ * Returns true only when a non-empty selection was retrieved from the element
+ *
+ * allowDocumentFallback: when false, only GetSelection is attempted. The document
+ * range fallbacks read the text of the whole document range gated on the
+ * IsSelectionActive attribute, which is only trustworthy on the focused element;
+ * on ancestor elements (walk-up) a quirky provider could report an active
+ * selection and the whole document text would be returned as the selection.
+ */
+bool SelectionHook::TryGetTextViaTextPattern(IUIAutomationElement *pElement, TextSelectionInfo &selectionInfo,
+                                             bool allowDocumentFallback)
+{
+    if (!pElement)
+        return false;
+
+    bool result = false;
+
+    IUIAutomationTextPattern *pTextPattern = nullptr;
+    HRESULT hr =
+        pElement->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern), (void **)&pTextPattern);
+
+    if (SUCCEEDED(hr) && pTextPattern)
+    {
+        // First approach: Get selection directly
+        IUIAutomationTextRangeArray *pRanges = nullptr;
+        hr = pTextPattern->GetSelection(&pRanges);
+
+        if (SUCCEEDED(hr) && pRanges)
+        {
+            int count = 0;
+            hr = pRanges->get_Length(&count);
+
+            if (SUCCEEDED(hr) && count > 0)
+            {
+                // Process each selection range
+                for (int i = 0; i < count && !result; i++)  // Continue until we find a valid selection
+                {
+                    IUIAutomationTextRange *pRange = nullptr;
+                    hr = pRanges->GetElement(i, &pRange);
+
+                    if (SUCCEEDED(hr) && pRange)
+                    {
+                        BSTR bstr = nullptr;
+                        hr = pRange->GetText(-1, &bstr);
+
+                        if (SUCCEEDED(hr) && bstr)
+                        {
+                            selectionInfo.text = std::wstring(bstr);
+                            RemoveObjectReplacementChars(selectionInfo.text);
+
+                            if (!selectionInfo.text.empty())
+                            {
+                                // Get range coordinates
+                                result = SetTextRangeCoordinates(pRange, selectionInfo);
+                            }
+                            SysFreeString(bstr);
+                        }
+                        pRange->Release();
+                    }
+                }
+            }
+            pRanges->Release();
+        }
+
+        // Second approach: Try to get document range if first approach failed
+        if (!result && allowDocumentFallback)
+        {
+            IUIAutomationTextRange *pDocRange = nullptr;
+            hr = pTextPattern->get_DocumentRange(&pDocRange);
+
+            if (SUCCEEDED(hr) && pDocRange)
+            {
+                bool hasSelection = false;
+
+                // First check if there is an active selection without expanding
+                {
+                    // Check if there is a selection (by querying selection attributes)
+                    // Query the attribute first so the whole document text is not fetched
+                    // when there is no active selection
+                    VARIANT varSel;
+                    VariantInit(&varSel);
+
+                    HRESULT attrHr = pDocRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &varSel);
+
+                    if (SUCCEEDED(attrHr) && (varSel.vt == VT_BOOL) && (varSel.boolVal == VARIANT_TRUE))
+                    {
+                        BSTR bstr = nullptr;
+                        hr = pDocRange->GetText(-1, &bstr);
+
+                        if (SUCCEEDED(hr) && bstr)
+                        {
+                            // We have an active selection
+                            std::wstring selectedText = std::wstring(bstr);
+                            RemoveObjectReplacementChars(selectedText);
+                            if (!selectedText.empty())
+                            {
+                                selectionInfo.text = selectedText;
+                                if (SetTextRangeCoordinates(pDocRange, selectionInfo))
+                                {
+                                    result = true;
+                                    hasSelection = true;
+                                }
+                            }
+                        }
+
+                        if (bstr)
+                            SysFreeString(bstr);
+                    }
+                    VariantClear(&varSel);
+                }
+
+                // If no selection found, try expanding to document
+                if (!hasSelection)
+                {
+                    hr = pDocRange->ExpandToEnclosingUnit(TextUnit_Document);
+
+                    if (SUCCEEDED(hr))
+                    {
+                        // Check for active selection
+                        VARIANT varSel;
+                        VariantInit(&varSel);
+                        hr = pDocRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &varSel);
+
+                        if (SUCCEEDED(hr) && (varSel.vt == VT_BOOL) && (varSel.boolVal == VARIANT_TRUE))
+                        {
+                            BSTR bstr = nullptr;
+                            hr = pDocRange->GetText(-1, &bstr);
+
+                            if (SUCCEEDED(hr) && bstr)
+                            {
+                                std::wstring docText = std::wstring(bstr);
+                                RemoveObjectReplacementChars(docText);
+                                if (!docText.empty())
+                                {
+                                    selectionInfo.text = docText;
+                                    if (SetTextRangeCoordinates(pDocRange, selectionInfo))
+                                    {
+                                        result = true;
+                                    }
+                                }
+                                SysFreeString(bstr);
+                            }
+                        }
+
+                        VariantClear(&varSel);
+                    }
+                }
+                pDocRange->Release();
+            }
+        }
+        pTextPattern->Release();
+    }
+
+    return result;
+}
+
+/**
  * Get text selection via UI Automation interfaces
  */
 bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selectionInfo)
@@ -1454,136 +1628,8 @@ bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selecti
             uia_control_type = controlType;
         }
 
-        // Approach 1: Try with TextPattern - using local scope for cleanup
-        {
-            IUIAutomationTextPattern *pTextPattern = nullptr;
-            hr = pFocusedElement->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern),
-                                                      (void **)&pTextPattern);
-
-            if (SUCCEEDED(hr) && pTextPattern)
-            {
-                // First approach: Get selection directly
-                IUIAutomationTextRangeArray *pRanges = nullptr;
-                hr = pTextPattern->GetSelection(&pRanges);
-
-                if (SUCCEEDED(hr) && pRanges)
-                {
-                    int count = 0;
-                    hr = pRanges->get_Length(&count);
-
-                    if (SUCCEEDED(hr) && count > 0)
-                    {
-                        // Process each selection range
-                        for (int i = 0; i < count && !result; i++)  // Continue until we find a valid selection
-                        {
-                            IUIAutomationTextRange *pRange = nullptr;
-                            hr = pRanges->GetElement(i, &pRange);
-
-                            if (SUCCEEDED(hr) && pRange)
-                            {
-                                BSTR bstr = nullptr;
-                                hr = pRange->GetText(-1, &bstr);
-
-                                if (SUCCEEDED(hr) && bstr)
-                                {
-                                    selectionInfo.text = std::wstring(bstr);
-
-                                    if (!selectionInfo.text.empty())
-                                    {
-                                        // Get range coordinates
-                                        result = SetTextRangeCoordinates(pRange, selectionInfo);
-                                    }
-                                    SysFreeString(bstr);
-                                }
-                                pRange->Release();
-                            }
-                        }
-                    }
-                    pRanges->Release();
-                }
-
-                // Second approach: Try to get document range if first approach failed
-                if (!result)
-                {
-                    IUIAutomationTextRange *pDocRange = nullptr;
-                    hr = pTextPattern->get_DocumentRange(&pDocRange);
-
-                    if (SUCCEEDED(hr) && pDocRange)
-                    {
-                        bool hasSelection = false;
-
-                        // First check if there is an active selection without expanding
-                        {
-                            // Check if there is a selection (by querying selection attributes)
-                            VARIANT varSel;
-                            VariantInit(&varSel);
-                            BSTR bstr = nullptr;
-
-                            HRESULT attrHr = pDocRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &varSel);
-                            hr = pDocRange->GetText(-1, &bstr);
-
-                            if (SUCCEEDED(hr) && SUCCEEDED(attrHr) && bstr && (varSel.vt == VT_BOOL) &&
-                                (varSel.boolVal == VARIANT_TRUE))
-                            {
-                                // We have an active selection
-                                std::wstring selectedText = std::wstring(bstr);
-                                if (!selectedText.empty())
-                                {
-                                    selectionInfo.text = selectedText;
-                                    if (SetTextRangeCoordinates(pDocRange, selectionInfo))
-                                    {
-                                        result = true;
-                                        hasSelection = true;
-                                    }
-                                }
-                            }
-
-                            if (bstr)
-                                SysFreeString(bstr);
-                            VariantClear(&varSel);
-                        }
-
-                        // If no selection found, try expanding to document
-                        if (!hasSelection)
-                        {
-                            hr = pDocRange->ExpandToEnclosingUnit(TextUnit_Document);
-
-                            if (SUCCEEDED(hr))
-                            {
-                                BSTR bstr = nullptr;
-                                hr = pDocRange->GetText(-1, &bstr);
-
-                                if (SUCCEEDED(hr) && bstr)
-                                {
-                                    // Check for active selection
-                                    VARIANT varSel;
-                                    VariantInit(&varSel);
-                                    hr = pDocRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &varSel);
-
-                                    if (SUCCEEDED(hr) && (varSel.vt == VT_BOOL) && (varSel.boolVal == VARIANT_TRUE))
-                                    {
-                                        std::wstring docText = std::wstring(bstr);
-                                        if (!docText.empty())
-                                        {
-                                            selectionInfo.text = docText;
-                                            if (SetTextRangeCoordinates(pDocRange, selectionInfo))
-                                            {
-                                                result = true;
-                                            }
-                                        }
-                                    }
-
-                                    VariantClear(&varSel);
-                                    SysFreeString(bstr);
-                                }
-                            }
-                        }
-                        pDocRange->Release();
-                    }
-                }
-                pTextPattern->Release();
-            }
-        }
+        // Approach 1: Try with TextPattern
+        result = TryGetTextViaTextPattern(pFocusedElement, selectionInfo, true);
 
         // Third approach: Try with LegacyIAccessible pattern if other methods failed
         if (!result)
@@ -1709,6 +1755,44 @@ bool SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selecti
                 }
                 VariantClear(&varSelf);
                 pLegacyPattern->Release();
+            }
+        }
+
+        // Fourth approach: walk up the ancestor chain and retry TextPattern
+        // In web browsers (Chromium/Edge), a container with tabindex receives UIA focus,
+        // but the selection is managed by an ancestor (usually the Document element)
+        // that supports TextPattern. See issue #18 and PR #14.
+        if (!result)
+        {
+            IUIAutomationTreeWalker *pTreeWalker = nullptr;
+            hr = pUIAutomation->get_ControlViewWalker(&pTreeWalker);
+
+            if (SUCCEEDED(hr) && pTreeWalker)
+            {
+                // The Document element is usually within a few levels above the focused element
+                const int maxWalkUpLevels = 10;
+
+                IUIAutomationElement *pCurrent = pFocusedElement;
+                pCurrent->AddRef();
+
+                for (int level = 0; level < maxWalkUpLevels && !result; level++)
+                {
+                    IUIAutomationElement *pParent = nullptr;
+                    hr = pTreeWalker->GetParentElement(pCurrent, &pParent);
+                    pCurrent->Release();
+                    pCurrent = nullptr;
+
+                    if (FAILED(hr) || !pParent)
+                        break;
+
+                    pCurrent = pParent;
+                    // Ancestors may only succeed via GetSelection (no document fallback)
+                    result = TryGetTextViaTextPattern(pCurrent, selectionInfo, false);
+                }
+
+                if (pCurrent)
+                    pCurrent->Release();
+                pTreeWalker->Release();
             }
         }
 
@@ -1915,13 +1999,13 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
             bool isXPressing = (GetAsyncKeyState('X') & 0x8000) != 0;
             bool isVPressing = (GetAsyncKeyState('V') & 0x8000) != 0;
 
-            // No keys pressed — safe to proceed with clipboard extraction
+            // No keys pressed - safe to proceed with clipboard extraction
             if (!isCtrlPressing && !isCPressing && !isXPressing && !isVPressing)
             {
                 break;
             }
 
-            // Keys are pressed — accumulate and keep polling to determine user intent
+            // Keys are pressed - accumulate and keep polling to determine user intent
             if (isCtrlPressing)
                 isCtrlPressed = true;
             if (isCPressing)
@@ -1935,13 +2019,13 @@ bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionI
             Sleep(40);
         }
 
-        // Timed out with keys still held — abort
+        // Timed out with keys still held - abort
         if (checkCount >= maxChecks)
         {
             return false;
         }
 
-        // Detected Ctrl+C/X/V combo — user is copying/cutting/pasting, don't interfere
+        // Detected Ctrl+C/X/V combo - user is copying/cutting/pasting, don't interfere
         if (isCtrlPressed && (isCPressed || isXPressed || isVPressed))
         {
             return false;

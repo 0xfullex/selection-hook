@@ -1421,6 +1421,10 @@ bool SelectionHook::ShouldProcessViaClipboard(HWND hwnd, std::wstring &programNa
  * Remove the object replacement character (U+FFFC) from extracted text
  * UIA TextPattern providers return this marker for embedded objects (images, icons),
  * while the native Ctrl+C copy simply skips them
+ *
+ * Chromium emits the marker followed by a line break ("\xFFFC\n"), so the line
+ * break right after the marker is removed together with it; otherwise inline
+ * icons would leave stray line breaks in the middle of a sentence
  */
 static void RemoveObjectReplacementChars(std::wstring &text)
 {
@@ -1428,7 +1432,35 @@ static void RemoveObjectReplacementChars(std::wstring &text)
         return;
 
     constexpr wchar_t OBJECT_REPLACEMENT_CHAR = 0xFFFC;
-    text.erase(std::remove(text.begin(), text.end(), OBJECT_REPLACEMENT_CHAR), text.end());
+
+    if (text.find(OBJECT_REPLACEMENT_CHAR) == std::wstring::npos)
+        return;
+
+    std::wstring cleaned;
+    cleaned.reserve(text.size());
+
+    for (size_t i = 0; i < text.size(); i++)
+    {
+        if (text[i] != OBJECT_REPLACEMENT_CHAR)
+        {
+            cleaned += text[i];
+            continue;
+        }
+
+        // Skip one line break (\r\n, \n or \r) right after the marker
+        if (i + 1 < text.size() && text[i + 1] == L'\r')
+        {
+            i++;
+            if (i + 1 < text.size() && text[i + 1] == L'\n')
+                i++;
+        }
+        else if (i + 1 < text.size() && text[i + 1] == L'\n')
+        {
+            i++;
+        }
+    }
+
+    text.swap(cleaned);
 }
 
 /**

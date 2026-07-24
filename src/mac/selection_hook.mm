@@ -250,6 +250,13 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     bool is_triggered_by_user = false;  // user use GetCurrentSelection
 
+    // Whether the current mouse gesture ever showed an I-beam cursor
+    // (at mouse-down, mid-drag or mouse-up). AX reads are side-effect free
+    // and no longer gated on cursor shape, but the clipboard fallback
+    // simulates Cmd+C, so it stays gated on this evidence (see GetSelectedText),
+    // matching the Windows implementation.
+    bool gesture_has_cursor_evidence = true;
+
     bool is_enabled_mouse_move_event = false;
 
     // passive mode: only trigger when user call GetSelectionText
@@ -820,8 +827,11 @@ bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectio
         result = true;
     }
 
-    // Last resort: try to get text using clipboard and Cmd+C if enabled
-    if (!result && ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
+    // Last resort: try to get text using clipboard and Cmd+C if enabled.
+    // Simulating Cmd+C has side effects, so unlike the AX read it requires cursor
+    // evidence for the gesture (user-triggered reads cannot know the cursor shape).
+    if (!result && (is_triggered_by_user || gesture_has_cursor_evidence) &&
+        ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
     {
         selectionInfo.method = SelectionMethod::Clipboard;
         result = true;
@@ -1675,6 +1685,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     static uint64_t lastMouseDownTime = 0;            // Last mouse down time
     static bool isLastValidClick = false;
     static bool isLastMouseDownValidCursor = false;
+    static bool wasIBeamDuringDrag = false;
 
     bool shouldDetectSelection = false;
 
@@ -1692,6 +1703,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             lastMouseDownTime = currentTime;
             lastMouseDownPos = currentPos;
             isLastMouseDownValidCursor = IsIBeamCursor([NSCursor currentSystemCursor]);
+            wasIBeamDuringDrag = false;
             currentInstance->clipboard_sequence = GetClipboardSequence();
             break;
         }
@@ -1707,7 +1719,9 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 double distance = sqrt(dx * dx + dy * dy);
 
                 bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
-                bool isValidCursor = isLastMouseDownValidCursor || IsIBeamCursor([NSCursor currentSystemCursor]);
+                bool isValidCursor = isLastMouseDownValidCursor || wasIBeamDuringDrag ||
+                                     IsIBeamCursor([NSCursor currentSystemCursor]);
+                currentInstance->gesture_has_cursor_evidence = isValidCursor;
 
                 if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
                 {
@@ -1716,12 +1730,13 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Check for drag selection
                 else if (distance >= MIN_DRAG_DISTANCE)
                 {
-                    // Only support IBeamCursor for now
-                    if (isValidCursor)
-                    {
-                        shouldDetectSelection = true;
-                        detectionType = SelectionDetectType::Drag;
-                    }
+                    // No cursor gating for drags: during a fast drag macOS may never
+                    // update the cursor to I-beam at all (cursor updates lag until the
+                    // pointer rests), so gating on cursor shape drops valid selections.
+                    // The AX read is side-effect free; only the clipboard fallback
+                    // remains cursor-gated, matching the Windows implementation.
+                    shouldDetectSelection = true;
+                    detectionType = SelectionDetectType::Drag;
                 }
                 // Check for double-click selection
                 else if (isLastValidClick && isCurrentValidClick && distance <= DOUBLE_CLICK_MAX_DISTANCE)
@@ -1781,8 +1796,19 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             mouseTypeStr = "mouse-up";
             break;
 
-        case kCGEventMouseMoved:
         case kCGEventLeftMouseDragged:
+            // Sample the cursor while dragging: a fast drag can press before the app
+            // switches the cursor to I-beam and release outside the text (arrow again),
+            // so both endpoint checks miss. Seeing an I-beam at any point mid-drag
+            // marks the gesture as a valid text-selection candidate.
+            if (!wasIBeamDuringDrag && IsIBeamCursor([NSCursor currentSystemCursor]))
+            {
+                wasIBeamDuringDrag = true;
+            }
+            mouseTypeStr = "mouse-move";
+            break;
+
+        case kCGEventMouseMoved:
         case kCGEventRightMouseDragged:
         case kCGEventOtherMouseDragged:
             mouseTypeStr = "mouse-move";

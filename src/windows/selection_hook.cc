@@ -2530,7 +2530,10 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
         pMouseEvent->mouseData = pMouseInfo->mouseData;
 
         // Process event on non-blocking thread
-        currentInstance->mouse_tsfn.NonBlockingCall(pMouseEvent, ProcessMouseEvent);
+        if (currentInstance->mouse_tsfn.NonBlockingCall(pMouseEvent, ProcessMouseEvent) != napi_ok)
+        {
+            delete pMouseEvent;  // Queue full or closing, callback won't fire, prevent leak
+        }
     }
 
     // Allow event to continue
@@ -2551,7 +2554,10 @@ LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, L
         pKeyboardEvent->scanCode = pKeyInfo->scanCode;
         pKeyboardEvent->flags = pKeyInfo->flags;
 
-        currentInstance->keyboard_tsfn.NonBlockingCall(pKeyboardEvent, ProcessKeyboardEvent);
+        if (currentInstance->keyboard_tsfn.NonBlockingCall(pKeyboardEvent, ProcessKeyboardEvent) != napi_ok)
+        {
+            delete pKeyboardEvent;  // Queue full or closing, callback won't fire, prevent leak
+        }
     }
 
     // Pass to next hook

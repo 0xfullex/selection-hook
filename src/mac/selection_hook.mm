@@ -2042,7 +2042,10 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
                                                              .evFlags = CGEventGetFlags(event)};
 
     // Send to main thread for processing
-    hook->mouse_tsfn.NonBlockingCall(mouseEventCtx, ProcessMouseEvent);
+    if (hook->mouse_tsfn.NonBlockingCall(mouseEventCtx, ProcessMouseEvent) != napi_ok)
+    {
+        delete mouseEventCtx;  // Queue full or closing, callback won't fire, prevent leak
+    }
 
     return event;
 }
@@ -2074,7 +2077,10 @@ CGEventRef SelectionHook::KeyboardEventCallback(CGEventTapProxy proxy, CGEventTy
         new KeyboardEventContext{.event = type, .keyCode = keyCode, .flags = flags};
 
     // Send to main thread for processing
-    hook->keyboard_tsfn.NonBlockingCall(keyboardEventCtx, ProcessKeyboardEvent);
+    if (hook->keyboard_tsfn.NonBlockingCall(keyboardEventCtx, ProcessKeyboardEvent) != napi_ok)
+    {
+        delete keyboardEventCtx;  // Queue full or closing, callback won't fire, prevent leak
+    }
 
     return event;
 }

@@ -156,11 +156,18 @@ struct TextSelectionInfo
  */
 struct MouseEventContext
 {
-    CGEventType type;      ///< Mac event type
-    CGPoint pos;           ///< Mouse position
-    int64_t button;        ///< Mouse button
-    int64_t flag;          ///< Mouse extra flag (eg. wheel direction)
-    CGEventFlags evFlags;  ///< Modifier flags captured at event time
+    CGEventType type;           ///< Mac event type
+    CGPoint pos;                ///< Mouse position
+    int64_t button;             ///< Mouse button
+    int64_t flag;               ///< Mouse extra flag (eg. wheel direction)
+    CGEventFlags evFlags;       ///< Modifier flags captured at event time
+    uint64_t timestampMs;       ///< Event time in ms (monotonic, since system boot),
+                                ///< captured at event time so gesture timing is not
+                                ///< distorted by main thread stalls
+    bool cursorIBeam;           ///< Whether the system cursor was an I-beam at event time.
+                                ///< Only sampled on left button down/up, false otherwise
+    int64_t clipboardSequence;  ///< Clipboard change count at event time.
+                                ///< Only sampled on left button down, -1 otherwise
 };
 
 /**
@@ -268,6 +275,19 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // the text selection is processing, we should ignore some events
     std::atomic<bool> is_processing{false};
+
+    // Mouse gesture tracking state. Instance members (not function-local statics)
+    // so a stop()/start() cycle does not inherit the previous session's state.
+    CGPoint last_last_mouse_up_pos = CGPointZero;
+    CGPoint last_mouse_up_pos = CGPointZero;
+    uint64_t last_mouse_up_time = 0;
+    CGPoint last_mouse_down_pos = CGPointZero;
+    uint64_t last_mouse_down_time = 0;
+    bool is_last_valid_click = false;
+    bool is_last_mouse_down_valid_cursor = false;
+
+    // Previous modifier flags, used to derive key-down/key-up from flagsChanged
+    CGEventFlags previous_flags = 0;
 };
 
 // Static member initialization
@@ -394,6 +414,16 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
                                                       callback,  // Same callback as text selection
                                                       "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
                                                       [this](Napi::Env) { mouse_keyboard_running = false; });
+
+        // Reset gesture state so a restarted session does not inherit stale state
+        last_last_mouse_up_pos = CGPointZero;
+        last_mouse_up_pos = CGPointZero;
+        last_mouse_up_time = 0;
+        last_mouse_down_pos = CGPointZero;
+        last_mouse_down_time = 0;
+        is_last_valid_click = false;
+        is_last_mouse_down_valid_cursor = false;
+        previous_flags = 0;
 
         // Set flags before starting thread to ensure proper synchronization
         mouse_keyboard_running = true;
@@ -1657,24 +1687,15 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
         return;
     }
 
-    // Get current time in milliseconds
-    auto currentTime =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-            .count();
+    // Gesture timing MUST use the event timestamp, not wall clock "now".
+    // Events can sit in the TSFN queue for an arbitrarily long time when the
+    // main thread stalls; measuring here would collapse their real interval.
+    auto currentTime = pMouseEvent->timestampMs;
 
     CGPoint currentPos = pMouseEvent->pos;
     auto mouseType = pMouseEvent->type;
     MouseButton mouseButton = static_cast<MouseButton>(pMouseEvent->button);
     auto mouseFlag = pMouseEvent->flag;
-
-    // Static variables for tracking mouse events
-    static CGPoint lastLastMouseUpPos = CGPointZero;  // Last last mouse up position
-    static CGPoint lastMouseUpPos = CGPointZero;      // Last mouse up position
-    static uint64_t lastMouseUpTime = 0;              // Last mouse up time
-    static CGPoint lastMouseDownPos = CGPointZero;    // Last mouse down position
-    static uint64_t lastMouseDownTime = 0;            // Last mouse down time
-    static bool isLastValidClick = false;
-    static bool isLastMouseDownValidCursor = false;
 
     bool shouldDetectSelection = false;
 
@@ -1689,10 +1710,13 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
         {
             mouseTypeStr = "mouse-down";
 
-            lastMouseDownTime = currentTime;
-            lastMouseDownPos = currentPos;
-            isLastMouseDownValidCursor = IsIBeamCursor([NSCursor currentSystemCursor]);
-            currentInstance->clipboard_sequence = GetClipboardSequence();
+            currentInstance->last_mouse_down_time = currentTime;
+            currentInstance->last_mouse_down_pos = currentPos;
+            // Cursor shape and clipboard sequence come from the event-time snapshot.
+            // Querying them here would observe the state after the queue drains,
+            // by which point the pointer may have left the text area.
+            currentInstance->is_last_mouse_down_valid_cursor = pMouseEvent->cursorIBeam;
+            currentInstance->clipboard_sequence = pMouseEvent->clipboardSequence;
             break;
         }
         case kCGEventLeftMouseUp:
@@ -1702,14 +1726,16 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             if (!currentInstance->is_selection_passive_mode)
             {
                 // Calculate distance between current position and mouse down position
-                double dx = currentPos.x - lastMouseDownPos.x;
-                double dy = currentPos.y - lastMouseDownPos.y;
+                double dx = currentPos.x - currentInstance->last_mouse_down_pos.x;
+                double dy = currentPos.y - currentInstance->last_mouse_down_pos.y;
                 double distance = sqrt(dx * dx + dy * dy);
 
-                bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
-                bool isValidCursor = isLastMouseDownValidCursor || IsIBeamCursor([NSCursor currentSystemCursor]);
+                bool isCurrentValidClick =
+                    (currentTime - currentInstance->last_mouse_down_time) <= DOUBLE_CLICK_TIME_MS;
+                // Both terms are event-time snapshots, not current system state
+                bool isValidCursor = currentInstance->is_last_mouse_down_valid_cursor || pMouseEvent->cursorIBeam;
 
-                if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
+                if ((currentTime - currentInstance->last_mouse_down_time) > MAX_DRAG_TIME_MS)
                 {
                     shouldDetectSelection = false;
                 }
@@ -1724,14 +1750,16 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     }
                 }
                 // Check for double-click selection
-                else if (isLastValidClick && isCurrentValidClick && distance <= DOUBLE_CLICK_MAX_DISTANCE)
+                else if (currentInstance->is_last_valid_click && isCurrentValidClick &&
+                         distance <= DOUBLE_CLICK_MAX_DISTANCE)
                 {
-                    double dx2 = currentPos.x - lastMouseUpPos.x;
-                    double dy2 = currentPos.y - lastMouseUpPos.y;
+                    double dx2 = currentPos.x - currentInstance->last_mouse_up_pos.x;
+                    double dy2 = currentPos.y - currentInstance->last_mouse_up_pos.y;
                     double distance2 = sqrt(dx2 * dx2 + dy2 * dy2);
 
                     if (distance2 <= DOUBLE_CLICK_MAX_DISTANCE &&
-                        (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
+                        (currentInstance->last_mouse_down_time - currentInstance->last_mouse_up_time) <=
+                            DOUBLE_CLICK_TIME_MS)
                     {
                         // Only support IBeamCursor for now
                         if (isValidCursor)
@@ -1762,12 +1790,12 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                         }
                     }
                 }
-                isLastValidClick = isCurrentValidClick;
+                currentInstance->is_last_valid_click = isCurrentValidClick;
             }
 
-            lastLastMouseUpPos = lastMouseUpPos;
-            lastMouseUpTime = currentTime;
-            lastMouseUpPos = currentPos;
+            currentInstance->last_last_mouse_up_pos = currentInstance->last_mouse_up_pos;
+            currentInstance->last_mouse_up_time = currentTime;
+            currentInstance->last_mouse_up_pos = currentPos;
             break;
         }
 
@@ -1810,8 +1838,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             {
                 case SelectionDetectType::Drag:
                 {
-                    selectionInfo.mousePosStart = lastMouseDownPos;
-                    selectionInfo.mousePosEnd = lastMouseUpPos;
+                    selectionInfo.mousePosStart = currentInstance->last_mouse_down_pos;
+                    selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
 
                     if (selectionInfo.posLevel == SelectionPositionLevel::None)
                         selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
@@ -1819,8 +1847,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 }
                 case SelectionDetectType::DoubleClick:
                 {
-                    selectionInfo.mousePosStart = lastMouseUpPos;
-                    selectionInfo.mousePosEnd = lastMouseUpPos;
+                    selectionInfo.mousePosStart = currentInstance->last_mouse_up_pos;
+                    selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
 
                     if (selectionInfo.posLevel == SelectionPositionLevel::None)
                         selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
@@ -1828,8 +1856,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 }
                 case SelectionDetectType::ShiftClick:
                 {
-                    selectionInfo.mousePosStart = lastLastMouseUpPos;
-                    selectionInfo.mousePosEnd = lastMouseUpPos;
+                    selectionInfo.mousePosStart = currentInstance->last_last_mouse_up_pos;
+                    selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
 
                     if (selectionInfo.posLevel == SelectionPositionLevel::None)
                         selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
@@ -1877,6 +1905,13 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
         return;
     }
 
+    // Guard against callbacks executing after instance destruction
+    if (!currentInstance)
+    {
+        delete pKeyboardEvent;
+        return;
+    }
+
     // Add event type string
     std::string eventTypeStr;
     CGKeyCode vkCode = pKeyboardEvent->keyCode;
@@ -1894,9 +1929,8 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
             // For flags changed events, we need to track previous flags state
             // to determine which modifier key was pressed or released
             // The keyCode already contains the correct left/right key info
-            static CGEventFlags previousFlags = 0;
             CGEventFlags currentFlags = pKeyboardEvent->flags;
-            CGEventFlags changedFlags = currentFlags ^ previousFlags;
+            CGEventFlags changedFlags = currentFlags ^ currentInstance->previous_flags;
 
             // Determine key-down or key-up based on which flag changed
             // For Command/Shift/Option/Control: vkCode is already set from pKeyboardEvent->keyCode
@@ -1938,7 +1972,7 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
             }
 
             // Update previous flags for next comparison
-            previousFlags = currentFlags;
+            currentInstance->previous_flags = currentFlags;
             break;
         }
         default:
@@ -2034,12 +2068,40 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
             break;
     }
 
-    // Create mouse event context with modifier flags captured at event time
+    // Sample cursor shape and clipboard sequence here, at event time. Reading them
+    // in ProcessMouseEvent would observe the state after the queue drains, and the
+    // cursor shape has been measured to flip within 0.1s of real pointer movement.
+    //
+    // Sampling is deliberately restricted to the left button down/up events:
+    // [NSCursor currentSystemCursor] costs ~0.1 ms per call (it crosses into
+    // WindowServer). Calling it for every kCGEventMouseMoved would burn several
+    // percent of a core on a high polling rate mouse and could accumulate into a
+    // kCGEventTapDisabledByTimeout. Only those two events ever consult it.
+    bool cursorIBeam = false;
+    int64_t clipboardSequence = -1;
+    if (type == kCGEventLeftMouseDown || type == kCGEventLeftMouseUp)
+    {
+        @autoreleasepool
+        {
+            cursorIBeam = IsIBeamCursor([NSCursor currentSystemCursor]);
+        }
+        if (type == kCGEventLeftMouseDown)
+        {
+            // Cheap by comparison (~0.6 us), but only mouse-down ever reads it
+            clipboardSequence = GetClipboardSequence();
+        }
+    }
+
+    // Create mouse event context with modifier flags, event time, cursor shape and
+    // clipboard sequence all captured at event time
     MouseEventContext *mouseEventCtx = new MouseEventContext{.type = type,
                                                              .pos = CGEventGetLocation(event),
                                                              .button = button,
                                                              .flag = flag,
-                                                             .evFlags = CGEventGetFlags(event)};
+                                                             .evFlags = CGEventGetFlags(event),
+                                                             .timestampMs = CGEventGetTimestamp(event) / 1000000ULL,
+                                                             .cursorIBeam = cursorIBeam,
+                                                             .clipboardSequence = clipboardSequence};
 
     // Send to main thread for processing
     if (hook->mouse_tsfn.NonBlockingCall(mouseEventCtx, ProcessMouseEvent) != napi_ok)

@@ -179,15 +179,19 @@ struct TextSelectionInfo
  */
 struct MouseEventContext
 {
-    WPARAM event;        ///< Windows message identifier (e.g. WM_LBUTTONDOWN)
-    LONG ptX;            ///< X coordinate of mouse position
-    LONG ptY;            ///< Y coordinate of mouse position
-    DWORD mouseData;     ///< Additional mouse event data
-    DWORD timestampMs;   ///< Event time in ms (GetTickCount based, wraps every ~49.7 days)
-    DWORD buttonMask;    ///< Mouse button bitmap AT EVENT TIME
-                         ///< Bit 0: L, 1: R, 2: M, 3: X1, 4: X2
-    DWORD modifierMask;  ///< Modifier keys AT EVENT TIME
-                         ///< Bit 0: SHIFT, 1: CONTROL, 2: ALT
+    WPARAM event;             ///< Windows message identifier (e.g. WM_LBUTTONDOWN)
+    LONG ptX;                 ///< X coordinate of mouse position
+    LONG ptY;                 ///< Y coordinate of mouse position
+    DWORD mouseData;          ///< Additional mouse event data
+    DWORD timestampMs;        ///< Event time in ms (GetTickCount based, wraps every ~49.7 days)
+    DWORD buttonMask;         ///< Mouse button bitmap AT EVENT TIME
+                              ///< Bit 0: L, 1: R, 2: M, 3: X1, 4: X2
+    DWORD modifierMask;       ///< Modifier keys AT EVENT TIME
+                              ///< Bit 0: SHIFT, 1: CONTROL, 2: ALT
+    HCURSOR cursorHandle;     ///< Cursor handle at event time, left button down/up only
+    HWND windowHandler;       ///< Window under the event point, left button down/up only
+    RECT windowRect;          ///< Event-time window rectangle
+    DWORD clipboardSequence;  ///< Clipboard sequence at event time, left button down only
 };
 
 /**
@@ -922,6 +926,10 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     DWORD eventTime = pMouseEvent->timestampMs;
     DWORD eventButtonMask = pMouseEvent->buttonMask;
     DWORD eventModifierMask = pMouseEvent->modifierMask;
+    HCURSOR eventCursor = pMouseEvent->cursorHandle;
+    HWND eventWindowHandler = pMouseEvent->windowHandler;
+    RECT eventWindowRect = pMouseEvent->windowRect;
+    DWORD eventClipboardSequence = pMouseEvent->clipboardSequence;
 
     delete pMouseEvent;
 
@@ -942,23 +950,17 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             currentInstance->last_mouse_down_time = eventTime;
             currentInstance->last_mouse_down_pos = currentPos;
 
-            currentInstance->last_window_handler = GetWindowUnderMouse();
-
-            if (currentInstance->last_window_handler)
-            {
-                GetWindowRect(currentInstance->last_window_handler, &currentInstance->last_window_rect);
-            }
+            currentInstance->last_window_handler = eventWindowHandler;
+            currentInstance->last_window_rect = eventWindowRect;
 
             // Store mouse down cursor when clipboard is enabled
             if (currentInstance->is_enabled_clipboard)
             {
-                CURSORINFO ci = {sizeof(CURSORINFO)};
-                GetCursorInfo(&ci);
-                currentInstance->mouse_down_cursor = ci.hCursor;
+                currentInstance->mouse_down_cursor = eventCursor;
             }
 
             // Store clipboard sequence number when mouse down
-            currentInstance->clipboard_sequence = GetClipboardSequenceNumber();
+            currentInstance->clipboard_sequence = eventClipboardSequence;
 
             break;
         }
@@ -989,14 +991,9 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Check for drag selection
                 else if (distance >= MIN_DRAG_DISTANCE)
                 {
-                    HWND hwnd = GetWindowUnderMouse();
-
-                    if (hwnd && hwnd == currentInstance->last_window_handler)
+                    if (eventWindowHandler && eventWindowHandler == currentInstance->last_window_handler)
                     {
-                        RECT currentWindowRect;
-                        GetWindowRect(hwnd, &currentWindowRect);
-
-                        if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
+                        if (!HasWindowMoved(eventWindowRect, currentInstance->last_window_rect))
                         {
                             shouldDetectSelection = true;
                             detectionType = SelectionDetectType::Drag;
@@ -1016,13 +1013,9 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                             DOUBLE_CLICK_TIME_MS)
                     {
                         // check whether it's a maximized/restored behavior of the window
-                        HWND hwnd = GetWindowUnderMouse();
-                        if (hwnd && hwnd == currentInstance->last_window_handler)
+                        if (eventWindowHandler && eventWindowHandler == currentInstance->last_window_handler)
                         {
-                            RECT currentWindowRect;
-                            GetWindowRect(hwnd, &currentWindowRect);
-
-                            if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
+                            if (!HasWindowMoved(eventWindowRect, currentInstance->last_window_rect))
                             {
                                 shouldDetectSelection = true;
                                 detectionType = SelectionDetectType::DoubleClick;
@@ -1047,9 +1040,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 
                 if (shouldDetectSelection && currentInstance->is_enabled_clipboard)
                 {
-                    CURSORINFO ci = {sizeof(CURSORINFO)};
-                    GetCursorInfo(&ci);
-                    currentInstance->mouse_up_cursor = ci.hCursor;
+                    currentInstance->mouse_up_cursor = eventCursor;
                 }
 
                 currentInstance->is_last_valid_click = isCurrentValidClick;
@@ -2574,6 +2565,38 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
         if (!currentInstance->is_processing.load() &&
             !(wParam == WM_MOUSEMOVE && !currentInstance->is_enabled_mouse_move_event))
         {
+            // Capture the remaining gesture inputs at event time. These queries are
+            // restricted to left button down/up because no other event consumes them.
+            // Windows measurements over 20,000 calls put each query below 1 us.
+            HCURSOR cursorHandle = NULL;
+            HWND windowHandler = NULL;
+            RECT windowRect = {0};
+            DWORD clipboardSequence = 0;
+            if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONUP)
+            {
+                CURSORINFO cursorInfo = {sizeof(CURSORINFO)};
+                if (GetCursorInfo(&cursorInfo))
+                {
+                    cursorHandle = cursorInfo.hCursor;
+                }
+
+                windowHandler = WindowFromPoint(pMouseInfo->pt);
+                if (!windowHandler)
+                {
+                    windowHandler = GetForegroundWindow();
+                }
+                if (windowHandler && !GetWindowRect(windowHandler, &windowRect))
+                {
+                    windowHandler = NULL;
+                    windowRect = {0};
+                }
+
+                if (wParam == WM_LBUTTONDOWN)
+                {
+                    clipboardSequence = GetClipboardSequenceNumber();
+                }
+            }
+
             // Prepare data to be processed
             auto pMouseEvent = new MouseEventContext();
             pMouseEvent->event = wParam;
@@ -2600,6 +2623,10 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
             if (GetAsyncKeyState(VK_MENU) & 0x8000)
                 modifierMask |= 0x04;
             pMouseEvent->modifierMask = modifierMask;
+            pMouseEvent->cursorHandle = cursorHandle;
+            pMouseEvent->windowHandler = windowHandler;
+            pMouseEvent->windowRect = windowRect;
+            pMouseEvent->clipboardSequence = clipboardSequence;
 
             // Process event on non-blocking thread
             if (currentInstance->mouse_tsfn.NonBlockingCall(pMouseEvent, ProcessMouseEvent) != napi_ok)

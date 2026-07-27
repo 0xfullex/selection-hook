@@ -179,10 +179,15 @@ struct TextSelectionInfo
  */
 struct MouseEventContext
 {
-    WPARAM event;     ///< Windows message identifier (e.g. WM_LBUTTONDOWN)
-    LONG ptX;         ///< X coordinate of mouse position
-    LONG ptY;         ///< Y coordinate of mouse position
-    DWORD mouseData;  ///< Additional mouse event data
+    WPARAM event;        ///< Windows message identifier (e.g. WM_LBUTTONDOWN)
+    LONG ptX;            ///< X coordinate of mouse position
+    LONG ptY;            ///< Y coordinate of mouse position
+    DWORD mouseData;     ///< Additional mouse event data
+    DWORD timestampMs;   ///< Event time in ms (GetTickCount based, wraps every ~49.7 days)
+    DWORD buttonMask;    ///< Mouse button bitmap AT EVENT TIME
+                         ///< Bit 0: L, 1: R, 2: M, 3: X1, 4: X2
+    DWORD modifierMask;  ///< Modifier keys AT EVENT TIME
+                         ///< Bit 0: SHIFT, 1: CONTROL, 2: ALT
 };
 
 /**
@@ -267,6 +272,23 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // the text selection is processing, we should ignore some events
     std::atomic<bool> is_processing{false};
+
+    // Mouse button bitmap, updated on the hook thread before any filtering so the
+    // state survives events that are skipped or dropped. Snapshotted into every
+    // MouseEventContext; ProcessMouseEvent must read the snapshot, not this atomic.
+    // Bit 0: LBUTTON, Bit 1: RBUTTON, Bit 2: MBUTTON, Bit 3: XBUTTON1, Bit 4: XBUTTON2
+    std::atomic<DWORD> mouse_button_pressing_flag{0};
+
+    // Mouse gesture tracking state. Instance members (not function-local statics)
+    // so a stop()/start() cycle does not inherit the previous session's state.
+    POINT last_last_mouse_up_pos = {0, 0};
+    POINT last_mouse_up_pos = {0, 0};
+    DWORD last_mouse_up_time = 0;
+    POINT last_mouse_down_pos = {0, 0};
+    DWORD last_mouse_down_time = 0;
+    bool is_last_valid_click = false;
+    HWND last_window_handler = nullptr;
+    RECT last_window_rect = {0};
     // user use GetCurrentSelection
     bool is_triggered_by_user = false;
 
@@ -500,6 +522,17 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         // Set running flag
         mouse_keyboard_running = true;
     }
+
+    // Reset gesture state so a restarted session does not inherit stale state
+    last_last_mouse_up_pos = {0, 0};
+    last_mouse_up_pos = {0, 0};
+    last_mouse_up_time = 0;
+    last_mouse_down_pos = {0, 0};
+    last_mouse_down_time = 0;
+    is_last_valid_click = false;
+    last_window_handler = nullptr;
+    last_window_rect = {0};
+    mouse_button_pressing_flag.store(0);
 
     // Create Windows thread for mouse/keyboard hooks
     mouse_keyboard_hook_thread =
@@ -883,22 +916,14 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     auto nMouseData = pMouseEvent->mouseData;
     POINT currentPos = {pMouseEvent->ptX, pMouseEvent->ptY};
 
+    // Event-time snapshots. These must be copied out before the delete below, and
+    // must be used instead of querying the current system state further down: this
+    // function runs on the main thread, arbitrarily later than the event itself.
+    DWORD eventTime = pMouseEvent->timestampMs;
+    DWORD eventButtonMask = pMouseEvent->buttonMask;
+    DWORD eventModifierMask = pMouseEvent->modifierMask;
+
     delete pMouseEvent;
-
-    static POINT lastLastMouseUpPos = {0, 0};  // Last last mouse up position
-    static POINT lastMouseUpPos = {0, 0};      // Last mouse up position
-    static DWORD lastMouseUpTime = 0;          // Last mouse up time
-    static POINT lastMouseDownPos = {0, 0};    // Last mouse down position
-    static DWORD lastMouseDownTime = 0;        // Last mouse down time
-
-    static bool isLastValidClick = false;
-
-    static HWND lastWindowHandler = nullptr;
-    static RECT lastWindowRect = {0};
-
-    // Mouse button pressing state flags (bit flags)
-    // Bit 0: LBUTTON, Bit 1: RBUTTON, Bit 2: MBUTTON, Bit 3: XBUTTON1, Bit 4: XBUTTON2
-    static DWORD mouseButtonPressingFlag = 0;
 
     bool shouldDetectSelection = false;
     auto detectionType = SelectionDetectType::None;  // 0=not set, 1=drag, 2=double click
@@ -913,17 +938,15 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
         {
             mouseType = "mouse-down";
             mouseButton = MouseButton::Left;
-            // Set LBUTTON bit (bit 0)
-            mouseButtonPressingFlag |= 0x01;
 
-            lastMouseDownTime = GetTickCount();
-            lastMouseDownPos = currentPos;
+            currentInstance->last_mouse_down_time = eventTime;
+            currentInstance->last_mouse_down_pos = currentPos;
 
-            lastWindowHandler = GetWindowUnderMouse();
+            currentInstance->last_window_handler = GetWindowUnderMouse();
 
-            if (lastWindowHandler)
+            if (currentInstance->last_window_handler)
             {
-                GetWindowRect(lastWindowHandler, &lastWindowRect);
+                GetWindowRect(currentInstance->last_window_handler, &currentInstance->last_window_rect);
             }
 
             // Store mouse down cursor when clipboard is enabled
@@ -943,21 +966,23 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
         {
             mouseType = "mouse-up";
             mouseButton = MouseButton::Left;
-            // Clear LBUTTON bit (bit 0)
-            mouseButtonPressingFlag &= ~0x01;
 
-            DWORD currentTime = GetTickCount();
+            // Gesture timing MUST use the event timestamp, not GetTickCount() here.
+            // Events can sit in the TSFN queue for an arbitrarily long time when the
+            // main thread stalls; measuring here would collapse their real interval.
+            DWORD currentTime = eventTime;
 
             if (!currentInstance->is_selection_passive_mode)
             {
                 // Calculate distance between current position and mouse down position
-                int dx = currentPos.x - lastMouseDownPos.x;
-                int dy = currentPos.y - lastMouseDownPos.y;
+                int dx = currentPos.x - currentInstance->last_mouse_down_pos.x;
+                int dy = currentPos.y - currentInstance->last_mouse_down_pos.y;
                 double distance = sqrt(dx * dx + dy * dy);
 
-                bool isCurrentValidClick = (currentTime - lastMouseDownTime) <= DOUBLE_CLICK_TIME_MS;
+                bool isCurrentValidClick =
+                    (currentTime - currentInstance->last_mouse_down_time) <= DOUBLE_CLICK_TIME_MS;
 
-                if ((currentTime - lastMouseDownTime) > MAX_DRAG_TIME_MS)
+                if ((currentTime - currentInstance->last_mouse_down_time) > MAX_DRAG_TIME_MS)
                 {
                     shouldDetectSelection = false;
                 }
@@ -966,12 +991,12 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 {
                     HWND hwnd = GetWindowUnderMouse();
 
-                    if (hwnd && hwnd == lastWindowHandler)
+                    if (hwnd && hwnd == currentInstance->last_window_handler)
                     {
                         RECT currentWindowRect;
                         GetWindowRect(hwnd, &currentWindowRect);
 
-                        if (!HasWindowMoved(currentWindowRect, lastWindowRect))
+                        if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
                         {
                             shouldDetectSelection = true;
                             detectionType = SelectionDetectType::Drag;
@@ -979,23 +1004,25 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     }
                 }
                 // Check for double-click selection
-                else if (isLastValidClick && isCurrentValidClick && distance <= DOUBLE_CLICK_MAX_DISTANCE)
+                else if (currentInstance->is_last_valid_click && isCurrentValidClick &&
+                         distance <= DOUBLE_CLICK_MAX_DISTANCE)
                 {
-                    int dx = currentPos.x - lastMouseUpPos.x;
-                    int dy = currentPos.y - lastMouseUpPos.y;
+                    int dx = currentPos.x - currentInstance->last_mouse_up_pos.x;
+                    int dy = currentPos.y - currentInstance->last_mouse_up_pos.y;
                     double distance = sqrt(dx * dx + dy * dy);
 
                     if (distance <= DOUBLE_CLICK_MAX_DISTANCE &&
-                        (lastMouseDownTime - lastMouseUpTime) <= DOUBLE_CLICK_TIME_MS)
+                        (currentInstance->last_mouse_down_time - currentInstance->last_mouse_up_time) <=
+                            DOUBLE_CLICK_TIME_MS)
                     {
                         // check whether it's a maximized/restored behavior of the window
                         HWND hwnd = GetWindowUnderMouse();
-                        if (hwnd && hwnd == lastWindowHandler)
+                        if (hwnd && hwnd == currentInstance->last_window_handler)
                         {
                             RECT currentWindowRect;
                             GetWindowRect(hwnd, &currentWindowRect);
 
-                            if (!HasWindowMoved(currentWindowRect, lastWindowRect))
+                            if (!HasWindowMoved(currentWindowRect, currentInstance->last_window_rect))
                             {
                                 shouldDetectSelection = true;
                                 detectionType = SelectionDetectType::DoubleClick;
@@ -1007,9 +1034,10 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 // Check if shift key is pressed when mouse up, it's a way to select text
                 if (!shouldDetectSelection)
                 {
-                    bool isShiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-                    bool isCtrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                    bool isAltPressed = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                    // Use modifier flags captured at event time (not current system state)
+                    bool isShiftPressed = (eventModifierMask & 0x01) != 0;
+                    bool isCtrlPressed = (eventModifierMask & 0x02) != 0;
+                    bool isAltPressed = (eventModifierMask & 0x04) != 0;
                     if (isShiftPressed && !isCtrlPressed && !isAltPressed)
                     {
                         shouldDetectSelection = true;
@@ -1024,21 +1052,23 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     currentInstance->mouse_up_cursor = ci.hCursor;
                 }
 
-                isLastValidClick = isCurrentValidClick;
+                currentInstance->is_last_valid_click = isCurrentValidClick;
             }
 
-            lastLastMouseUpPos = lastMouseUpPos;
+            currentInstance->last_last_mouse_up_pos = currentInstance->last_mouse_up_pos;
 
-            lastMouseUpTime = currentTime;
-            lastMouseUpPos = currentPos;
+            currentInstance->last_mouse_up_time = currentTime;
+            currentInstance->last_mouse_up_pos = currentPos;
             break;
         }
 
         case WM_MOUSEMOVE:
             mouseType = "mouse-move";
 
-            // Check which buttons are currently pressed and set mouseButton accordingly
-            mouseButton = [flag = mouseButtonPressingFlag]
+            // Read the per-event snapshot, NOT the instance atomic. Reading the atomic
+            // would rewrite the button state of queued events with the state at drain
+            // time, turning a held-button drag into None.
+            mouseButton = [flag = eventButtonMask]
             {
                 if (flag & 0x01)
                     return MouseButton::Left;
@@ -1058,29 +1088,21 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
         case WM_RBUTTONDOWN:
             mouseType = "mouse-down";
             mouseButton = MouseButton::Right;
-            // Set RBUTTON bit (bit 1)
-            mouseButtonPressingFlag |= 0x02;
             break;
 
         case WM_RBUTTONUP:
             mouseType = "mouse-up";
             mouseButton = MouseButton::Right;
-            // Clear RBUTTON bit (bit 1)
-            mouseButtonPressingFlag &= ~0x02;
             break;
 
         case WM_MBUTTONUP:
             mouseType = "mouse-up";
             mouseButton = MouseButton::Middle;
-            // Clear MBUTTON bit (bit 2)
-            mouseButtonPressingFlag &= ~0x04;
             break;
 
         case WM_MBUTTONDOWN:
             mouseType = "mouse-down";
             mouseButton = MouseButton::Middle;
-            // Set MBUTTON bit (bit 2)
-            mouseButtonPressingFlag |= 0x04;
             break;
 
         case WM_XBUTTONUP:
@@ -1091,14 +1113,6 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             // Determine which X button was pressed
             bool isXButton1 = (HIWORD(nMouseData) == XBUTTON1);
             mouseButton = isXButton1 ? MouseButton::Back : MouseButton::Forward;
-
-            // Update button pressing flag
-            DWORD buttonBit = isXButton1 ? 0x08 : 0x10;  // XBUTTON1 = bit 3, XBUTTON2 = bit 4
-
-            if (mEvent == WM_XBUTTONDOWN)
-                mouseButtonPressingFlag |= buttonBit;  // Set bit
-            else
-                mouseButtonPressingFlag &= ~buttonBit;  // Clear bit
 
             break;
         }
@@ -1130,8 +1144,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 {
                     case SelectionDetectType::Drag:
                     {
-                        selectionInfo.mousePosStart = lastMouseDownPos;
-                        selectionInfo.mousePosEnd = lastMouseUpPos;
+                        selectionInfo.mousePosStart = currentInstance->last_mouse_down_pos;
+                        selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
 
                         if (selectionInfo.posLevel == SelectionPositionLevel::None)
                             selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
@@ -1140,8 +1154,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     }
                     case SelectionDetectType::DoubleClick:
                     {
-                        selectionInfo.mousePosStart = lastMouseUpPos;
-                        selectionInfo.mousePosEnd = lastMouseUpPos;
+                        selectionInfo.mousePosStart = currentInstance->last_mouse_up_pos;
+                        selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
 
                         if (selectionInfo.posLevel == SelectionPositionLevel::None)
                             selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
@@ -1150,8 +1164,8 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     }
                     case SelectionDetectType::ShiftClick:
                     {
-                        selectionInfo.mousePosStart = lastLastMouseUpPos;
-                        selectionInfo.mousePosEnd = lastMouseUpPos;
+                        selectionInfo.mousePosStart = currentInstance->last_last_mouse_up_pos;
+                        selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
 
                         if (selectionInfo.posLevel == SelectionPositionLevel::None)
                             selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
@@ -2517,22 +2531,81 @@ DWORD WINAPI SelectionHook::MouseKeyboardHookThreadProc(LPVOID lpParam)
  */
 LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    // If not WM_MOUSEMOVE or WM_MOUSEMOVE has been requested, process event
-    if (nCode == HC_ACTION && currentInstance && !currentInstance->is_processing.load() &&
-        !(wParam == WM_MOUSEMOVE && !currentInstance->is_enabled_mouse_move_event))
+    if (nCode == HC_ACTION && currentInstance)
     {
-        // Prepare data to be processed
         MSLLHOOKSTRUCT *pMouseInfo = (MSLLHOOKSTRUCT *)lParam;
-        auto pMouseEvent = new MouseEventContext();
-        pMouseEvent->event = wParam;
-        pMouseEvent->ptX = pMouseInfo->pt.x;
-        pMouseEvent->ptY = pMouseInfo->pt.y;
-        pMouseEvent->mouseData = pMouseInfo->mouseData;
 
-        // Process event on non-blocking thread
-        if (currentInstance->mouse_tsfn.NonBlockingCall(pMouseEvent, ProcessMouseEvent) != napi_ok)
+        // Update the button bitmap BEFORE any filtering, so the state stays correct
+        // even when this event is skipped by is_processing / the mouse-move switch,
+        // or dropped later by a full TSFN queue.
+        switch (wParam)
         {
-            delete pMouseEvent;  // Queue full or closing, callback won't fire, prevent leak
+            case WM_LBUTTONDOWN:
+                currentInstance->mouse_button_pressing_flag.fetch_or(0x01u);
+                break;
+            case WM_LBUTTONUP:
+                currentInstance->mouse_button_pressing_flag.fetch_and(~0x01u);
+                break;
+            case WM_RBUTTONDOWN:
+                currentInstance->mouse_button_pressing_flag.fetch_or(0x02u);
+                break;
+            case WM_RBUTTONUP:
+                currentInstance->mouse_button_pressing_flag.fetch_and(~0x02u);
+                break;
+            case WM_MBUTTONDOWN:
+                currentInstance->mouse_button_pressing_flag.fetch_or(0x04u);
+                break;
+            case WM_MBUTTONUP:
+                currentInstance->mouse_button_pressing_flag.fetch_and(~0x04u);
+                break;
+            case WM_XBUTTONDOWN:
+                currentInstance->mouse_button_pressing_flag.fetch_or(HIWORD(pMouseInfo->mouseData) == XBUTTON1 ? 0x08u
+                                                                                                               : 0x10u);
+                break;
+            case WM_XBUTTONUP:
+                currentInstance->mouse_button_pressing_flag.fetch_and(
+                    ~(HIWORD(pMouseInfo->mouseData) == XBUTTON1 ? 0x08u : 0x10u));
+                break;
+            default:
+                break;
+        }
+
+        // If not WM_MOUSEMOVE or WM_MOUSEMOVE has been requested, process event
+        if (!currentInstance->is_processing.load() &&
+            !(wParam == WM_MOUSEMOVE && !currentInstance->is_enabled_mouse_move_event))
+        {
+            // Prepare data to be processed
+            auto pMouseEvent = new MouseEventContext();
+            pMouseEvent->event = wParam;
+            pMouseEvent->ptX = pMouseInfo->pt.x;
+            pMouseEvent->ptY = pMouseInfo->pt.y;
+            pMouseEvent->mouseData = pMouseInfo->mouseData;
+
+            // Event time, taken from the hook struct instead of GetTickCount() at drain
+            // time. Both are ms since system start, so the base is unchanged.
+            pMouseEvent->timestampMs = pMouseInfo->time;
+
+            // Snapshot the bitmap AFTER the update above, so a mouse-down event
+            // already carries its own bit
+            pMouseEvent->buttonMask = currentInstance->mouse_button_pressing_flag.load();
+
+            // Snapshot modifier keys at event time; reading them in ProcessMouseEvent
+            // would see the state after the queue drains, by which point the user may
+            // have released Shift
+            DWORD modifierMask = 0;
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                modifierMask |= 0x01;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
+                modifierMask |= 0x02;
+            if (GetAsyncKeyState(VK_MENU) & 0x8000)
+                modifierMask |= 0x04;
+            pMouseEvent->modifierMask = modifierMask;
+
+            // Process event on non-blocking thread
+            if (currentInstance->mouse_tsfn.NonBlockingCall(pMouseEvent, ProcessMouseEvent) != napi_ok)
+            {
+                delete pMouseEvent;  // Queue full or closing, callback won't fire, prevent leak
+            }
         }
     }
 

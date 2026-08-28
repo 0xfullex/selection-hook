@@ -1579,24 +1579,50 @@ void SelectionHook::StopMouseKeyboardEventThread()
         return;
     }
 
-    // Wait for the event thread to set the run loop reference via promise/future.
-    // This prevents a race where Stop() is called before the thread has started its run loop.
-    // CFRunLoopStop is thread-safe.
+    // Wait for the event thread to publish its run loop reference via promise/future.
+    // The future only proves the reference was captured, NOT that the thread has
+    // entered CFRunLoopRun() yet: the event taps are created in between, and
+    // CFRunLoopStop() is a no-op on a run loop that is not currently running.
+    // A direct CFRunLoopStop() from here could therefore be lost, leaving the
+    // join() below blocked forever (issue #23).
+    //
+    // Instead, deliver the stop request to the event thread itself with
+    // CFRunLoopPerformBlock(). The queued block is sticky: it survives until the
+    // run loop actually runs, and it then calls CFRunLoopStop() from inside the
+    // active run loop pass, where it is guaranteed to take effect.
+    // The block must not capture `this`. A block that never executes (run loop
+    // already exited) is released when the run loop itself is released below.
+    //
+    // The run loop object is kept alive by the CFRetain() taken in
+    // MouseKeyboardEventThreadProc(), so `rl` stays valid even if the event
+    // thread has already exited on its own (joinable() only means "not joined
+    // yet", not "still running").
+    CFRunLoopRef rl = nullptr;
     if (eventRunLoopFuture.valid())
     {
-        CFRunLoopRef rl = eventRunLoopFuture.get();
-        if (rl)
-        {
-            CFRunLoopStop(rl);
-        }
+        rl = eventRunLoopFuture.get();
     }
-    else if (eventRunLoop)
+    else
     {
-        CFRunLoopStop(eventRunLoop);
+        rl = eventRunLoop;
+    }
+
+    if (rl)
+    {
+        CFRunLoopPerformBlock(rl, kCFRunLoopDefaultMode, ^{ CFRunLoopStop(CFRunLoopGetCurrent()); });
+        // CFRunLoopPerformBlock() only enqueues; wake the loop so the block runs now
+        CFRunLoopWakeUp(rl);
     }
 
     // Wait for the event thread to finish
     event_thread.join();
+
+    // Balance the CFRetain() taken by the event thread. This may be the last
+    // reference, in which case it also frees a stop block that never executed.
+    if (rl)
+    {
+        CFRelease(rl);
+    }
 }
 
 /**
@@ -1604,8 +1630,14 @@ void SelectionHook::StopMouseKeyboardEventThread()
  */
 void SelectionHook::MouseKeyboardEventThreadProc()
 {
-    // Store the run loop reference and fulfill the promise for synchronization
+    // Store the run loop reference and fulfill the promise for synchronization.
+    // Retain the run loop: CoreFoundation releases a thread's run loop when the
+    // thread exits, but StopMouseKeyboardEventThread() may still need to post to
+    // it after this thread has already finished on its own (for example when no
+    // event tap could be created and CFRunLoopRun() returned immediately).
+    // The matching CFRelease() is done by StopMouseKeyboardEventThread() after join().
     eventRunLoop = CFRunLoopGetCurrent();
+    CFRetain(eventRunLoop);
     eventRunLoopPromise.set_value(eventRunLoop);
 
     // Create mouse event tap for global mouse monitoring

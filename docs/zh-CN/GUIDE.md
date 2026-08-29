@@ -136,7 +136,7 @@ if (!systemPreferences.isTrustedAccessibilityClient(false)) {
 
 **Chrome/Electron 辅助功能激活：**
 
-在 macOS 上，Chrome/Chromium 系浏览器和 Electron 应用默认不会暴露其辅助功能树。当 selection-hook 检测到 Accessibility API 无法从聚焦的应用程序获取文本时，它会自动设置 `AXEnhancedUserInterface`（针对 Chrome）和 `AXManualAccessibility`（针对 Electron 应用）以启用 AXAPI 访问。此激活仅对每个应用程序执行一次，且仅在默认 AXAPI 尝试失败时执行。
+在 macOS 上，Chrome/Chromium 系浏览器和 Electron 应用默认不会暴露其辅助功能树。当 selection-hook 检测到 Accessibility API 无法从聚焦的应用程序获取文本时，它会自动设置 `AXEnhancedUserInterface`（针对 Chrome）和 `AXManualAccessibility`（针对 Electron 应用）以启用 AXAPI 访问。每当默认 AXAPI 检索对某个应用失败时都会执行此激活；该操作幂等且开销极小，并对之后的选区生效，而非刚刚失败的那一次。
 
 **副作用：** 启用 `AXEnhancedUserInterface` 会强制 Chrome 构建完整的辅助功能树，这可能会导致 Chrome 出现轻微的性能开销（在某些场景下增加内存使用和降低渲染速度）。这是一个已知的权衡 — 如果不启用它，AXAPI 将完全无法读取 Chrome 中的选定文本。
 

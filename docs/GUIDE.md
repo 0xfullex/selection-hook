@@ -134,7 +134,7 @@ if (!systemPreferences.isTrustedAccessibilityClient(false)) {
 
 **Chrome/Electron accessibility activation:**
 
-On macOS, Chrome/Chromium-based browsers and Electron apps do not expose their accessibility tree by default. When selection-hook detects that the Accessibility API cannot retrieve text from the focused application, it automatically sets `AXEnhancedUserInterface` (for Chrome) and `AXManualAccessibility` (for Electron apps) to enable AXAPI access. This activation is done only once per application and only when the default AXAPI attempt fails.
+On macOS, Chrome/Chromium-based browsers and Electron apps do not expose their accessibility tree by default. When selection-hook detects that the Accessibility API cannot retrieve text from the focused application, it automatically sets `AXEnhancedUserInterface` (for Chrome) and `AXManualAccessibility` (for Electron apps) to enable AXAPI access. This activation is attempted each time the default AXAPI retrieval fails for an application; it is idempotent and cheap, and it takes effect for subsequent selections rather than the one that just failed.
 
 **Side effect:** Enabling `AXEnhancedUserInterface` forces Chrome to build its full accessibility tree, which may cause a slight performance overhead in Chrome (increased memory usage and slower rendering in some scenarios). This is a known trade-off — without it, AXAPI cannot read selected text from Chrome at all.
 

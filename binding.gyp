@@ -38,6 +38,7 @@
         ['OS=="mac"', {
           "sources": [ 
             "src/mac/selection_hook.mm",
+            "src/mac/core/engine.mm",
             "src/mac/lib/utils.mm",
             "src/mac/lib/clipboard.mm",
             "src/mac/lib/keyboard.mm"

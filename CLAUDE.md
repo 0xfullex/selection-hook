@@ -55,10 +55,10 @@ On a macOS dev machine with accessibility permission granted, `npm run test:loca
 
 ### Native Module Structure
 
-Each platform has `selection_hook.cc/.mm` (module entry and platform coordination) and `lib/` (utilities such as clipboard, keyboard, and helpers). Windows also has `core/` for the extracted retrieval engine and worker:
+Each platform has `selection_hook.cc/.mm` (module entry and platform coordination) and `lib/` (utilities such as clipboard, keyboard, and helpers). Windows and macOS also have `core/` for the extracted retrieval engine and shared value types:
 
 - `src/windows/` - N-API and hook lifecycle in `selection_hook.cc`; UIA/MSAA/clipboard retrieval, shared types, and the automatic MTA worker in `core/`; reusable platform utilities in `lib/`
-- `src/mac/` - Accessibility API (AXAPI), clipboard fallback
+- `src/mac/` - N-API, event taps, and gesture detection in `selection_hook.mm`; AXAPI/clipboard retrieval and shared types in `core/` (no worker thread; retrieval stays on the JS thread); reusable platform utilities in `lib/`
 - `src/linux/` - X11 (Primary Selection via `protocols/x11.cc`), Wayland (via `protocols/wayland.cc`, in progress)
 
 ### Documentation Structure

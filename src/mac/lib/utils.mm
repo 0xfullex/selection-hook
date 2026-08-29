@@ -15,6 +15,10 @@ bool IsTrimmedEmpty(const std::string &text)
 NSRunningApplication *GetFrontApp()
 {
     // we need to run the run loop to update the frontmost application
+    // NSWorkspace learns about activation changes through notifications delivered on
+    // the run loop. Node's main thread never spins an NSRunLoop by itself, so without
+    // this one pass frontmostApplication can still name the app that was active when
+    // the process started. distantPast makes it a non-blocking single pass.
     [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantPast]];
 
     NSWorkspace *workspace = [NSWorkspace sharedWorkspace];
@@ -22,7 +26,7 @@ NSRunningApplication *GetFrontApp()
 }
 
 /**
- * Get the currently focused application
+ * Create the accessibility element for an application (+1 reference, caller releases)
  */
 AXUIElementRef GetAppElementFromFrontApp(NSRunningApplication *frontApp)
 {
@@ -108,7 +112,9 @@ bool IsIBeamCursor(NSCursor *cursor)
 
     NSPoint hotSpot = [cursor hotSpot];
 
-    // macOS 26 IBeam {12,11}
+    // Hot spots observed for the system I-beam. {4,9} and {16,16} come from earlier
+    // macOS releases; macOS 26 IBeam {12,11}. Keep every value: users run mixed
+    // versions, and a missing entry disables selection detection without any error.
     return NSEqualPoints(hotSpot, {4.0, 9.0}) || NSEqualPoints(hotSpot, {16.0, 16.0}) ||
            NSEqualPoints(hotSpot, {12.0, 11.0});
 }

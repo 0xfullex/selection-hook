@@ -5,10 +5,19 @@
  * on macOS using Accessibility APIs (AX API).
  *
  * Main components:
- * - TextSelectionHook class: Core implementation of the module
- * - Text selection detection: Uses Accessibility API
+ * - SelectionHook class (exported to JavaScript as TextSelectionHook): N-API
+ *   surface, lifecycle, gesture detection, and result bridging
+ * - Text selection detection: Uses Accessibility API (pipeline in core/engine.mm)
  * - Event monitoring: Mac event system for input monitoring
  * - Thread management: Background threads for hooks with thread-safe callbacks
+ *
+ * Threads:
+ * - JS thread: every N-API method, ProcessMouseEvent/ProcessKeyboardEvent (TSFN
+ *   callbacks), and the whole retrieval pipeline. Unlike Windows there is no
+ *   worker thread; see the note above GetSelectedText() in ProcessMouseEvent.
+ * - Event thread: MouseKeyboardEventThreadProc() owns a CFRunLoop with two
+ *   listen-only CGEventTaps. Tap callbacks must not touch N-API or block; they
+ *   snapshot event-time state into a context and hand it to a TSFN.
  *
  * Features:
  * - Detect text selections via mouse drag, double-click, or keyboard
@@ -37,49 +46,25 @@
 #import <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
 
+#import "core/engine.h"
+#import "core/types.h"
 #import "lib/clipboard.h"
 #import "lib/keyboard.h"
 #import "lib/utils.h"
 
 // Mouse&Keyboard hook constants
+// TSFN queue depths. When a queue is full, NonBlockingCall fails and the tap callback
+// drops that event instead of blocking the event thread (see MouseEventCallback).
 constexpr int DEFAULT_MOUSE_EVENT_QUEUE_SIZE = 512;
 constexpr int DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE = 128;
 
-// Mouse interaction constants
-constexpr int MIN_DRAG_DISTANCE = 8;
-constexpr uint64_t MAX_DRAG_TIME_MS = 15000;
-constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
-static uint64_t DOUBLE_CLICK_TIME_MS = 500;
-
-// Text selection detection type enum
-enum class SelectionDetectType
-{
-    None = 0,
-    Drag = 1,
-    DoubleClick = 2,
-    ShiftClick = 3
-};
-
-// Text selection method enum
-enum class SelectionMethod
-{
-    None = 0,
-    AXAPI = 11,
-    Clipboard = 99
-};
-
-/**
- * Position level enum for text selection tracking
- */
-enum class SelectionPositionLevel
-{
-    None = 0,         // No position information available
-    MouseSingle = 1,  // Only current mouse cursor position is known
-    MouseDual = 2,    // Mouse start and end positions are known
-    Full = 3,         // selection first paragraph's start and last paragraph's end
-                      // coordinates are known
-    Detailed = 4      // Detailed selection coordinates including all needed corner points
-};
+// Mouse interaction constants (distances in screen points, times in ms).
+// A mouse-up is classified as a selection gesture only when it satisfies these
+// thresholds AND the cursor was an I-beam at mouse-down or mouse-up time.
+constexpr int MIN_DRAG_DISTANCE = 8;          // Below this a press-release is a click, not a drag.
+constexpr uint64_t MAX_DRAG_TIME_MS = 15000;  // A button held longer than this is not a selection.
+constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;  // Max travel between the two clicks of a double-click.
+static uint64_t DOUBLE_CLICK_TIME_MS = 500;   // Fixed; [NSEvent doubleClickInterval] is not consulted.
 
 // Mouse button enum
 enum class MouseButton
@@ -95,60 +80,6 @@ enum class MouseButton
     // They share the same numeric values as Left/Middle but have different semantic meaning
     WheelVertical = 0,   // Same as Left, but used for vertical wheel events
     WheelHorizontal = 1  // Same as Middle, but used for horizontal wheel events
-};
-
-enum class FilterMode
-{
-    Default = 0,      // trigger anyway
-    IncludeList = 1,  // only trigger when the program name is in the include list
-    ExcludeList = 2   // only trigger when the program name is not in the exclude list
-};
-
-/**
- * Structure to store text selection information
- */
-struct TextSelectionInfo
-{
-    std::string text;         ///< Selected text content (UTF-8)
-    std::string programName;  ///< program name that triggered the selection
-
-    CGPoint startTop;     ///< First paragraph left-top (screen coordinates)
-    CGPoint startBottom;  ///< First paragraph left-bottom (screen coordinates)
-    CGPoint endTop;       ///< Last paragraph right-top (screen coordinates)
-    CGPoint endBottom;    ///< Last paragraph right-bottom (screen coordinates)
-
-    CGPoint mousePosStart;  ///< Mouse position when selection started (screen coordinates)
-    CGPoint mousePosEnd;    ///< Mouse position when selection ended (screen coordinates)
-
-    SelectionMethod method;
-    SelectionPositionLevel posLevel;
-
-    bool isFullscreen;  ///< Whether the current app's front window is in fullscreen mode, only for macOS
-
-    TextSelectionInfo() : method(SelectionMethod::None), posLevel(SelectionPositionLevel::None)
-    {
-        startTop = CGPointZero;
-        startBottom = CGPointZero;
-        endTop = CGPointZero;
-        endBottom = CGPointZero;
-        mousePosStart = CGPointZero;
-        mousePosEnd = CGPointZero;
-    }
-
-    void clear()
-    {
-        text.clear();
-        programName.clear();
-        startTop = CGPointZero;
-        startBottom = CGPointZero;
-        endTop = CGPointZero;
-        endBottom = CGPointZero;
-        mousePosStart = CGPointZero;
-        mousePosEnd = CGPointZero;
-        method = SelectionMethod::None;
-        posLevel = SelectionPositionLevel::None;
-        isFullscreen = false;
-    }
 };
 
 /**
@@ -183,6 +114,16 @@ struct KeyboardEventContext
 //=============================================================================
 // TextSelectionHook Class Declaration
 //=============================================================================
+/**
+ * @brief macOS N-API wrapper and lifecycle coordinator.
+ *
+ * Event tap callbacks capture event-time state, the wrapper classifies gestures on the
+ * JS thread and bridges results to JS, and core/ owns text retrieval. Both automatic
+ * (gesture) and synchronous (getCurrentSelection) retrieval run on the JS thread.
+ *
+ * @warning A single static currentInstance backs the TSFN callbacks. Creating two live
+ * instances is not supported: the second constructor silently repoints callbacks.
+ */
 class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 {
   public:
@@ -213,16 +154,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     // Core functionality methods
     bool GetSelectedText(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo);
-    bool GetTextViaAXAPI(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo);
-    bool GetTextViaClipboard(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo);
-    bool ShouldProcessViaClipboard(const std::string &programName);
-    // Get selected text from an accessibility element
-    bool GetSelectedTextFromElement(AXUIElementRef element, std::string &text);
-    // Set text range coordinates from an accessibility element
-    bool SetTextRangeCoordinates(AXUIElementRef element, TextSelectionInfo &selectionInfo);
-
-    bool IsInFilterList(const std::string &programName, const std::vector<std::string> &filterList);
-    bool SendCopyKey(pid_t pid = 0);
+    SelectionConfigSnapshot BuildSelectionConfigSnapshot() const;
 
     // Mouse and keyboard event handling methods
     void StartMouseKeyboardEventThread();
@@ -239,9 +171,14 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::ThreadSafeFunction mouse_tsfn;
     Napi::ThreadSafeFunction keyboard_tsfn;
 
+    // running: selection TSFN is alive. mouse_keyboard_running: input TSFNs are alive
+    // and tap callbacks may enqueue. Both are also cleared by the TSFN finalizers.
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
     // current App(myself) process pid
+    // Assigned on the event thread in MouseKeyboardEventThreadProc(), so it is 0 until
+    // start() has run. Copied into SelectionConfigSnapshot::runningPid so the clipboard
+    // fallback never sends Cmd+C to this process.
     pid_t running_pid = 0;
 
     CFRunLoopRef eventRunLoop = nullptr;
@@ -255,14 +192,25 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     std::thread event_thread;
 
-    bool is_triggered_by_user = false;  // user use GetCurrentSelection
+    // user use GetCurrentSelection
+    // Set around getCurrentSelection() for parity with Windows, where the engine uses it
+    // to relax cursor-shape checks. The macOS pipeline does not read it today.
+    bool is_triggered_by_user = false;
 
+    // Off by default; enableMouseMoveEvent() opts in. Checked on the event thread by
+    // MouseEventCallback() to skip kCGEventMouseMoved before any allocation happens.
     bool is_enabled_mouse_move_event = false;
 
-    // passive mode: only trigger when user call GetSelectionText
+    // passive mode: only trigger when user call getCurrentSelection()
+    // Gesture detection still tracks mouse state so a later switch back to active mode
+    // does not start from stale positions; it only skips retrieval.
     bool is_selection_passive_mode = false;
     bool is_enabled_clipboard = true;  // Enable by default
     // Store clipboard sequence number when mouse down
+    // NSPasteboard changeCount baseline for the clipboard fallback. Written from the
+    // mouse-down snapshot in ProcessMouseEvent(), then refreshed by GetSelectedText()
+    // after the fallback restores the pasteboard, so a change made by this library is
+    // never mistaken for a copy made by the user.
     int64_t clipboard_sequence = 0;
 
     // clipboard filter mode
@@ -273,7 +221,10 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     FilterMode global_filter_mode = FilterMode::Default;
     std::vector<std::string> global_filter_list;
 
-    // the text selection is processing, we should ignore some events
+    // the text selection is processing
+    // Reentrancy guard for GetSelectedText() only. Unlike the Windows retrieval gates,
+    // nothing on macOS suppresses input events while this is set; the whole pipeline
+    // runs synchronously on the JS thread, so it is normally never observed as true.
     std::atomic<bool> is_processing{false};
 
     // Mouse gesture tracking state. Instance members (not function-local statics)
@@ -297,7 +248,8 @@ Napi::FunctionReference SelectionHook::constructor;
 static SelectionHook *currentInstance = nullptr;
 
 /**
- * Constructor - initializes Mac accessibility
+ * Constructor - registers this instance for the static TSFN/event-tap callbacks.
+ * Accessibility permission is not requested here; see MacRequestProcessTrust().
  */
 SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<SelectionHook>(info)
 {
@@ -400,6 +352,10 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         Napi::Function callback = info[0u].As<Napi::Function>();
 
         // Create thread-safe function for text selection
+        // Three TSFNs share one JS callback so each event class has its own bounded
+        // queue: a burst of mouse-move events cannot push out keyboard or selection
+        // results. The selection queue is unbounded (0) because at most one result is
+        // produced per gesture.
         tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1,
                                              [this](Napi::Env) { running = false; });
 
@@ -429,7 +385,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         mouse_keyboard_running = true;
         running = true;
 
-        // Enable mouse move events by default when starting
+        // Mouse move events are off by default when starting; enableMouseMoveEvent()
+        // opts in. A restart therefore always begins with them disabled.
         is_enabled_mouse_move_event = false;
 
         // Start event monitoring - this should be last to ensure all resources are ready
@@ -615,6 +572,8 @@ void SelectionHook::SetGlobalFilterMode(const Napi::CallbackInfo &info)
 /**
  * NAPI: Set fine-tuned list based on type
  * NOTE: Implement this when macOS needs it
+ * Intentionally a no-op: docs/GUIDE.md states setFineTunedList() has no effect on
+ * macOS. Keep the method exported so index.js can call it unconditionally.
  */
 void SelectionHook::SetFineTunedList(const Napi::CallbackInfo &info)
 {
@@ -745,32 +704,11 @@ Napi::Value SelectionHook::MacRequestProcessTrust(const Napi::CallbackInfo &info
 }
 
 /**
- * Check if program name is in the filter list
- */
-bool SelectionHook::IsInFilterList(const std::string &programName, const std::vector<std::string> &filterList)
-{
-    // If filter list is empty, allow all
-    if (filterList.empty())
-        return false;
-
-    // Convert program name to lowercase for case-insensitive comparison
-    std::string lowerProgramName = programName;
-    std::transform(lowerProgramName.begin(), lowerProgramName.end(), lowerProgramName.begin(), ::tolower);
-
-    // Check if program name is in the filter list
-    for (const auto &filterItem : filterList)
-    {
-        if (lowerProgramName.find(filterItem) != std::string::npos)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/**
  * NAPI: Get the currently selected text from the active window
+ *
+ * Synchronous: runs the same AXAPI -> clipboard pipeline as a gesture, on the calling
+ * thread, and returns null when nothing non-blank was retrieved. It works before
+ * start() as long as accessibility permission is granted.
  */
 Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
 {
@@ -807,6 +745,10 @@ Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
 
 /**
  * Get selected text from the active application using multiple methods
+ *
+ * Shared entry for automatic (mouse gesture) and synchronous (getCurrentSelection)
+ * retrieval. Only the reentrancy gate and the clipboard sequence write-back live
+ * here; the retrieval pipeline itself is SelectionEngine in core/engine.mm.
  */
 bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo)
 {
@@ -818,694 +760,42 @@ bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectio
     else
         is_processing.store(true);
 
-    // Initialize structure
-    selectionInfo.clear();
-
-    if (!GetProgramNameFromFrontApp(frontApp, selectionInfo.programName))
-    {
-        // if bunldeId is not found,
-        // Could be system process, command line tool, background app or unsigned app
-        // We don't handle these cases
-        is_processing.store(false);
-        return false;
-    }
-    // should filter by global filter list
-    else if (global_filter_mode != FilterMode::Default)
-    {
-        bool isIn = IsInFilterList(selectionInfo.programName, global_filter_list);
-
-        if ((global_filter_mode == FilterMode::IncludeList && !isIn) ||
-            (global_filter_mode == FilterMode::ExcludeList && isIn))
-        {
-            is_processing.store(false);
-            return false;
-        }
-    }
-
-    bool result = false;
-    // First try Accessibility API (supported by modern applications)
-    if (GetTextViaAXAPI(frontApp, selectionInfo))
-    {
-        selectionInfo.method = SelectionMethod::AXAPI;
-        result = true;
-    }
-
-    // Last resort: try to get text using clipboard and Cmd+C if enabled
-    if (!result && ShouldProcessViaClipboard(selectionInfo.programName) && GetTextViaClipboard(frontApp, selectionInfo))
-    {
-        selectionInfo.method = SelectionMethod::Clipboard;
-        result = true;
-    }
+    SelectionConfigSnapshot config = BuildSelectionConfigSnapshot();
+    SelectionEngine engine;
+    int64_t endingClipboardSequence = config.clipboardSequence;
+    bool result = engine.GetSelectedText(frontApp, selectionInfo, config, &endingClipboardSequence);
+    // The clipboard fallback refreshes the sequence after every restore. Store it so the
+    // next gesture compares against the value produced by the library, not by the user.
+    clipboard_sequence = endingClipboardSequence;
 
     is_processing.store(false);
 
-    if (result)
-        selectionInfo.isFullscreen = IsWindowFullscreen(frontApp);
-
     return result;
 }
 
 /**
- * Get text selection via Accessibility API
+ * @brief Copy all mutable selection settings into a value-only retrieval snapshot.
+ * @return Configuration the engine can use without reading SelectionHook members.
  */
-bool SelectionHook::GetTextViaAXAPI(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo)
+SelectionConfigSnapshot SelectionHook::BuildSelectionConfigSnapshot() const
 {
-    if (!frontApp)
-    {
-        return false;
-    }
-
-    AXUIElementRef appElement = GetAppElementFromFrontApp(frontApp);
-    AXUIElementRef focusedElement = GetFocusedElementFromAppElement(appElement);
-
-    // if we can't find focusedElement, we'll fallback to find focusedWindow
-    if (!focusedElement)
-    {
-        focusedElement = GetFrontWindowElementFromAppElement(appElement);
-
-        if (!focusedElement)
-        {
-            CFRelease(appElement);
-            return false;
-        }
-    }
-
-    bool result = false;
-
-    // Strategy 1: Try to get selected text from the focused element
-    std::string selectedText;
-    if (GetSelectedTextFromElement(focusedElement, selectedText))
-    {
-        if (!selectedText.empty() && !IsTrimmedEmpty(selectedText))
-        {
-            selectionInfo.text = selectedText;
-
-            // Try to get selection bounds and set coordinates in selectionInfo
-            if (!SetTextRangeCoordinates(focusedElement, selectionInfo))
-            {
-                // No position information available, but we have text
-                selectionInfo.posLevel = SelectionPositionLevel::None;
-            }
-
-            result = true;
-        }
-    }
-
-    // Strategy 2: If the focused element doesn't have selected text, try to traverse child elements
-    if (!result)
-    {
-        CFArrayRef children = nullptr;
-        AXError error = AXUIElementCopyAttributeValue(focusedElement, kAXChildrenAttribute, (CFTypeRef *)&children);
-
-        if (error == kAXErrorSuccess && children)
-        {
-            CFIndex childCount = CFArrayGetCount(children);
-
-            // Traverse child elements to find text selection
-            for (CFIndex i = 0; i < childCount && !result; i++)
-            {
-                AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, i);
-                if (child)
-                {
-                    std::string childText;
-                    if (GetSelectedTextFromElement(child, childText))
-                    {
-                        if (!childText.empty() && !IsTrimmedEmpty(childText))
-                        {
-                            selectionInfo.text = childText;
-
-                            // Try to get selection bounds from child and set coordinates in selectionInfo
-                            if (!SetTextRangeCoordinates(child, selectionInfo))
-                            {
-                                selectionInfo.posLevel = SelectionPositionLevel::None;
-                            }
-
-                            result = true;
-                        }
-                    }
-                }
-            }
-
-            CFRelease(children);
-        }
-    }
-
-    // Strategy 3: Walk up the ancestor chain and retry
-    // In web browsers (Chromium), a container with tabindex receives AX focus, and a selection
-    // spanning multiple child nodes (e.g. across table rows) is only reported by an ancestor
-    // (usually the AXWebArea). See issue #18.
-    if (!result)
-    {
-        // The web area is usually within a few levels above the focused element
-        const int maxWalkUpLevels = 10;
-
-        AXUIElementRef current = focusedElement;
-        CFRetain(current);
-
-        for (int level = 0; level < maxWalkUpLevels && !result; level++)
-        {
-            AXUIElementRef parent = nullptr;
-            AXError error = AXUIElementCopyAttributeValue(current, kAXParentAttribute, (CFTypeRef *)&parent);
-            CFRelease(current);
-            current = nullptr;
-
-            if (error != kAXErrorSuccess || !parent)
-                break;
-
-            current = parent;
-
-            std::string ancestorText;
-            if (GetSelectedTextFromElement(current, ancestorText))
-            {
-                if (!ancestorText.empty() && !IsTrimmedEmpty(ancestorText))
-                {
-                    selectionInfo.text = ancestorText;
-
-                    // Try to get selection bounds from the ancestor and set coordinates in selectionInfo
-                    if (!SetTextRangeCoordinates(current, selectionInfo))
-                    {
-                        selectionInfo.posLevel = SelectionPositionLevel::None;
-                    }
-
-                    result = true;
-                }
-            }
-        }
-
-        if (current)
-            CFRelease(current);
-    }
-
-    // if we can't get text by AXAPI, we have to do final try for special cases
-    if (!result)
-    {
-        // Chrome/Chromium: set "AXEnhancedUserInterface" to true to enable AXAPI
-        AXUIElementSetAttributeValue(appElement, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
-        // Electron Apps: set "AXManualAccessibility" to true to enable AXAPI
-        AXUIElementSetAttributeValue(appElement, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
-    }
-
-    // Clean up
-    CFRelease(focusedElement);
-    CFRelease(appElement);
-
-    return result;
-}
-
-/**
- * Get text using clipboard and Cmd+C as a last resort
- */
-bool SelectionHook::GetTextViaClipboard(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo)
-{
-    // currently, we don't support clipboard of the same process, we will fix it in future time
-    if (frontApp.processIdentifier == running_pid)
-        return false;
-
-    int64_t newClipboardSequence = GetClipboardSequence();
-
-    // Check if clipboard sequence number has changed since mouse down
-    // if it's changed, it means user has copied something, we can read it directly
-    if (newClipboardSequence != clipboard_sequence)
-    {
-        // Read the new clipboard content
-        std::string newContent;
-        if (ReadClipboard(newContent))
-        {
-            selectionInfo.text = newContent;
-            return true;
-        }
-    }
-
-    // no new copied message or read clipboard failed, we need to send Cmd+C to copy
-    clipboard_sequence = newClipboardSequence;
-    // Store ALL current clipboard content to restore later (all formats, not just text)
-    ClipboardBackup clipboardBackup = BackupClipboard();
-
-    // Send Cmd+C to copy selected text
-    if (!SendCopyKey(frontApp.processIdentifier))
-        return false;
-
-    // Check clipboard sequence number in a loop with 10ms interval
-    // This gives the copy operation up to 100ms to complete
-    bool clipboardChanged = false;
-    for (int i = 0; i < 10; i++)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        newClipboardSequence = GetClipboardSequence();
-        if (newClipboardSequence != clipboard_sequence)
-        {
-            clipboardChanged = true;
-            break;
-        }
-    }
-
-    if (!clipboardChanged)
-    {
-        if (clipboardBackup.HasData())
-        {
-            RestoreClipboard(clipboardBackup);
-            clipboard_sequence = GetClipboardSequence();
-        }
-        return false;
-    }
-
-    // Read the new clipboard content
-    std::string newContent;
-    if (!ReadClipboard(newContent) || IsTrimmedEmpty(newContent))
-    {
-        // Restore original clipboard if possible (all formats)
-        if (clipboardBackup.HasData())
-        {
-            RestoreClipboard(clipboardBackup);
-            clipboard_sequence = GetClipboardSequence();
-        }
-
-        return false;
-    }
-
-    // Store the copied text
-    selectionInfo.text = newContent;
-
-    // Restore original clipboard content (all formats)
-    if (clipboardBackup.HasData())
-    {
-        RestoreClipboard(clipboardBackup);
-        clipboard_sequence = GetClipboardSequence();
-    }
-
-    return true;
-}
-
-/**
- * Check if we should process GetTextViaClipboard
- */
-bool SelectionHook::ShouldProcessViaClipboard(const std::string &programName)
-{
-    if (!is_enabled_clipboard)
-        return false;
-
-    bool result = false;
-    switch (clipboard_filter_mode)
-    {
-        case FilterMode::Default:
-            result = true;
-            break;
-        case FilterMode::IncludeList:
-            result = IsInFilterList(programName, clipboard_filter_list);
-            break;
-        case FilterMode::ExcludeList:
-            result = !IsInFilterList(programName, clipboard_filter_list);
-            break;
-    }
-
-    if (!result)
-        return false;
-
-    return true;
-}
-
-/**
- * Send copy key combination (Cmd+C) using Core Graphics events
- *
- * @param pid The process ID to send the event to. If 0 (default not set),
- * the event will be sent to the current process.
- */
-bool SelectionHook::SendCopyKey(pid_t pid)
-{
-    // Create key down event for Cmd+C
-    CGEventRef keyDownEvent = CGEventCreateKeyboardEvent(nullptr, kVK_ANSI_C, true);
-    if (!keyDownEvent)
-    {
-        return false;
-    }
-
-    // Set Command key modifier flag
-    CGEventSetFlags(keyDownEvent, kCGEventFlagMaskCommand);
-
-    // Create key up event for Cmd+C
-    CGEventRef keyUpEvent = CGEventCreateKeyboardEvent(nullptr, kVK_ANSI_C, false);
-    if (!keyUpEvent)
-    {
-        CFRelease(keyDownEvent);
-        return false;
-    }
-
-    // Set Command key modifier flag for key up event as well
-    CGEventSetFlags(keyUpEvent, kCGEventFlagMaskCommand);
-
-    // TODO Not to blink the EDIT menu
-    if (pid != 0)
-    {
-        CGEventPostToPid(pid, keyDownEvent);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        CGEventPostToPid(pid, keyUpEvent);
-    }
-    else
-    {
-        // Post the events to the system
-        CGEventPost(kCGHIDEventTap, keyDownEvent);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        CGEventPost(kCGHIDEventTap, keyUpEvent);
-    }
-
-    // Clean up
-    CFRelease(keyDownEvent);
-    CFRelease(keyUpEvent);
-
-    return true;
-}
-
-/**
- * Get text selection from an accessibility element
- */
-bool SelectionHook::GetSelectedTextFromElement(AXUIElementRef element, std::string &text)
-{
-    if (!element)
-    {
-        return false;
-    }
-
-    // Try to get selected text first
-    CFTypeRef selectedTextRef = nullptr;
-    AXError error = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, &selectedTextRef);
-
-    if (error == kAXErrorSuccess && selectedTextRef)
-    {
-        CFTypeID typeID = CFGetTypeID(selectedTextRef);
-
-        // Handle CFStringRef (most common case)
-        if (typeID == CFStringGetTypeID())
-        {
-            CFStringRef selectedText = (CFStringRef)selectedTextRef;
-            CFIndex length = CFStringGetLength(selectedText);
-            if (length > 0)
-            {
-                CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-                char *buffer = new char[maxSize];
-
-                if (CFStringGetCString(selectedText, buffer, maxSize, kCFStringEncodingUTF8))
-                {
-                    text = std::string(buffer);
-                    delete[] buffer;
-                    CFRelease(selectedTextRef);
-                    return !text.empty();
-                }
-
-                delete[] buffer;
-            }
-        }
-        // Handle CFNumberRef (for numeric input fields)
-        else if (typeID == CFNumberGetTypeID())
-        {
-            CFNumberRef number = (CFNumberRef)selectedTextRef;
-
-            if (CFNumberIsFloatType(number))
-            {
-                double doubleValue;
-                if (CFNumberGetValue(number, kCFNumberDoubleType, &doubleValue))
-                {
-                    text = std::to_string(doubleValue);
-                    CFRelease(selectedTextRef);
-                    return !text.empty();
-                }
-            }
-            else
-            {
-                long longValue;
-                if (CFNumberGetValue(number, kCFNumberLongType, &longValue))
-                {
-                    text = std::to_string(longValue);
-                    CFRelease(selectedTextRef);
-                    return !text.empty();
-                }
-            }
-        }
-        // For unsupported types, just release and continue to next strategy
-        CFRelease(selectedTextRef);
-    }
-
-    // If no selected text, try to get value and check if there's a selection range
-    CFTypeRef valueRef = nullptr;
-    error = AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueRef);
-
-    if (error == kAXErrorSuccess && valueRef)
-    {
-        CFTypeID valueTypeID = CFGetTypeID(valueRef);
-
-        // Convert different types to string for range processing
-        if (valueTypeID == CFStringGetTypeID())
-        {
-            CFStringRef value = (CFStringRef)valueRef;
-            //  Try to get selected text range
-            CFRange selectedRange = {0, 0};
-            AXValueRef rangeValue = nullptr;
-            error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&rangeValue);
-
-            if (error == kAXErrorSuccess && rangeValue)
-            {
-                if (AXValueGetValue(rangeValue, kAXValueTypeCFRange, &selectedRange))
-                {
-                    // Validate and adjust the range bounds to prevent crashes
-                    CFIndex valueLength = CFStringGetLength(value);
-
-                    // Handle empty string case - no valid selection possible
-                    if (valueLength <= 0)
-                    {
-                        CFRelease(rangeValue);
-                        CFRelease(valueRef);
-                        return false;
-                    }
-
-                    // Ensure location is within bounds
-                    if (selectedRange.location < 0)
-                    {
-                        selectedRange.location = 0;
-                    }
-                    else if (selectedRange.location >= valueLength)
-                    {
-                        // For non-empty strings, clamp to last valid position
-                        selectedRange.location = valueLength - 1;
-                    }
-
-                    // Ensure length is positive and doesn't exceed remaining string
-                    if (selectedRange.length <= 0)
-                    {
-                        CFRelease(rangeValue);
-                        CFRelease(valueRef);
-                        return false;
-                    }
-
-                    if (selectedRange.location + selectedRange.length > valueLength)
-                    {
-                        selectedRange.length = valueLength - selectedRange.location;
-                    }
-
-                    // Final check: ensure we have a valid range
-                    if (selectedRange.length <= 0)
-                    {
-                        CFRelease(rangeValue);
-                        CFRelease(valueRef);
-                        return false;
-                    }
-
-                    // Only proceed if we still have a valid range after adjustment
-                    //  Extract selected substring
-                    CFStringRef selectedSubstring =
-                        CFStringCreateWithSubstring(kCFAllocatorDefault, value, selectedRange);
-                    if (selectedSubstring)
-                    {
-                        CFIndex length = CFStringGetLength(selectedSubstring);
-                        CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-                        char *buffer = new char[maxSize];
-
-                        if (CFStringGetCString(selectedSubstring, buffer, maxSize, kCFStringEncodingUTF8))
-                        {
-                            text = std::string(buffer);
-                            delete[] buffer;
-                            CFRelease(selectedSubstring);
-                            CFRelease(rangeValue);
-                            CFRelease(valueRef);
-                            return !text.empty();
-                        }
-
-                        delete[] buffer;
-                        CFRelease(selectedSubstring);
-                    }
-                }
-                CFRelease(rangeValue);
-            }
-
-            CFRelease(valueRef);
-        }
-        else
-        {
-            // Release valueRef for non-CFString types to prevent memory leak
-            CFRelease(valueRef);
-        }
-    }
-
-    return false;
-}
-
-/**
- * Get bounds/coordinates of a text selection from an accessibility element and set coordinates in selectionInfo
- */
-bool SelectionHook::SetTextRangeCoordinates(AXUIElementRef element, TextSelectionInfo &selectionInfo)
-{
-    if (!element)
-        return false;
-
-    // Strategy 1: Try to get precise coordinates by splitting the selection into smaller ranges
-    AXValueRef selectedRangeValue = nullptr;
-
-    AXError error =
-        AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&selectedRangeValue);
-    if (error == kAXErrorSuccess && selectedRangeValue)
-    {
-        CFRange selectedRange = {0, 0};
-        if (AXValueGetValue(selectedRangeValue, kAXValueTypeCFRange, &selectedRange))
-        {
-            if (selectedRange.length > 0)
-            {
-                // Try to get bounds for first and last character of the selection
-                CFRange firstCharRange = {selectedRange.location, 1};
-                CFRange lastCharRange = {selectedRange.location + selectedRange.length - 1, 1};
-
-                AXValueRef firstCharRangeValue = AXValueCreate(kAXValueTypeCFRange, &firstCharRange);
-                AXValueRef lastCharRangeValue = AXValueCreate(kAXValueTypeCFRange, &lastCharRange);
-
-                if (firstCharRangeValue && lastCharRangeValue)
-                {
-                    // Get bounds for first and last characters
-                    AXValueRef firstCharBoundsValue = nullptr;
-                    AXValueRef lastCharBoundsValue = nullptr;
-
-                    AXError firstCharBoundsError = AXUIElementCopyParameterizedAttributeValue(
-                        element, kAXBoundsForRangeParameterizedAttribute, firstCharRangeValue,
-                        (CFTypeRef *)&firstCharBoundsValue);
-                    AXError lastCharBoundsError = AXUIElementCopyParameterizedAttributeValue(
-                        element, kAXBoundsForRangeParameterizedAttribute, lastCharRangeValue,
-                        (CFTypeRef *)&lastCharBoundsValue);
-
-                    if (firstCharBoundsError == kAXErrorSuccess && firstCharBoundsValue &&
-                        lastCharBoundsError == kAXErrorSuccess && lastCharBoundsValue)
-                    {
-                        CGRect firstCharRect = CGRectZero;
-                        CGRect lastCharRect = CGRectZero;
-
-                        if (AXValueGetValue(firstCharBoundsValue, kAXValueTypeCGRect, &firstCharRect) &&
-                            AXValueGetValue(lastCharBoundsValue, kAXValueTypeCGRect, &lastCharRect))
-                        {
-                            // Validate bounds similar to Windows version
-                            if (firstCharRect.size.width > 1.0 && firstCharRect.size.height > 0 &&
-                                firstCharRect.size.height < 100.0 && lastCharRect.size.width > 1.0 &&
-                                lastCharRect.size.height > 0 && lastCharRect.size.height < 100.0 &&
-                                firstCharRect.origin.x >= 0 && firstCharRect.origin.y >= 0 &&
-                                lastCharRect.origin.x >= 0 && lastCharRect.origin.y >= 0 &&
-                                firstCharRect.origin.x < 10000 && firstCharRect.origin.y < 10000 &&
-                                lastCharRect.origin.x < 10000 && lastCharRect.origin.y < 10000)
-                            {
-                                // Set coordinates based on first and last character bounds
-                                // First paragraph left-top (first character's top-left)
-                                selectionInfo.startTop = CGPointMake(firstCharRect.origin.x, firstCharRect.origin.y);
-
-                                // First paragraph left-bottom (first character's bottom-left)
-                                selectionInfo.startBottom = CGPointMake(
-                                    firstCharRect.origin.x, firstCharRect.origin.y + firstCharRect.size.height);
-
-                                // Last paragraph right-top (last character's top-right)
-                                selectionInfo.endTop =
-                                    CGPointMake(lastCharRect.origin.x + lastCharRect.size.width, lastCharRect.origin.y);
-
-                                // Last paragraph right-bottom (last character's bottom-right)
-                                selectionInfo.endBottom = CGPointMake(lastCharRect.origin.x + lastCharRect.size.width,
-                                                                      lastCharRect.origin.y + lastCharRect.size.height);
-
-                                selectionInfo.posLevel = SelectionPositionLevel::Full;
-
-                                // Clean up resources
-                                CFRelease(firstCharBoundsValue);
-                                CFRelease(lastCharBoundsValue);
-                                CFRelease(firstCharRangeValue);
-                                CFRelease(lastCharRangeValue);
-                                CFRelease(selectedRangeValue);
-
-                                return true;
-                            }
-                        }
-
-                        if (firstCharBoundsValue)
-                            CFRelease(firstCharBoundsValue);
-                        if (lastCharBoundsValue)
-                            CFRelease(lastCharBoundsValue);
-                    }
-
-                    if (firstCharRangeValue)
-                        CFRelease(firstCharRangeValue);
-                    if (lastCharRangeValue)
-                        CFRelease(lastCharRangeValue);
-                }
-                else
-                {
-                    if (firstCharRangeValue)
-                        CFRelease(firstCharRangeValue);
-                    if (lastCharRangeValue)
-                        CFRelease(lastCharRangeValue);
-                }
-            }
-        }
-        CFRelease(selectedRangeValue);
-        selectedRangeValue = nullptr;
-    }
-
-    // Strategy 2: Try to get selected text range bounds using kAXBoundsForRangeParameterizedAttribute
-    error = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, (CFTypeRef *)&selectedRangeValue);
-    if (error == kAXErrorSuccess && selectedRangeValue)
-    {
-        CFRange selectedRange = {0, 0};
-        if (AXValueGetValue(selectedRangeValue, kAXValueTypeCFRange, &selectedRange))
-        {
-            if (selectedRange.length > 0)
-            {
-                // Get bounds for the text range
-                AXValueRef boundsValue = nullptr;
-                error = AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute,
-                                                                   selectedRangeValue, (CFTypeRef *)&boundsValue);
-                if (error == kAXErrorSuccess && boundsValue)
-                {
-                    CGRect rect = CGRectZero;
-                    if (AXValueGetValue(boundsValue, kAXValueTypeCGRect, &rect))
-                    {
-                        // Validate the bounds - some apps return invalid coordinates
-                        if (rect.size.width > 0 && rect.size.height > 0 && rect.origin.x >= 0 && rect.origin.y >= 0 &&
-                            rect.origin.x < 10000 && rect.origin.y < 10000)  // Reasonable screen bounds
-                        {
-                            // Set position information based on bounds
-                            selectionInfo.startTop = CGPointMake(rect.origin.x, rect.origin.y);
-                            selectionInfo.startBottom = CGPointMake(rect.origin.x, rect.origin.y + rect.size.height);
-                            selectionInfo.endTop = CGPointMake(rect.origin.x + rect.size.width, rect.origin.y);
-                            selectionInfo.endBottom =
-                                CGPointMake(rect.origin.x + rect.size.width, rect.origin.y + rect.size.height);
-                            selectionInfo.posLevel = SelectionPositionLevel::Full;
-
-                            CFRelease(boundsValue);
-                            CFRelease(selectedRangeValue);
-                            return true;
-                        }
-                    }
-                    CFRelease(boundsValue);
-                }
-            }
-        }
-        CFRelease(selectedRangeValue);
-    }
-
-    return false;
+    SelectionConfigSnapshot config;
+    config.clipboardEnabled = is_enabled_clipboard;
+    config.clipboardFilterMode = clipboard_filter_mode;
+    config.clipboardFilterList = clipboard_filter_list;
+    config.globalFilterMode = global_filter_mode;
+    config.globalFilterList = global_filter_list;
+    config.clipboardSequence = clipboard_sequence;
+    config.runningPid = running_pid;
+    return config;
 }
 
 /**
  * Create JavaScript object with selection result
+ *
+ * @warning The property names and numeric enum values form the public
+ * TextSelectionData contract (index.d.ts, docs/API.md) and must match the Windows and
+ * Linux builders. isFullscreen is a macOS-only addition.
  */
 Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const TextSelectionInfo &selectionInfo)
 {
@@ -1704,6 +994,11 @@ void SelectionHook::MouseKeyboardEventThreadProc()
 
 /**
  * Process mouse event on main thread and detect text selection
+ *
+ * Runs on the JS thread as the mouse TSFN callback. It owns the gesture state machine
+ * (drag / double-click / shift-click), triggers retrieval, and emits the mouse-event
+ * object. Every timing and cursor decision below uses values captured at event time in
+ * MouseEventCallback(), never the current system state.
  */
 void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *pMouseEvent)
 {
@@ -1859,6 +1154,11 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     }
 
     // Check for text selection
+    // Retrieval runs synchronously on the JS thread here. The clipboard fallback can
+    // block for ~105 ms, and an AX call into an unresponsive app blocks until the AX
+    // messaging timeout. Windows moved this to a worker (issue #17); macOS has not.
+    // If that is ever done here, GetFrontApp() must stay on this thread because it
+    // pumps the caller's NSRunLoop (see lib/utils.mm).
     if (shouldDetectSelection)
     {
         TextSelectionInfo selectionInfo;
@@ -2034,6 +1334,12 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
 
 /**
  * Mouse event callback
+ *
+ * Runs on the event thread inside the CGEventTap dispatch. It must return quickly and
+ * must not touch N-API: everything JS-visible is deferred through mouse_tsfn.
+ *
+ * @warning The tap is listen-only, so the returned event is never modified. Keep it
+ * that way; an active tap would let a slow callback delay input for the whole session.
  */
 CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon)
 {
@@ -2042,6 +1348,9 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
         return event;
 
     // Re-enable the event tap if it was disabled by macOS due to timeout or user input
+    // macOS disables a tap whose callback is too slow (or on secure input) and reports
+    // it with these pseudo-events. Without re-enabling, input monitoring stops silently
+    // for the rest of the session.
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput)
     {
         CGEventTapEnable(hook->mouseEventTap, true);
@@ -2146,6 +1455,10 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
 
 /**
  * Keyboard event callback
+ *
+ * Event-thread contract is the same as MouseEventCallback(): fast, no N-API, defer via
+ * keyboard_tsfn. Modifier keys arrive as kCGEventFlagsChanged and are turned into
+ * key-down/key-up by ProcessKeyboardEvent().
  */
 CGEventRef SelectionHook::KeyboardEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon)
 {
@@ -2154,6 +1467,7 @@ CGEventRef SelectionHook::KeyboardEventCallback(CGEventTapProxy proxy, CGEventTy
         return event;
 
     // Re-enable the event tap if it was disabled by macOS due to timeout or user input
+    // (see MouseEventCallback for why this is required)
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput)
     {
         CGEventTapEnable(hook->keyboardEventTap, true);

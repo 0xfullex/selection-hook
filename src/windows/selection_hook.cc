@@ -261,7 +261,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     bool ShouldKeyInterruptViaClipboard();
 
     // Mouse and keyboard event handling methods
-    static DWORD WINAPI MouseKeyboardHookThreadProc(LPVOID lpParam);
+    void MouseKeyboardHookThreadProc();
+    void StopMouseKeyboardHookThread();
+    void ReleaseThreadSafeFunctions();
     static LRESULT CALLBACK MouseHookCallback(int nCode, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam);
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
@@ -280,8 +282,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
 
-    HANDLE mouse_keyboard_hook_thread = NULL;
-    DWORD mouse_keyboard_thread_id = 0;
+    std::thread mouse_keyboard_hook_thread;
+    HANDLE mouse_keyboard_ready_event = NULL;
+    HANDLE mouse_keyboard_stop_event = NULL;
 
     // the text selection is processing, we should ignore some events
     std::atomic<bool> is_processing{false};
@@ -411,39 +414,12 @@ SelectionHook::~SelectionHook()
         currentInstance = nullptr;
     }
 
-    // Stop worker thread
-    bool was_running = running.exchange(false);
-    if (was_running && tsfn)
-    {
-        tsfn.Release();
-    }
+    running = false;
+    mouse_keyboard_running = false;
 
-    // Stop mouse/keyboard hooks
-    bool mouse_keyboard_was_running = mouse_keyboard_running.exchange(false);
-    if (mouse_keyboard_was_running)
-    {
-        if (mouse_keyboard_thread_id != 0)
-        {
-            PostThreadMessageW(mouse_keyboard_thread_id, WM_USER, NULL, NULL);
-        }
-
-        if (mouse_keyboard_hook_thread)
-        {
-            WaitForSingleObject(mouse_keyboard_hook_thread, 1000);
-            CloseHandle(mouse_keyboard_hook_thread);
-            mouse_keyboard_hook_thread = NULL;
-        }
-
-        if (mouse_tsfn)
-        {
-            mouse_tsfn.Release();
-        }
-
-        if (keyboard_tsfn)
-        {
-            keyboard_tsfn.Release();
-        }
-    }
+    // The hook thread must stop before the thread-safe functions it uses are released.
+    StopMouseKeyboardHookThread();
+    ReleaseThreadSafeFunctions();
 
     // Release UI Automation
     if (pUIAutomation)
@@ -514,8 +490,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     // Create thread-safe function from JavaScript callback
     Napi::Function callback = info[0u].As<Napi::Function>();
 
-    tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1,
-                                         [this](Napi::Env) { running = false; });
+    tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1);
 
     // Set up mouse and keyboard hooks
     if (!mouse_keyboard_running)
@@ -523,14 +498,12 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         // Create thread-safe function for mouse events
         mouse_tsfn = Napi::ThreadSafeFunction::New(env,
                                                    callback,  // Same callback as text selection
-                                                   "MouseEventCallback", DEFAULT_MOUSE_EVENT_QUEUE_SIZE, 1,
-                                                   [this](Napi::Env) { mouse_keyboard_running = false; });
+                                                   "MouseEventCallback", DEFAULT_MOUSE_EVENT_QUEUE_SIZE, 1);
 
         // Create thread-safe function for keyboard events
         keyboard_tsfn = Napi::ThreadSafeFunction::New(env,
                                                       callback,  // Same callback as text selection
-                                                      "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
-                                                      [this](Napi::Env) { mouse_keyboard_running = false; });
+                                                      "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1);
 
         // Set running flag
         mouse_keyboard_running = true;
@@ -547,22 +520,42 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     last_window_rect = {0};
     mouse_button_pressing_flag.store(0);
 
-    // Create Windows thread for mouse/keyboard hooks
-    mouse_keyboard_hook_thread =
-        CreateThread(NULL, 0, MouseKeyboardHookThreadProc, this, CREATE_SUSPENDED, &mouse_keyboard_thread_id);
-
-    if (!mouse_keyboard_hook_thread)
+    // Create fresh synchronization events for this thread session. The stop event
+    // is manual-reset so a request remains visible until the hook thread observes it.
+    mouse_keyboard_ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    mouse_keyboard_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!mouse_keyboard_ready_event || !mouse_keyboard_stop_event)
     {
         mouse_keyboard_running = false;
-        mouse_tsfn.Release();
-        keyboard_tsfn.Release();
-        tsfn.Release();
+        StopMouseKeyboardHookThread();
+        ReleaseThreadSafeFunctions();
         Napi::Error::New(env, "Failed to create mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
     }
 
-    // Start the thread and set running flag
-    ResumeThread(mouse_keyboard_hook_thread);
+    try
+    {
+        mouse_keyboard_hook_thread = std::thread(&SelectionHook::MouseKeyboardHookThreadProc, this);
+    }
+    catch (...)
+    {
+        mouse_keyboard_running = false;
+        StopMouseKeyboardHookThread();
+        ReleaseThreadSafeFunctions();
+        Napi::Error::New(env, "Failed to create mouse keyboard hook thread").ThrowAsJavaScriptException();
+        return;
+    }
+
+    // Wait until PeekMessage has created the hook thread's message queue.
+    if (WaitForSingleObject(mouse_keyboard_ready_event, INFINITE) != WAIT_OBJECT_0)
+    {
+        mouse_keyboard_running = false;
+        StopMouseKeyboardHookThread();
+        ReleaseThreadSafeFunctions();
+        Napi::Error::New(env, "Failed to initialize mouse keyboard hook thread").ThrowAsJavaScriptException();
+        return;
+    }
+
     running = true;
 }
 
@@ -577,41 +570,11 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         return;
     }
 
-    // Set running flag to false and release thread-safe function
+    // Signal the hook thread, join it, then release the thread-safe functions it used.
     running = false;
-    if (tsfn)
-    {
-        tsfn.Release();
-    }
-
-    // Stop mouse and keyboard hooks
-    if (mouse_keyboard_running)
-    {
-        mouse_keyboard_running = false;
-
-        if (mouse_keyboard_thread_id != 0)
-        {
-            PostThreadMessageW(mouse_keyboard_thread_id, WM_USER, NULL, NULL);
-        }
-
-        // Wait for thread to finish with timeout
-        if (mouse_keyboard_hook_thread)
-        {
-            WaitForSingleObject(mouse_keyboard_hook_thread, 1000);
-            CloseHandle(mouse_keyboard_hook_thread);
-            mouse_keyboard_hook_thread = NULL;
-        }
-
-        // Release thread-safe functions
-        if (mouse_tsfn)
-        {
-            mouse_tsfn.Release();
-        }
-        if (keyboard_tsfn)
-        {
-            keyboard_tsfn.Release();
-        }
-    }
+    mouse_keyboard_running = false;
+    StopMouseKeyboardHookThread();
+    ReleaseThreadSafeFunctions();
 }
 
 /**
@@ -2350,13 +2313,66 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
 }
 
 /**
+ * Stop and join the mouse/keyboard hook thread, then close its session events.
+ */
+void SelectionHook::StopMouseKeyboardHookThread()
+{
+    if (mouse_keyboard_stop_event)
+    {
+        SetEvent(mouse_keyboard_stop_event);
+    }
+
+    if (mouse_keyboard_hook_thread.joinable())
+    {
+        mouse_keyboard_hook_thread.join();
+    }
+
+    if (mouse_keyboard_ready_event)
+    {
+        CloseHandle(mouse_keyboard_ready_event);
+        mouse_keyboard_ready_event = NULL;
+    }
+
+    if (mouse_keyboard_stop_event)
+    {
+        CloseHandle(mouse_keyboard_stop_event);
+        mouse_keyboard_stop_event = NULL;
+    }
+}
+
+/**
+ * Release all JavaScript callbacks after the hook thread has stopped using them.
+ */
+void SelectionHook::ReleaseThreadSafeFunctions()
+{
+    if (tsfn)
+    {
+        tsfn.Release();
+        tsfn = nullptr;
+    }
+    if (mouse_tsfn)
+    {
+        mouse_tsfn.Release();
+        mouse_tsfn = nullptr;
+    }
+    if (keyboard_tsfn)
+    {
+        keyboard_tsfn.Release();
+        keyboard_tsfn = nullptr;
+    }
+}
+
+/**
  * Thread procedure for mouse and keyboard hooks
  */
-DWORD WINAPI SelectionHook::MouseKeyboardHookThreadProc(LPVOID lpParam)
+void SelectionHook::MouseKeyboardHookThreadProc()
 {
-    SelectionHook *instance = static_cast<SelectionHook *>(lpParam);
+    MSG msg = {};
 
-    MSG msg;
+    // Force Windows to create this thread's message queue before Start() returns.
+    PeekMessageW(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE);
+    SetEvent(mouse_keyboard_ready_event);
+
     HHOOK mouseHook = SetWindowsHookEx(WH_MOUSE_LL, MouseHookCallback, NULL, 0);
     HHOOK keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardHookCallback, NULL, 0);
 
@@ -2369,30 +2385,51 @@ DWORD WINAPI SelectionHook::MouseKeyboardHookThreadProc(LPVOID lpParam)
         fprintf(stderr, "[selection-hook] SetWindowsHookEx(WH_KEYBOARD_LL) failed, error: %lu\n", GetLastError());
     }
 
-    // Message loop
-    while (GetMessage(&msg, NULL, 0, 0) > 0)
+    // Wait for either a sticky stop request or input for the hook message queue.
+    DWORD waitFlags = MWMO_INPUTAVAILABLE;
+    while (true)
     {
-        if (msg.message != WM_USER)
+        HANDLE stopEvent = mouse_keyboard_stop_event;
+        DWORD waitResult = MsgWaitForMultipleObjectsEx(1, &stopEvent, INFINITE, QS_ALLINPUT, waitFlags);
+
+        if (waitResult == WAIT_OBJECT_0)
+        {
+            break;
+        }
+
+        if (waitResult == WAIT_OBJECT_0 + 1)
+        {
+            BOOL foundMessage = PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE);
+            if (foundMessage && msg.message == WM_QUIT)
+            {
+                break;
+            }
+
+            // Avoid spinning if the wakeup only dispatched a sent/internal message.
+            waitFlags = foundMessage ? MWMO_INPUTAVAILABLE : 0;
             continue;
-
-        // Unhook on exit message
-        if (mouseHook != NULL)
-        {
-            UnhookWindowsHookEx(mouseHook);
-            mouseHook = NULL;
         }
 
-        if (keyboardHook != NULL)
+        if (waitResult == WAIT_FAILED)
         {
-            UnhookWindowsHookEx(keyboardHook);
-            keyboardHook = NULL;
+            fprintf(stderr, "[selection-hook] MsgWaitForMultipleObjectsEx failed, error: %lu\n", GetLastError());
         }
-
         break;
     }
 
+    if (mouseHook != NULL)
+    {
+        UnhookWindowsHookEx(mouseHook);
+        mouseHook = NULL;
+    }
+
+    if (keyboardHook != NULL)
+    {
+        UnhookWindowsHookEx(keyboardHook);
+        keyboardHook = NULL;
+    }
+
     // TSFN lifecycle is managed by Stop()/destructor on the main thread
-    return 0;
 }
 
 /**

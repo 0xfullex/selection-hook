@@ -55,9 +55,9 @@ On a macOS dev machine with accessibility permission granted, `npm run test:loca
 
 ### Native Module Structure
 
-Each platform has `selection_hook.cc/.mm` (main implementation) and `lib/` (utilities like clipboard, keyboard, utils):
+Each platform has `selection_hook.cc/.mm` (module entry and platform coordination) and `lib/` (utilities such as clipboard, keyboard, and helpers). Windows also has `core/` for the extracted retrieval engine and worker:
 
-- `src/windows/` - UIAutomation for modern apps, Accessibility API for legacy apps, clipboard fallback
+- `src/windows/` - N-API and hook lifecycle in `selection_hook.cc`; UIA/MSAA/clipboard retrieval, shared types, and the automatic MTA worker in `core/`; reusable platform utilities in `lib/`
 - `src/mac/` - Accessibility API (AXAPI), clipboard fallback
 - `src/linux/` - X11 (Primary Selection via `protocols/x11.cc`), Wayland (via `protocols/wayland.cc`, in progress)
 
@@ -75,6 +75,13 @@ Each platform has `selection_hook.cc/.mm` (main implementation) and `lib/` (util
 - Cross-platform implementations should use consistent function names, method names, and variable names across `src/windows/`, `src/mac/`, and `src/linux/` unless they are platform-specific
 - Never attempt to `git add` files that are listed in `.gitignore`, even with `-f`
 - Use only ASCII characters in source code files (including comments). Avoid non-ASCII characters like em-dash (`—`), curly quotes, etc. to prevent MSVC C4819 warnings on non-Unicode code pages
+
+### C++ Comment Style
+
+- Use Doxygen-compatible `/** ... */` comments on cross-file interfaces and important internal contracts. Document inputs with `@param[in]`, outputs with `@param[out]`, return semantics with `@return`, non-obvious behavior with `@note`, and compatibility or safety hazards with `@warning`.
+- Put interface contracts on declarations in headers when a header exists. Use `//` comments inside implementations to explain local rationale, invariants, compatibility history, and cleanup or threading requirements.
+- Comments should explain why a constraint exists, not restate the code. A warning must name the invariant, the consequence of breaking it, and the validation or compatibility evidence required before changing it. Avoid context-free comments such as `do not modify`.
+- Preserve comments that record application-specific behavior, operating-system quirks, thread or COM ownership, clipboard restoration, event timing, fallback order, and external issue references. Update those comments in the same change when the related behavior changes.
 
 ### Keeping docs in sync
 

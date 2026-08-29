@@ -40,6 +40,8 @@ Selection-hook 在 Windows 上使用**三级回退策略**来提取选中的文�
 
 在大多数情况下，你不需要区别处理这些方法 — 无论使用哪种方法，文本内容和坐标都以相同的格式提供。
 
+自动 `text-selection` 事件会在专用的 Windows MTA worker 上执行这套管线，因此 UIA、IAccessible 和剪贴板回退不会阻塞 JavaScript 主线程。普通 Node.js、Electron 以及其他 Windows Node-API 宿主使用同一套实现，不需要 Electron 专用进程或 API。为保持既有事件语义，自动或同步 retrieval 任一执行期间，新的底层 hook 事件仍会被抑制。
+
 ---
 
 ## 剪贴板回退
@@ -57,6 +59,8 @@ Selection-hook 在 Windows 上使用**三级回退策略**来提取选中的文�
 7. **恢复**原始剪贴板内容
 
 此过程设计为非破坏性的 — 用户的剪贴板会被保存和恢复，因此在绝大多数情况下，剪贴板操作对用户是不可见的。
+
+剪贴板事务会串行执行。如果自动回退正在使用剪贴板，公开剪贴板方法会立即返回既有的失败值，而不会等待 worker。
 
 ### 光标形状检测
 
@@ -148,14 +152,6 @@ hook.setFineTunedList(
 - **焦点监控（推荐）：** 在应用层监控全局窗口焦点变化事件，当焦点切换到提升权限的窗口时，关闭划词弹窗。
 - **UIAccess：** [UIAccess](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works#uiaccess-for-ui-automation-applications) 进程可以跨所有完整性级别接收钩子事件，而无需以管理员身份运行。要求：可执行文件 manifest 中包含 `uiAccess="true"`、受信任的数字签名、安装在安全位置（`Program Files` 或 `Windows\System32`）。
 
-### Electron 同进程文本选择
+### 同步 `getCurrentSelection()`
 
-当 selection-hook 运行在 Electron 主线程上时，**同进程**文本选择存在潜在风险：
-
-**第一层 — 剪贴板回退阻塞主线程：** 剪贴板回退会模拟 Ctrl+C 并进入阻塞的 `Sleep()` 轮询循环等待剪贴板变化。如果在 Electron 主线程上运行，主线程被阻塞，Electron 无法处理模拟的按键——导致死锁。只要 UI Automation 或 IAccessible 能成功提取文本，此问题不会触发。
-
-**第二层 — `--disable-renderer-accessibility` 触发死锁：** 部分 Electron 应用使用此标志来规避 [Chromium accessibility 崩溃 bug](https://issues.chromium.org/issues/40809069)。但它会完全禁用渲染进程的 accessibility tree，导致 UI Automation 和 IAccessible 失败，迫使 selection-hook 进入剪贴板回退路径，触发第一层的死锁。
-
-在**其他应用程序**中的文本选择不受影响。
-
-**解决方法：** 使用 Electron 的 [`utilityProcess`](https://www.electronjs.org/docs/latest/api/utility-process) 或 `child_process` 在独立进程中运行 selection-hook。这样 Electron 主线程可以正常处理模拟的按键，而 selection-hook 在自己的进程中等待剪贴板变化。
+为保持 API 兼容，`getCurrentSelection()` 仍为同步方法，并使用调用线程上的 UI Automation client。因此，如果 accessibility provider 的同步 UIA 调用不返回，调用线程仍可能被阻塞。MTA worker 隔离的是自动 retrieval，并不为这个显式同步 API 提供硬取消边界。

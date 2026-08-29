@@ -1,59 +1,46 @@
-﻿/**
- * Text Selection Hook for Windows
+/**
+ * @file
+ * @brief Windows N-API entry, input hooks, gesture classification, and retrieval coordination.
  *
- * A Node Native Module that captures text selection events across applications
- * on Windows using UI Automation and Accessibility APIs.
+ * This file is the platform skeleton rather than the retrieval implementation. It owns
+ * the addon instance lifecycle, JavaScript callbacks, low-level input hook thread, and
+ * event-time mouse snapshots.
  *
  * Main components:
- * - TextSelectionHook class: Core implementation of the module
- * - Text selection detection: Uses UIAutomation and IAccessible interfaces
- * - Mouse/keyboard hook: Low-level Windows hooks for input monitoring
- * - Thread management: Background threads for hooks with thread-safe callbacks
- *
- * Features:
- * - Detect text selections via mouse drag, double-click, or keyboard
- * - Get selection coordinates and text content
- * - Monitor mouse and keyboard events
- * - Integration with Node.js via N-API
- *
- * Usage:
- * This module exposes a JavaScript API through index.js that allows
- * applications to monitor text selection events system-wide.
- *
+ * - SelectionHook: N-API surface, lifecycle, and result conversion.
+ * - Hook thread: event capture only; it must not call UIA, MSAA, or clipboard retrieval.
+ * - Automatic path: value snapshots dispatched to the MTA worker in core/.
+ * - Synchronous path: getCurrentSelection() retains its calling-thread UIA client.
+ * - Retrieval implementation: UIA/MSAA/clipboard compatibility logic in core/engine.*.
  *
  * Copyright (c) 2025 0xfullex (https://github.com/0xfullex/selection-hook)
  * Licensed under the MIT License
- *
  */
 #define WIN32_LEAN_AND_MEAN 1
 
 #include <ShellScalingApi.h>  // For SetProcessDpiAwareness
 #include <UIAutomation.h>     // For UI Automation
 #include <napi.h>
-#include <oleacc.h>    // For IAccessible
 #include <shellapi.h>  // For SHQueryUserNotificationState
 #include <windows.h>
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <string>
 #include <thread>
 
-#include "lib/clipboard.h"
+#include "core/engine.h"
+#include "core/types.h"
+#include "core/worker.h"
 #include "lib/keyboard.h"
 #include "lib/string_pool.h"
 #include "lib/utils.h"
 
-#pragma comment(lib, "Oleacc.lib")            // For IAccessible
 #pragma comment(lib, "UIAutomationCore.lib")  // For UI Automation
-// #pragma comment(lib, "Shcore.lib") // Fo/r SetProcessDpiAwareness
+// #pragma comment(lib, "Shcore.lib") // For SetProcessDpiAwareness
 #pragma comment(lib, "Shell32.lib")  // For SHQueryUserNotificationState
 #pragma comment(lib, "User32.lib")   // For SetProcessDPIAware
-
-// UI Automation constants (if not defined)
-#ifndef UIA_IsSelectionActivePropertyId
-#define UIA_IsSelectionActivePropertyId 30034
-#endif
 
 // Mouse&Keyboard hook constants
 constexpr int DEFAULT_MOUSE_EVENT_QUEUE_SIZE = 512;
@@ -64,45 +51,6 @@ constexpr int MIN_DRAG_DISTANCE = 8;
 constexpr DWORD MAX_DRAG_TIME_MS = 8000;
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
 static DWORD DOUBLE_CLICK_TIME_MS = 500;
-
-// Text selection detection type enum
-enum class SelectionDetectType
-{
-    None = 0,
-    Drag = 1,
-    DoubleClick = 2,
-    ShiftClick = 3
-};
-
-// Text selection method enum
-enum class SelectionMethod
-{
-    None = 0,
-    UIA = 1,
-    /** @deprecated This method has been removed */
-    FocusControl = 2,
-    Accessible = 3,
-    Clipboard = 99
-};
-
-enum class TextRetrievalResult
-{
-    TextFound,
-    Unavailable,
-    NonTextSelection
-};
-
-/**
- * Position level enum for text selection tracking
- */
-enum class SelectionPositionLevel
-{
-    None = 0,         // No position information available
-    MouseSingle = 1,  // Only current mouse cursor position is known
-    MouseDual = 2,    // Mouse start and end positions are known
-    Full = 3,         // selection first paragraph's start and last paragraph's end coordinates are known
-    Detailed = 4      // Detailed selection coordinates including all needed corner points
-};
 
 // Mouse button enum
 enum class MouseButton
@@ -116,69 +64,6 @@ enum class MouseButton
     Forward = 4,
     WheelVertical = 0,
     WheelHorizontal = 1
-};
-
-enum class FilterMode
-{
-    Default = 0,      // trigger anyway
-    IncludeList = 1,  // only trigger when the program name is in the include list
-    ExcludeList = 2   // only trigger when the program name is not in the exclude list
-};
-
-enum class FineTunedListType
-{
-    ExcludeClipboardCursorDetect = 0,
-    IncludeClipboardDelayRead = 1
-};
-
-// Copy key type enum for SendCopyKey function
-enum class CopyKeyType
-{
-    CtrlInsert = 0,
-    CtrlC = 1
-};
-
-/**
- * Structure to store text selection information
- */
-struct TextSelectionInfo
-{
-    std::wstring text;         ///< Selected text content
-    std::wstring programName;  ///< program name that triggered the selection
-
-    POINT startTop;     ///< First paragraph left-top (screen coordinates)
-    POINT startBottom;  ///< First paragraph left-bottom (screen coordinates)
-    POINT endTop;       ///< Last paragraph right-top (screen coordinates)
-    POINT endBottom;    ///< Last paragraph right-bottom (screen coordinates)
-
-    POINT mousePosStart;  ///< Mouse position when selection started (screen coordinates)
-    POINT mousePosEnd;    ///< Mouse position when selection ended (screen coordinates)
-
-    SelectionMethod method;
-    SelectionPositionLevel posLevel;
-
-    TextSelectionInfo() : method(SelectionMethod::None), posLevel(SelectionPositionLevel::None)
-    {
-        startTop.x = startTop.y = 0;
-        startBottom.x = startBottom.y = 0;
-        endTop.x = endTop.y = 0;
-        endBottom.x = endBottom.y = 0;
-        mousePosStart.x = mousePosStart.y = 0;
-        mousePosEnd.x = mousePosEnd.y = 0;
-    }
-
-    void clear()
-    {
-        text.clear();
-        startTop.x = startTop.y = 0;
-        startBottom.x = startBottom.y = 0;
-        endTop.x = endTop.y = 0;
-        endBottom.x = endBottom.y = 0;
-        mousePosStart.x = mousePosStart.y = 0;
-        mousePosEnd.x = mousePosEnd.y = 0;
-        method = SelectionMethod::None;
-        posLevel = SelectionPositionLevel::None;
-    }
 };
 
 /**
@@ -212,9 +97,34 @@ struct KeyboardEventContext
     DWORD flags;     ///< Additional flags for the key event
 };
 
+class SelectionHook;
+
+/**
+ * @brief Lifetime indirection retained by automatic-result TSFN callbacks.
+ *
+ * @warning Do not store SelectionHook directly in the TSFN context. Destruction clears
+ * owner first so a queued or closing callback cannot dereference a dead addon instance.
+ */
+struct SelectionResultOwner
+{
+    std::atomic<SelectionHook *> owner{nullptr};
+};
+
+struct SelectionResultTsfnContext
+{
+    std::shared_ptr<SelectionResultOwner> owner;
+};
+
 //=============================================================================
-// TextSelectionHook Class Declaration
+// SelectionHook Class Declaration
 //=============================================================================
+/**
+ * @brief Windows N-API wrapper and lifecycle coordinator.
+ *
+ * Mouse/keyboard hook callbacks capture event-time state, the wrapper classifies gestures
+ * and bridges results to JS, and core/ owns text retrieval. Automatic retrieval is sent
+ * to SelectionWorker; getCurrentSelection() remains on the synchronous calling path.
+ */
 class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 {
   public:
@@ -240,25 +150,20 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     Napi::Value WriteToClipboard(const Napi::CallbackInfo &info);
     Napi::Value ReadFromClipboard(const Napi::CallbackInfo &info);
 
-    // Core functionality methods
+    // Selection coordination. Retrieval implementation lives in core/engine.*.
     bool GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInfo);
-    TextRetrievalResult GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selectionInfo);
-    bool TryGetTextViaTextPattern(IUIAutomationElement *pElement, TextSelectionInfo &selectionInfo,
-                                  bool allowDocumentFallback);
-    TextRetrievalResult GetTextViaAccessible(HWND hwnd, TextSelectionInfo &selectionInfo);
-    TextRetrievalResult ProcessAccessibleSelection(IAccessible *accessible, TextSelectionInfo &selectionInfo);
-    TextRetrievalResult ClassifyAccessibleRole(IAccessible *accessible, const VARIANT &child);
-    bool GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo);
+    SelectionConfigSnapshot BuildSelectionConfigSnapshot(bool triggeredByUser) const;
+    bool EnqueueAutomaticSelection(HWND hwnd, SelectionDetectType detectionType);
+    bool IsRetrievalInFlight() const;
+    bool StartSelectionWorker(Napi::Env env, Napi::Function callback, std::string &error);
+    void StopSelectionWorker();
+    static void CallSelectionResultJs(napi_env env, napi_value jsCallback, void *context, void *data);
+    static void FinalizeSelectionResultTsfn(napi_env env, void *finalizeData, void *finalizeHint);
     bool ShouldProcessGetSelection();  // check if we should get text based on system state
-    bool ShouldProcessViaClipboard(HWND hwnd, std::wstring &programName);
-    bool SetTextRangeCoordinates(IUIAutomationTextRange *pRange, TextSelectionInfo &selectionInfo);
     Napi::Object CreateSelectionResultObject(Napi::Env env, const TextSelectionInfo &selectionInfo);
 
     // Helper method for processing string arrays
-    bool IsInFilterList(const std::wstring &programName, const std::vector<std::string> &filterList);
     void ProcessStringArrayToList(const Napi::Array &array, std::vector<std::string> &targetList);
-    void SendCopyKey(CopyKeyType type);  // Keyboard input helper method
-    bool ShouldKeyInterruptViaClipboard();
 
     // Mouse and keyboard event handling methods
     void MouseKeyboardHookThreadProc();
@@ -275,9 +180,16 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     bool com_initialized_by_us = false;  // Flag indicating whether COM was initialized by this module
 
     // Thread communication
-    Napi::ThreadSafeFunction tsfn;
     Napi::ThreadSafeFunction mouse_tsfn;
     Napi::ThreadSafeFunction keyboard_tsfn;
+
+    // Automatic events use the MTA worker; the public synchronous API keeps the UIA
+    // client created on the calling/main thread for API and capability compatibility.
+    std::unique_ptr<SelectionWorker> selection_worker;
+    std::shared_ptr<RetrievalGates> retrieval_gates = std::make_shared<RetrievalGates>();
+    std::shared_ptr<SelectionResultOwner> selection_result_owner = std::make_shared<SelectionResultOwner>();
+    std::atomic<uint64_t> selection_generation{0};
+    std::atomic<uint64_t> selection_sequence{0};
 
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
@@ -285,9 +197,6 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     std::thread mouse_keyboard_hook_thread;
     HANDLE mouse_keyboard_ready_event = NULL;
     HANDLE mouse_keyboard_stop_event = NULL;
-
-    // the text selection is processing, we should ignore some events
-    std::atomic<bool> is_processing{false};
 
     // Mouse button bitmap, updated on the hook thread before any filtering so the
     // state survives events that are skipped or dropped. Snapshotted into every
@@ -305,24 +214,24 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     bool is_last_valid_click = false;
     HWND last_window_handler = nullptr;
     RECT last_window_rect = {0};
-    // user use GetCurrentSelection
+    // True only while the public synchronous GetCurrentSelection call is active.
     bool is_triggered_by_user = false;
 
-    bool is_enabled_mouse_move_event = false;
-    // the cursor of mouse down and mouse up, for clipboard detection
+    std::atomic<bool> is_enabled_mouse_move_event{false};
+    // Event-time cursor snapshots used by the automatic clipboard heuristic.
     HCURSOR mouse_down_cursor = NULL;
     HCURSOR mouse_up_cursor = NULL;
 
-    // UI Automation objects
+    // Calling-thread UIA client retained for synchronous getCurrentSelection().
     IUIAutomation *pUIAutomation = nullptr;
-    // the control type of the UI Automation focused element
+    // Last synchronous UIA focused control type, used by clipboard cursor exceptions.
     CONTROLTYPEID uia_control_type = UIA_WindowControlTypeId;
 
-    // passive mode: only trigger when user call GetSelectionText
+    // Passive mode disables automatic retrieval; getCurrentSelection() remains available.
     bool is_selection_passive_mode = false;
     bool is_enabled_clipboard = true;  // Enable by default
-    // Store clipboard sequence number when mouse down
-    DWORD clipboard_sequence = 0;
+    // Shared/revisioned because automatic and synchronous retrieval can now overlap.
+    std::shared_ptr<ClipboardSequenceState> clipboard_sequence_state = std::make_shared<ClipboardSequenceState>();
 
     // clipboard filter mode
     FilterMode clipboard_filter_mode = FilterMode::Default;
@@ -332,13 +241,11 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     FilterMode global_filter_mode = FilterMode::Default;
     std::vector<std::string> global_filter_list;
 
-    // fine-tuned lists (ftl) for some apps
-    //
-    // we use cursor detection to determine if we should go on process clipboard detection,
-    // but some apps will use self-defined cursor, you can exclude them to keep using clipboard. (eg. Adobe Acrobat)
+    // Fine-tuned compatibility lists for nonstandard application behavior.
+    // Custom-cursor applications can bypass clipboard cursor rejection (for example,
+    // Adobe Acrobat).
     std::vector<std::string> ftl_exclude_clipboard_cursor_detect;
-    // some apps will change the clipboard content many times, and it cost time
-    // you can include them to wait a little bit (eg. Adobe Acrobat)
+    // Applications that update clipboard content several times can request a delayed read.
     std::vector<std::string> ftl_include_clipboard_delay_read;
 };
 
@@ -349,7 +256,9 @@ Napi::FunctionReference SelectionHook::constructor;
 static SelectionHook *currentInstance = nullptr;
 
 /**
- * Constructor - initializes COM and UI Automation
+ * @brief Initialize the addon instance and calling-thread COM/UIA client.
+ * @note This UIA client is reserved for synchronous getCurrentSelection(). The automatic
+ * worker creates and owns a separate MTA client when start() is called.
  */
 SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<SelectionHook>(info)
 {
@@ -357,6 +266,7 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     Napi::HandleScope scope(env);
 
     currentInstance = this;
+    selection_result_owner->owner.store(this, std::memory_order_release);
 
     // Get the system's double-click time
     DOUBLE_CLICK_TIME_MS = GetDoubleClickTime();
@@ -364,9 +274,20 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
     // Set process DPI awareness based on Windows version
     EnableDpiAwareness();
 
-    // Initialize COM with thread safety
+    // Initialize COM for the synchronous calling-thread UIA client.
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     com_initialized_by_us = false;
+
+#ifdef _DEBUG
+    APTTYPE apartmentType = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER apartmentQualifier = APTTYPEQUALIFIER_NONE;
+    const HRESULT apartmentHr = CoGetApartmentType(&apartmentType, &apartmentQualifier);
+    fprintf(stderr,
+            "[selection-hook] main COM initialization: thread=%lu init=0x%08lx apartment=0x%08lx type=%d "
+            "qualifier=%d\n",
+            GetCurrentThreadId(), static_cast<unsigned long>(hr), static_cast<unsigned long>(apartmentHr),
+            static_cast<int>(apartmentType), static_cast<int>(apartmentQualifier));
+#endif
 
     if (hr == RPC_E_CHANGED_MODE)
     {
@@ -387,7 +308,7 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
         return;
     }
 
-    // Initialize UI Automation
+    // Initialize the synchronous UI Automation client on this same COM apartment.
     hr = CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation),
                           (void **)&pUIAutomation);
     if (FAILED(hr))
@@ -404,7 +325,7 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
 }
 
 /**
- * Destructor - cleans up resources and COM objects
+ * @brief Stop native producers before releasing callbacks and calling-thread COM state.
  */
 SelectionHook::~SelectionHook()
 {
@@ -413,15 +334,18 @@ SelectionHook::~SelectionHook()
     {
         currentInstance = nullptr;
     }
+    selection_result_owner->owner.store(nullptr, std::memory_order_release);
 
     running = false;
     mouse_keyboard_running = false;
+    selection_generation.fetch_add(1, std::memory_order_acq_rel);
 
     // The hook thread must stop before the thread-safe functions it uses are released.
     StopMouseKeyboardHookThread();
+    StopSelectionWorker();
     ReleaseThreadSafeFunctions();
 
-    // Release UI Automation
+    // Release the synchronous UIA client on its owning thread.
     if (pUIAutomation)
     {
         pUIAutomation->Release();
@@ -467,7 +391,10 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
 }
 
 /**
- * NAPI: Start monitoring text selections
+ * @brief Start hook capture and the automatic MTA retrieval worker.
+ * @param[in] info First argument is the existing JavaScript event callback.
+ * @warning Every partial-start failure must stop native producers before releasing their
+ * TSFNs. Publish running=true only after both worker and hook-thread readiness succeed.
  */
 void SelectionHook::Start(const Napi::CallbackInfo &info)
 {
@@ -487,10 +414,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         return;
     }
 
-    // Create thread-safe function from JavaScript callback
+    // Create thread-safe functions from the JavaScript callback.
     Napi::Function callback = info[0u].As<Napi::Function>();
-
-    tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1);
 
     // Set up mouse and keyboard hooks
     if (!mouse_keyboard_running)
@@ -507,6 +432,16 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
 
         // Set running flag
         mouse_keyboard_running = true;
+    }
+
+    retrieval_gates = std::make_shared<RetrievalGates>();
+    std::string workerError;
+    if (!StartSelectionWorker(env, callback, workerError))
+    {
+        mouse_keyboard_running = false;
+        ReleaseThreadSafeFunctions();
+        Napi::Error::New(env, workerError).ThrowAsJavaScriptException();
+        return;
     }
 
     // Reset gesture state so a restarted session does not inherit stale state
@@ -528,6 +463,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     {
         mouse_keyboard_running = false;
         StopMouseKeyboardHookThread();
+        StopSelectionWorker();
         ReleaseThreadSafeFunctions();
         Napi::Error::New(env, "Failed to create mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
@@ -541,6 +477,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     {
         mouse_keyboard_running = false;
         StopMouseKeyboardHookThread();
+        StopSelectionWorker();
         ReleaseThreadSafeFunctions();
         Napi::Error::New(env, "Failed to create mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
@@ -551,6 +488,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     {
         mouse_keyboard_running = false;
         StopMouseKeyboardHookThread();
+        StopSelectionWorker();
         ReleaseThreadSafeFunctions();
         Napi::Error::New(env, "Failed to initialize mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
@@ -560,7 +498,10 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
 }
 
 /**
- * NAPI: Stop monitoring text selections
+ * @brief Stop native producers and invalidate queued automatic results.
+ * @warning Preserve teardown order: clear running and advance generation, stop the hook
+ * thread, stop the selection worker, then release hook TSFNs. Reordering can permit late
+ * callbacks or release a callback while a native producer still uses it.
  */
 void SelectionHook::Stop(const Napi::CallbackInfo &info)
 {
@@ -570,15 +511,23 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
         return;
     }
 
-    // Signal the hook thread, join it, then release the thread-safe functions it used.
+    // Stop producing requests before aborting and joining the selection worker.
     running = false;
+    selection_generation.fetch_add(1, std::memory_order_acq_rel);
     mouse_keyboard_running = false;
     StopMouseKeyboardHookThread();
+    StopSelectionWorker();
     ReleaseThreadSafeFunctions();
 }
 
 /**
- * NAPI: Get the currently selected text from the active window
+ * @brief N-API synchronous query for the selection under the active mouse window.
+ * @return Existing selection result object, or null when no text is available.
+ * @note This method intentionally uses the calling-thread UIA client and returns before
+ * JavaScript continues. Automatic events alone use the MTA worker.
+ * @warning A Promise, cache-only result, or self-window rejection would change public
+ * semantics or capability. Routing this call through a worker with a synchronous wait
+ * also requires a separate reentrancy, deadlock, and compatibility review.
  */
 Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
 {
@@ -773,8 +722,8 @@ Napi::Value SelectionHook::WriteToClipboard(const Napi::CallbackInfo &info)
         std::string utf8Text = info[0].As<Napi::String>().Utf8Value();
         std::wstring wideText = StringPool::Utf8ToWide(utf8Text);
 
-        // Write to clipboard using the extracted function
-        bool result = WriteClipboard(wideText);
+        // Main-thread clipboard APIs never wait for an automatic retrieval.
+        bool result = SelectionEngine::TryWriteClipboard(wideText);
         return Napi::Boolean::New(env, result);
     }
     catch (const std::exception &e)
@@ -795,7 +744,7 @@ Napi::Value SelectionHook::ReadFromClipboard(const Napi::CallbackInfo &info)
     {
         // Read from clipboard
         std::wstring clipboardContent;
-        bool result = ReadClipboard(clipboardContent);
+        bool result = SelectionEngine::TryReadClipboard(clipboardContent);
 
         if (!result)
         {
@@ -814,42 +763,9 @@ Napi::Value SelectionHook::ReadFromClipboard(const Napi::CallbackInfo &info)
 }
 
 /**
- * Check if program name is in the filter list
- * @param programName The program name to check
- * @param filterList The list of program names to filter against
- * @return true if program name matches any item in the filter list
- */
-bool SelectionHook::IsInFilterList(const std::wstring &programName, const std::vector<std::string> &filterList)
-{
-    // If filter list is empty, allow all
-    if (filterList.empty())
-    {
-        return false;
-    }
-
-    // Convert program name to lowercase UTF-8 for case-insensitive comparison
-    std::wstring lowerProgramName = programName;
-    std::transform(lowerProgramName.begin(), lowerProgramName.end(), lowerProgramName.begin(), towlower);
-
-    // Convert to UTF-8 for comparison with our list
-    std::string utf8ProgramName = StringPool::WideToUtf8(lowerProgramName);
-
-    // Check if program name is in the filter list
-    for (const auto &filterItem : filterList)
-    {
-        if (utf8ProgramName.find(filterItem) != std::string::npos)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/**
- * Helper method to process string array and populate target list
- * @param array The Napi::Array containing string values
- * @param targetList The target vector to populate with lowercase UTF-8 strings
+ * @brief Normalize a JavaScript string array into a lowercase UTF-8 program list.
+ * @param[in] array JavaScript array to process.
+ * @param[out] targetList Destination list, cleared before valid string entries are added.
  */
 void SelectionHook::ProcessStringArrayToList(const Napi::Array &array, std::vector<std::string> &targetList)
 {
@@ -932,7 +848,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
             }
 
             // Store clipboard sequence number when mouse down
-            currentInstance->clipboard_sequence = eventClipboardSequence;
+            currentInstance->clipboard_sequence_state->Store(eventClipboardSequence);
 
             break;
         }
@@ -1096,56 +1012,9 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
     // Check for text selection
     if (shouldDetectSelection)
     {
-        TextSelectionInfo selectionInfo;
         HWND hwnd = GetForegroundWindow();
-
         if (hwnd)
-        {
-            if (currentInstance->GetSelectedText(hwnd, selectionInfo) && !IsTrimmedEmpty(selectionInfo.text))
-            {
-                switch (detectionType)
-                {
-                    case SelectionDetectType::Drag:
-                    {
-                        selectionInfo.mousePosStart = currentInstance->last_mouse_down_pos;
-                        selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
-
-                        if (selectionInfo.posLevel == SelectionPositionLevel::None)
-                            selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
-
-                        break;
-                    }
-                    case SelectionDetectType::DoubleClick:
-                    {
-                        selectionInfo.mousePosStart = currentInstance->last_mouse_up_pos;
-                        selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
-
-                        if (selectionInfo.posLevel == SelectionPositionLevel::None)
-                            selectionInfo.posLevel = SelectionPositionLevel::MouseSingle;
-
-                        break;
-                    }
-                    case SelectionDetectType::ShiftClick:
-                    {
-                        selectionInfo.mousePosStart = currentInstance->last_last_mouse_up_pos;
-                        selectionInfo.mousePosEnd = currentInstance->last_mouse_up_pos;
-
-                        if (selectionInfo.posLevel == SelectionPositionLevel::None)
-                            selectionInfo.posLevel = SelectionPositionLevel::MouseDual;
-
-                        break;
-                    }
-                }
-
-                auto callback = [selectionInfo](Napi::Env env, Napi::Function jsCallback)
-                {
-                    Napi::Object resultObj = currentInstance->CreateSelectionResultObject(env, selectionInfo);
-                    jsCallback.Call({resultObj});
-                };
-
-                currentInstance->tsfn.NonBlockingCall(callback);
-            }
-        }
+            currentInstance->EnqueueAutomaticSelection(hwnd, detectionType);
     }
 
     // Create and emit mouse event object
@@ -1219,95 +1088,220 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
 }
 
 /**
- * Get selected text from the active window using multiple methods
+ * @brief Execute the existing synchronous selection pipeline.
+ * @param[in] hwnd Borrowed target window handle.
+ * @param[out] selectionInfo Native selection result.
+ * @return true when non-empty text was retrieved.
+ * @note Automatic retrieval may run concurrently with this call, using a separate UIA
+ * client. Only the clipboard transaction is mutually exclusive and this path fails fast.
  */
 bool SelectionHook::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInfo)
 {
     if (!hwnd)
         return false;
 
-    if (is_processing.load())
+    // This is the public synchronous getCurrentSelection() path. It intentionally does
+    // not wait for or reject an independent automatic UIA/MSAA retrieval. The gate only
+    // prevents reentrant synchronous calls and preserves input-event suppression.
+    bool expected = false;
+    if (!retrieval_gates->syncRetrievalInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return false;
-    else
-        is_processing.store(true);
 
-    // Initialize structure
-    selectionInfo.clear();
-
-    // Get program name and store it in selectionInfo
-    if (!GetProgramNameFromHwnd(hwnd, selectionInfo.programName))
+    struct SyncGateGuard
     {
-        selectionInfo.programName = L"";
+        std::shared_ptr<RetrievalGates> gates;
+        ~SyncGateGuard() { gates->syncRetrievalInFlight.store(false, std::memory_order_release); }
+    } gateGuard{retrieval_gates};
 
-        // if no programName found, and global filter mode is include list, return false
-        if (global_filter_mode == FilterMode::IncludeList)
-        {
-            is_processing.store(false);
-            return false;
-        }
-    }
-    // should filter by global filter list
-    else if (global_filter_mode != FilterMode::Default)
-    {
-        bool isIn = IsInFilterList(selectionInfo.programName, global_filter_list);
-
-        if ((global_filter_mode == FilterMode::IncludeList && !isIn) ||
-            (global_filter_mode == FilterMode::ExcludeList && isIn))
-        {
-            is_processing.store(false);
-            return false;
-        }
-    }
-
-    bool hasNonTextSelection = false;
-
-    // First try UI Automation (supported by modern applications)
-    if (pUIAutomation)
-    {
-        TextRetrievalResult uiaResult = GetTextViaUIAutomation(hwnd, selectionInfo);
-        if (uiaResult == TextRetrievalResult::TextFound)
-        {
-            selectionInfo.method = SelectionMethod::UIA;
-            is_processing.store(false);
-            return true;
-        }
-        hasNonTextSelection = uiaResult == TextRetrievalResult::NonTextSelection;
-    }
-
-    // Fall back to IAccessible interface (supported by older applications)
-    TextRetrievalResult accessibleResult = GetTextViaAccessible(hwnd, selectionInfo);
-    if (accessibleResult == TextRetrievalResult::TextFound)
-    {
-        selectionInfo.method = SelectionMethod::Accessible;
-        is_processing.store(false);
-        return true;
-    }
-    if (accessibleResult == TextRetrievalResult::NonTextSelection)
-        hasNonTextSelection = true;
-
-    // Object selections must not trigger simulated copy keystrokes.
-    if (hasNonTextSelection)
-    {
-        is_processing.store(false);
-        return false;
-    }
-
-    // Last resort: try to get text using clipboard and Ctrl+C if enabled
-    if (ShouldProcessViaClipboard(hwnd, selectionInfo.programName) && GetTextViaClipboard(hwnd, selectionInfo))
-    {
-        selectionInfo.method = SelectionMethod::Clipboard;
-        is_processing.store(false);
-        return true;
-    }
-
-    is_processing.store(false);
-    return false;
+    SelectionConfigSnapshot config = BuildSelectionConfigSnapshot(true);
+    SelectionEngine engine(pUIAutomation);
+    DWORD endingClipboardSequence = config.clipboardSequence;
+    CONTROLTYPEID endingControlType = uia_control_type;
+    // Keep the established synchronous caller-thread UIA client. Clipboard contention
+    // is fail-fast so this API never waits behind the automatic worker's transaction.
+    const bool result = engine.GetSelectedText(hwnd, selectionInfo, config, ClipboardLockMode::TryOnly, nullptr,
+                                               nullptr, &endingClipboardSequence, &endingControlType);
+    // Store with a new revision so an older automatic request cannot overwrite it when
+    // that worker later completes.
+    clipboard_sequence_state->Store(endingClipboardSequence);
+    uia_control_type = endingControlType;
+    return result;
 }
 
 /**
- * Check if current system state allows text selection
- * time comsuming is 0.3ms, so uses a 10-second cache to reduce system calls
- * @return true if system is in a state that allows text selection
+ * @brief Copy all mutable selection settings into a value-only retrieval snapshot.
+ * @param[in] triggeredByUser true for getCurrentSelection(), false for automatic events.
+ * @return Configuration safe to use without accessing SelectionHook from another thread.
+ */
+SelectionConfigSnapshot SelectionHook::BuildSelectionConfigSnapshot(bool triggeredByUser) const
+{
+    // Copy every retrieval input at dispatch time. The MTA worker must not read mutable
+    // vectors, cursors, or filter settings directly from the JS-owned instance.
+    SelectionConfigSnapshot config;
+    config.clipboardEnabled = is_enabled_clipboard;
+    config.triggeredByUser = triggeredByUser;
+    config.clipboardFilterMode = clipboard_filter_mode;
+    config.clipboardFilterList = clipboard_filter_list;
+    config.globalFilterMode = global_filter_mode;
+    config.globalFilterList = global_filter_list;
+    config.excludeClipboardCursorDetect = ftl_exclude_clipboard_cursor_detect;
+    config.includeClipboardDelayRead = ftl_include_clipboard_delay_read;
+    config.mouseDownCursor = mouse_down_cursor;
+    config.mouseUpCursor = mouse_up_cursor;
+    config.clipboardSequence = clipboard_sequence_state->Load().value;
+    return config;
+}
+
+/**
+ * @brief Capture event state and enqueue one automatic selection retrieval.
+ * @param[in] hwnd Foreground retrieval HWND chosen by the historical call site.
+ * @param[in] detectionType Mouse gesture that triggered retrieval.
+ * @return false when stopped, already retrieving, or unable to enqueue.
+ * @warning Keep the auto gate set until worker-side retrieval cleanup. Releasing it from
+ * the JS callback loses the gate when a TSFN is aborted or its result is discarded.
+ */
+bool SelectionHook::EnqueueAutomaticSelection(HWND hwnd, SelectionDetectType detectionType)
+{
+    if (!hwnd || !running.load(std::memory_order_acquire) || !selection_worker)
+        return false;
+
+    // Preserve the original one-retrieval-at-a-time behavior. New low-level hook events
+    // remain suppressed while this gate is set; no queue of stale selections is built.
+    bool expected = false;
+    if (!retrieval_gates->autoRetrievalInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return false;
+
+    // retrievalHwnd is the same foreground-window value used by the old synchronous
+    // call site. Passing a WindowFromPoint child HWND would change UIA/MSAA behavior.
+    SelectionRequest request;
+    request.sequence = selection_sequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+    request.generation = selection_generation.load(std::memory_order_acquire);
+    request.retrievalHwnd = hwnd;
+    request.detectionType = detectionType;
+    request.mouseDownPos = last_mouse_down_pos;
+    request.mouseUpPos = last_mouse_up_pos;
+    request.previousMouseUpPos = last_last_mouse_up_pos;
+    request.config = BuildSelectionConfigSnapshot(false);
+    // Capture value and revision together. The worker may publish its final sequence
+    // only if no newer mouse-down or synchronous retrieval updated the shared state.
+    const ClipboardSequenceSnapshot clipboardSequence = clipboard_sequence_state->Load();
+    request.config.clipboardSequence = clipboardSequence.value;
+    request.clipboardSequenceState = clipboard_sequence_state;
+    request.clipboardSequenceRevision = clipboardSequence.revision;
+
+    if (!selection_worker->Enqueue(std::move(request)))
+    {
+        retrieval_gates->autoRetrievalInFlight.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+bool SelectionHook::IsRetrievalInFlight() const
+{
+    return retrieval_gates && retrieval_gates->IsAnyRetrievalInFlight();
+}
+
+/**
+ * @brief Create the result TSFN and start the automatic MTA worker for this generation.
+ * @param[in] env Current Node-API environment.
+ * @param[in] callback Existing event callback used to emit text-selection results.
+ * @param[out] error Initialization error on failure.
+ * @return true after the worker's COM/UIA readiness handshake succeeds.
+ */
+bool SelectionHook::StartSelectionWorker(Napi::Env env, Napi::Function callback, std::string &error)
+{
+    // Each start/stop session gets a new generation. Results queued by an older session
+    // are discarded even if their TSFN callback reaches JS after a restart.
+    const uint64_t generation = selection_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    napi_value resourceName = nullptr;
+    napi_status status = napi_create_string_utf8(env, "TextSelectionCallback", NAPI_AUTO_LENGTH, &resourceName);
+    if (status != napi_ok)
+    {
+        error = "Failed to create selection callback resource name";
+        return false;
+    }
+
+    auto *context = new SelectionResultTsfnContext{selection_result_owner};
+    napi_threadsafe_function resultTsfn = nullptr;
+    // The callback queue is intentionally unbounded, but the auto gate permits only one
+    // active request. The worker uses nonblocking delivery and owns a separate TSFN ref.
+    status = napi_create_threadsafe_function(env, callback, nullptr, resourceName, 0, 1, context,
+                                             FinalizeSelectionResultTsfn, context, CallSelectionResultJs, &resultTsfn);
+    if (status != napi_ok)
+    {
+        delete context;
+        error = "Failed to create selection result callback";
+        return false;
+    }
+
+    try
+    {
+        selection_worker = std::make_unique<SelectionWorker>();
+    }
+    catch (...)
+    {
+        napi_release_threadsafe_function(resultTsfn, napi_tsfn_abort);
+        error = "Failed to allocate selection MTA worker";
+        return false;
+    }
+
+    if (!selection_worker->Start(generation, resultTsfn, retrieval_gates, error))
+    {
+        selection_worker.reset();
+        return false;
+    }
+    return true;
+}
+
+/** Stop automatic retrieval before the hook TSFNs and addon instance are released. */
+void SelectionHook::StopSelectionWorker()
+{
+    if (selection_worker)
+    {
+        selection_worker->Stop();
+        selection_worker.reset();
+    }
+}
+
+/**
+ * @brief Convert a value-only worker result and invoke the existing JS event callback.
+ * @warning Generation, running state, and owner lifetime checks must precede all access
+ * to SelectionHook. Results arriving after stop/restart are intentionally discarded.
+ */
+void SelectionHook::CallSelectionResultJs(napi_env env, napi_value jsCallback, void *context, void *data)
+{
+    std::unique_ptr<SelectionWorkerResult> result(static_cast<SelectionWorkerResult *>(data));
+    if (!result || !env || !jsCallback || !context)
+        return;
+
+    auto *tsfnContext = static_cast<SelectionResultTsfnContext *>(context);
+    // Stop/destruction clears owner and bumps generation before a stale result can emit.
+    SelectionHook *owner = tsfnContext->owner->owner.load(std::memory_order_acquire);
+    if (!owner || !owner->running.load(std::memory_order_acquire) ||
+        owner->selection_generation.load(std::memory_order_acquire) != result->generation)
+        return;
+
+    Napi::Env napiEnv(env);
+    Napi::Object resultObject = owner->CreateSelectionResultObject(napiEnv, result->selection);
+    napi_value receiver = nullptr;
+    napi_get_global(env, &receiver);
+    napi_value argument = resultObject;
+    napi_call_function(env, receiver, jsCallback, 1, &argument, nullptr);
+}
+
+void SelectionHook::FinalizeSelectionResultTsfn(napi_env env, void *finalizeData, void *finalizeHint)
+{
+    (void)env;
+    (void)finalizeHint;
+    delete static_cast<SelectionResultTsfnContext *>(finalizeData);
+}
+
+/**
+ * @brief Check whether the current Windows notification state allows selection work.
+ * @return true when selection retrieval may proceed.
+ * @note SHQueryUserNotificationState costs about 0.3 ms on measured systems, so the
+ * result is cached for 10 seconds. Query failure intentionally defaults to true.
  */
 bool SelectionHook::ShouldProcessGetSelection()
 {
@@ -1338,934 +1332,6 @@ bool SelectionHook::ShouldProcessGetSelection()
     // QUNS_PRESENTATION_MODE (4) - Presentation mode
     lastResult = state != QUNS_RUNNING_D3D_FULL_SCREEN && state != QUNS_PRESENTATION_MODE;
     return lastResult;
-}
-
-/**
- * Check if we should process GetTextViaClipboard
- */
-bool SelectionHook::ShouldProcessViaClipboard(HWND hwnd, std::wstring &programName)
-{
-    if (!is_enabled_clipboard)
-        return false;
-
-    bool result = false;
-    switch (clipboard_filter_mode)
-    {
-        case FilterMode::Default:
-            result = true;
-            break;
-        case FilterMode::IncludeList:
-            result = IsInFilterList(programName, clipboard_filter_list);
-            break;
-        case FilterMode::ExcludeList:
-            result = !IsInFilterList(programName, clipboard_filter_list);
-            break;
-    }
-
-    if (!result)
-        return false;
-
-    // if trigger by user, we cannot determine the cursor shape
-    if (!is_triggered_by_user)
-    {
-        // decide by cursor shapes
-        HCURSOR arrowCursor = LoadCursor(NULL, IDC_ARROW);
-        HCURSOR beamCursor = LoadCursor(NULL, IDC_IBEAM);
-        HCURSOR handCursor = LoadCursor(NULL, IDC_HAND);
-
-        // when mouse down or up, any one of them is beamCursor, we can use clipboard
-        // otherwise, we have to check the situation further
-        if (currentInstance->mouse_down_cursor != beamCursor && currentInstance->mouse_up_cursor != beamCursor)
-        {
-            // not beam, not arrow, not hand: invalid text selection cursor
-            if (currentInstance->mouse_up_cursor != arrowCursor && currentInstance->mouse_up_cursor != handCursor)
-            {
-                // only apps in the list can use clipboard (exclude cursor detection)
-                if (IsInFilterList(programName, ftl_exclude_clipboard_cursor_detect))
-                {
-                    return true;
-                }
-                else
-                {
-                    return false;
-                }
-            }
-            /**
-             * not beam, but arrow or hand:
-             *
-             * uia_control_type exceptions (when the cursor is arrow or hand):
-             *
-             * https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-controltype-ids
-             *
-             * chrome devtools: UIA_GroupControlTypeId (50026)
-             * chrome pages: UIA_DocumentControlTypeId (50030), UIA_TextControlTypeId (50020)
-             */
-            else if (uia_control_type != UIA_GroupControlTypeId && uia_control_type != UIA_DocumentControlTypeId &&
-                     uia_control_type != UIA_TextControlTypeId)
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-/**
- * Remove the object replacement character (U+FFFC) from extracted text
- * UIA TextPattern providers return this marker for embedded objects (images, icons),
- * while the native Ctrl+C copy simply skips them
- *
- * Chromium wraps the marker in line breaks ("\n\xFFFC\n"), so one line break
- * on each side of the marker is removed together with it; otherwise inline
- * icons would leave stray line breaks in the middle of a sentence. Line breaks
- * not adjacent to a marker are untouched.
- */
-static void RemoveObjectReplacementChars(std::wstring &text)
-{
-    if (text.empty())
-        return;
-
-    constexpr wchar_t OBJECT_REPLACEMENT_CHAR = 0xFFFC;
-
-    if (text.find(OBJECT_REPLACEMENT_CHAR) == std::wstring::npos)
-        return;
-
-    std::wstring cleaned;
-    cleaned.reserve(text.size());
-
-    for (size_t i = 0; i < text.size(); i++)
-    {
-        if (text[i] != OBJECT_REPLACEMENT_CHAR)
-        {
-            cleaned += text[i];
-            continue;
-        }
-
-        // Drop one line break (\r\n, \n or \r) right before the marker
-        if (!cleaned.empty() && cleaned.back() == L'\n')
-        {
-            cleaned.pop_back();
-            if (!cleaned.empty() && cleaned.back() == L'\r')
-                cleaned.pop_back();
-        }
-        else if (!cleaned.empty() && cleaned.back() == L'\r')
-        {
-            cleaned.pop_back();
-        }
-
-        // Skip one line break (\r\n, \n or \r) right after the marker
-        if (i + 1 < text.size() && text[i + 1] == L'\r')
-        {
-            i++;
-            if (i + 1 < text.size() && text[i + 1] == L'\n')
-                i++;
-        }
-        else if (i + 1 < text.size() && text[i + 1] == L'\n')
-        {
-            i++;
-        }
-    }
-
-    text.swap(cleaned);
-}
-
-TextRetrievalResult SelectionHook::ClassifyAccessibleRole(IAccessible *accessible, const VARIANT &child)
-{
-    if (!accessible)
-        return TextRetrievalResult::Unavailable;
-
-    TextRetrievalResult result = TextRetrievalResult::Unavailable;
-    VARIANT varRole;
-    VariantInit(&varRole);
-
-    HRESULT hr = accessible->get_accRole(child, &varRole);
-    if (hr == S_OK && varRole.vt == VT_I4)
-    {
-        if (varRole.lVal == ROLE_SYSTEM_TEXT)
-        {
-            result = TextRetrievalResult::Unavailable;
-        }
-        else if (varRole.lVal >= ROLE_SYSTEM_TITLEBAR && varRole.lVal <= ROLE_SYSTEM_OUTLINEBUTTON)
-        {
-            result = TextRetrievalResult::NonTextSelection;
-        }
-    }
-
-    VariantClear(&varRole);
-    return result;
-}
-
-TextRetrievalResult SelectionHook::ProcessAccessibleSelection(IAccessible *accessible, TextSelectionInfo &selectionInfo)
-{
-    if (!accessible)
-        return TextRetrievalResult::Unavailable;
-
-    TextRetrievalResult result = TextRetrievalResult::Unavailable;
-    VARIANT varSel;
-    VariantInit(&varSel);
-
-    HRESULT hr = accessible->get_accSelection(&varSel);
-    if (SUCCEEDED(hr))
-    {
-        if (varSel.vt == VT_BSTR)
-        {
-            if (varSel.bstrVal)
-            {
-                selectionInfo.text.assign(varSel.bstrVal, SysStringLen(varSel.bstrVal));
-                RemoveObjectReplacementChars(selectionInfo.text);
-                if (!selectionInfo.text.empty())
-                    result = TextRetrievalResult::TextFound;
-            }
-        }
-        else if (varSel.vt == VT_UNKNOWN || (varSel.vt & VT_ARRAY) != 0)
-        {
-            result = TextRetrievalResult::NonTextSelection;
-        }
-        else if (varSel.vt == VT_I4)
-        {
-            result = ClassifyAccessibleRole(accessible, varSel);
-        }
-        else if (varSel.vt == VT_DISPATCH && varSel.pdispVal)
-        {
-            IAccessible *selectedAccessible = nullptr;
-            HRESULT queryHr =
-                varSel.pdispVal->QueryInterface(IID_IAccessible, reinterpret_cast<void **>(&selectedAccessible));
-
-            if (queryHr == S_OK && selectedAccessible)
-            {
-                VARIANT childSelf;
-                VariantInit(&childSelf);
-                childSelf.vt = VT_I4;
-                childSelf.lVal = CHILDID_SELF;
-
-                result = ClassifyAccessibleRole(selectedAccessible, childSelf);
-                selectedAccessible->Release();
-            }
-        }
-    }
-
-    VariantClear(&varSel);
-    return result;
-}
-
-/**
- * Try to get the selected text from a UIA element via TextPattern
- * Returns true only when a non-empty selection
- * was retrieved from the element
- * allowDocumentFallback: when false, only GetSelection is attempted. The document
- * range fallbacks read the text of the whole document range gated on the
- * IsSelectionActive attribute, which is only trustworthy on the focused element;
- * on ancestor elements (walk-up) a quirky provider could report an active
- * selection and the whole document text would be returned as the selection.
- */
-bool SelectionHook::TryGetTextViaTextPattern(IUIAutomationElement *pElement, TextSelectionInfo &selectionInfo,
-                                             bool allowDocumentFallback)
-{
-    if (!pElement)
-        return false;
-
-    bool result = false;
-
-    IUIAutomationTextPattern *pTextPattern = nullptr;
-    HRESULT hr =
-        pElement->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern), (void **)&pTextPattern);
-
-    if (SUCCEEDED(hr) && pTextPattern)
-    {
-        // First approach: Get selection directly
-        IUIAutomationTextRangeArray *pRanges = nullptr;
-        hr = pTextPattern->GetSelection(&pRanges);
-
-        if (SUCCEEDED(hr) && pRanges)
-        {
-            int count = 0;
-            hr = pRanges->get_Length(&count);
-
-            if (SUCCEEDED(hr) && count > 0)
-            {
-                // Process each selection range
-                for (int i = 0; i < count && !result; i++)  // Continue until we find a valid selection
-                {
-                    IUIAutomationTextRange *pRange = nullptr;
-                    hr = pRanges->GetElement(i, &pRange);
-
-                    if (SUCCEEDED(hr) && pRange)
-                    {
-                        BSTR bstr = nullptr;
-                        hr = pRange->GetText(-1, &bstr);
-
-                        if (SUCCEEDED(hr) && bstr)
-                        {
-                            selectionInfo.text = std::wstring(bstr);
-                            RemoveObjectReplacementChars(selectionInfo.text);
-
-                            if (!selectionInfo.text.empty())
-                            {
-                                // Get range coordinates
-                                result = SetTextRangeCoordinates(pRange, selectionInfo);
-                            }
-                            SysFreeString(bstr);
-                        }
-                        pRange->Release();
-                    }
-                }
-            }
-            pRanges->Release();
-        }
-
-        // Second approach: Try to get document range if first approach failed
-        if (!result && allowDocumentFallback)
-        {
-            IUIAutomationTextRange *pDocRange = nullptr;
-            hr = pTextPattern->get_DocumentRange(&pDocRange);
-
-            if (SUCCEEDED(hr) && pDocRange)
-            {
-                bool hasSelection = false;
-
-                // First check if there is an active selection without expanding
-                {
-                    // Check if there is a selection (by querying selection attributes)
-                    // Query the attribute first so the whole document text is not fetched
-                    // when there is no active selection
-                    VARIANT varSel;
-                    VariantInit(&varSel);
-
-                    HRESULT attrHr = pDocRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &varSel);
-
-                    if (SUCCEEDED(attrHr) && (varSel.vt == VT_BOOL) && (varSel.boolVal == VARIANT_TRUE))
-                    {
-                        BSTR bstr = nullptr;
-                        hr = pDocRange->GetText(-1, &bstr);
-
-                        if (SUCCEEDED(hr) && bstr)
-                        {
-                            // We have an active selection
-                            std::wstring selectedText = std::wstring(bstr);
-                            RemoveObjectReplacementChars(selectedText);
-                            if (!selectedText.empty())
-                            {
-                                selectionInfo.text = selectedText;
-                                if (SetTextRangeCoordinates(pDocRange, selectionInfo))
-                                {
-                                    result = true;
-                                    hasSelection = true;
-                                }
-                            }
-                        }
-
-                        if (bstr)
-                            SysFreeString(bstr);
-                    }
-                    VariantClear(&varSel);
-                }
-
-                // If no selection found, try expanding to document
-                if (!hasSelection)
-                {
-                    hr = pDocRange->ExpandToEnclosingUnit(TextUnit_Document);
-
-                    if (SUCCEEDED(hr))
-                    {
-                        // Check for active selection
-                        VARIANT varSel;
-                        VariantInit(&varSel);
-                        hr = pDocRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &varSel);
-
-                        if (SUCCEEDED(hr) && (varSel.vt == VT_BOOL) && (varSel.boolVal == VARIANT_TRUE))
-                        {
-                            BSTR bstr = nullptr;
-                            hr = pDocRange->GetText(-1, &bstr);
-
-                            if (SUCCEEDED(hr) && bstr)
-                            {
-                                std::wstring docText = std::wstring(bstr);
-                                RemoveObjectReplacementChars(docText);
-                                if (!docText.empty())
-                                {
-                                    selectionInfo.text = docText;
-                                    if (SetTextRangeCoordinates(pDocRange, selectionInfo))
-                                    {
-                                        result = true;
-                                    }
-                                }
-                                SysFreeString(bstr);
-                            }
-                        }
-
-                        VariantClear(&varSel);
-                    }
-                }
-                pDocRange->Release();
-            }
-        }
-        pTextPattern->Release();
-    }
-
-    return result;
-}
-
-/**
- * Get text selection via UI Automation interfaces
- */
-TextRetrievalResult SelectionHook::GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selectionInfo)
-{
-    if (!pUIAutomation || !hwnd)
-        return TextRetrievalResult::Unavailable;
-
-    TextRetrievalResult result = TextRetrievalResult::Unavailable;
-    TextRetrievalResult legacyResult = TextRetrievalResult::Unavailable;
-
-    // init the control type to window
-    uia_control_type = UIA_WindowControlTypeId;
-
-    // Get the window element
-    IUIAutomationElement *pElement = nullptr;
-    HRESULT hr = pUIAutomation->ElementFromHandle(hwnd, &pElement);
-
-    if (FAILED(hr) || !pElement)
-        return TextRetrievalResult::Unavailable;
-
-    // Get the focused element - using local scope to ensure proper cleanup
-    {
-        IUIAutomationElement *pFocusedElement = nullptr;
-        hr = pUIAutomation->GetFocusedElement(&pFocusedElement);
-
-        // Release window element as we don't need it anymore
-        pElement->Release();
-        pElement = nullptr;
-
-        if (FAILED(hr) || !pFocusedElement)
-            return TextRetrievalResult::Unavailable;
-
-        // Get ControlType for future use
-        CONTROLTYPEID controlType;
-        hr = pFocusedElement->get_CurrentControlType(&controlType);
-        if (SUCCEEDED(hr))
-        {
-            uia_control_type = controlType;
-        }
-
-        // Approach 1: Try with TextPattern
-        if (TryGetTextViaTextPattern(pFocusedElement, selectionInfo, true))
-            result = TextRetrievalResult::TextFound;
-
-        // Third approach: Try with LegacyIAccessible pattern if other methods failed
-        if (result != TextRetrievalResult::TextFound)
-        {
-            IUIAutomationLegacyIAccessiblePattern *pLegacyPattern = nullptr;
-            hr = pFocusedElement->GetCurrentPatternAs(UIA_LegacyIAccessiblePatternId,
-                                                      __uuidof(IUIAutomationLegacyIAccessiblePattern),
-                                                      (void **)&pLegacyPattern);
-
-            if (SUCCEEDED(hr) && pLegacyPattern)
-            {
-                IAccessible *pAcc = nullptr;
-                hr = pLegacyPattern->GetIAccessible(&pAcc);
-
-                if (SUCCEEDED(hr) && pAcc)
-                {
-                    legacyResult = ProcessAccessibleSelection(pAcc, selectionInfo);
-                    if (legacyResult == TextRetrievalResult::TextFound)
-                        result = TextRetrievalResult::TextFound;
-                    pAcc->Release();
-                }
-                pLegacyPattern->Release();
-            }
-        }
-
-        // Fourth approach: walk up the ancestor chain and retry TextPattern
-        // In web browsers (Chromium/Edge), a container with tabindex receives UIA focus,
-        // but the selection is managed by an ancestor (usually the Document element)
-        // that supports TextPattern. See issue #18 and PR #14.
-        if (result != TextRetrievalResult::TextFound)
-        {
-            IUIAutomationTreeWalker *pTreeWalker = nullptr;
-            hr = pUIAutomation->get_ControlViewWalker(&pTreeWalker);
-
-            if (SUCCEEDED(hr) && pTreeWalker)
-            {
-                // The Document element is usually within a few levels above the focused element
-                const int maxWalkUpLevels = 10;
-
-                IUIAutomationElement *pCurrent = pFocusedElement;
-                pCurrent->AddRef();
-
-                for (int level = 0; level < maxWalkUpLevels && result != TextRetrievalResult::TextFound; level++)
-                {
-                    IUIAutomationElement *pParent = nullptr;
-                    hr = pTreeWalker->GetParentElement(pCurrent, &pParent);
-                    pCurrent->Release();
-                    pCurrent = nullptr;
-
-                    if (FAILED(hr) || !pParent)
-                        break;
-
-                    pCurrent = pParent;
-                    // Ancestors may only succeed via GetSelection (no document fallback)
-                    if (TryGetTextViaTextPattern(pCurrent, selectionInfo, false))
-                        result = TextRetrievalResult::TextFound;
-                }
-
-                if (pCurrent)
-                    pCurrent->Release();
-                pTreeWalker->Release();
-            }
-        }
-
-        if (result != TextRetrievalResult::TextFound && legacyResult == TextRetrievalResult::NonTextSelection)
-            result = TextRetrievalResult::NonTextSelection;
-
-        // Always release the focused element
-        pFocusedElement->Release();
-    }
-
-    return result;
-}
-
-/**
- * Get text selection via IAccessible interface for legacy applications
- */
-TextRetrievalResult SelectionHook::GetTextViaAccessible(HWND hwnd, TextSelectionInfo &selectionInfo)
-{
-    if (!hwnd)
-        return TextRetrievalResult::Unavailable;
-
-    // Get IAccessible interface for the window
-    IAccessible *pAcc = nullptr;
-    HRESULT hr = AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, IID_IAccessible, (void **)&pAcc);
-
-    if (FAILED(hr) || !pAcc)
-    {
-        return TextRetrievalResult::Unavailable;
-    }
-
-    TextRetrievalResult result = ProcessAccessibleSelection(pAcc, selectionInfo);
-    pAcc->Release();
-    return result;
-}
-
-/**
- * Get text using clipboard and Ctrl+C as a last resort
- * Uses clipboard listener and simulated Ctrl+C to obtain selected text
- */
-bool SelectionHook::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo)
-{
-    if (!hwnd)
-        return false;
-
-    constexpr DWORD SLEEP_INTERVAL = 5;  // milliseconds
-
-    // If is_triggered_by_user,
-    // it means we initiated the copy action ourselves,
-    // so we can skip the key check preprocessing
-    if (!is_triggered_by_user)
-    {
-        // Key check preprocessing: user may be pressing copy/cut/paste keys
-        // during text selection. We poll up to ~200ms to determine user intent.
-
-        bool isCtrlPressed = false;
-        bool isCPressed = false;
-        bool isXPressed = false;
-        bool isVPressed = false;
-        int checkCount = 0;
-        const int maxChecks = 5;
-
-        while (checkCount < maxChecks)
-        {
-            // Check if clipboard sequence number has changed since mouse down
-            // if it's changed, it means user has copied something, we can read it directly
-            if (GetClipboardSequenceNumber() != clipboard_sequence)
-            {
-                if (!ReadClipboard(selectionInfo.text) || selectionInfo.text.empty())
-                {
-                    return false;
-                }
-                return true;
-            }
-
-            bool isCtrlPressing = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool isCPressing = (GetAsyncKeyState('C') & 0x8000) != 0;
-            bool isXPressing = (GetAsyncKeyState('X') & 0x8000) != 0;
-            bool isVPressing = (GetAsyncKeyState('V') & 0x8000) != 0;
-
-            // No keys pressed - safe to proceed with clipboard extraction
-            if (!isCtrlPressing && !isCPressing && !isXPressing && !isVPressing)
-            {
-                break;
-            }
-
-            // Keys are pressed - accumulate and keep polling to determine user intent
-            if (isCtrlPressing)
-                isCtrlPressed = true;
-            if (isCPressing)
-                isCPressed = true;
-            if (isXPressing)
-                isXPressed = true;
-            if (isVPressing)
-                isVPressed = true;
-
-            checkCount++;
-            Sleep(40);
-        }
-
-        // Timed out with keys still held - abort
-        if (checkCount >= maxChecks)
-        {
-            return false;
-        }
-
-        // Detected Ctrl+C/X/V combo - user is copying/cutting/pasting, don't interfere
-        if (isCtrlPressed && (isCPressed || isXPressed || isVPressed))
-        {
-            return false;
-        }
-    }
-
-    // The MFC ID_EDIT_COPY message will make JetBrains IDEs crash, so we abandon this method
-
-    // Save ALL existing clipboard content (all formats, not just text)
-    ClipboardBackup clipboardBackup;
-    if (OpenClipboard(nullptr))
-    {
-        BackupClipboard(clipboardBackup, true);
-        EmptyClipboard();
-        CloseClipboard();
-    }
-    else
-    {
-        // Failed to open clipboard, can't proceed safely
-        return false;
-    }
-
-    bool isInDelayReadList = !selectionInfo.programName.empty() &&
-                             IsInFilterList(selectionInfo.programName, ftl_include_clipboard_delay_read);
-
-    // if the program is in the delay read list, we only process Ctrl+C
-    if (!isInDelayReadList)
-    {
-        if (ShouldKeyInterruptViaClipboard())
-        {
-            if (clipboardBackup.HasData())
-            {
-                RestoreClipboard(clipboardBackup);
-                clipboard_sequence = GetClipboardSequenceNumber();
-            }
-            return false;
-        }
-
-        /**
-         * Ctrl+Insert
-         *
-         * First, we try to get the text with Ctrl+Insert
-         * It's a safer way than Ctrl+C
-         * but it may not work for some apps not supporting it,
-         * and the shortcut may be used by other purposes
-         */
-
-        // renew the clipboard sequence number
-        clipboard_sequence = GetClipboardSequenceNumber();
-
-        // Send Ctrl+Insert to copy selected text
-        SendCopyKey(CopyKeyType::CtrlInsert);
-
-        // Wait for clipboard update with polling
-        bool hasNewContent = false;
-        // max wait time about 5m * 20 = 100ms
-        for (int i = 0; i < 20; i++)
-        {
-            if (GetClipboardSequenceNumber() != clipboard_sequence)
-            {
-                hasNewContent = true;
-                break;
-            }
-            Sleep(SLEEP_INTERVAL);
-        }
-
-        // Handle case when clipboard update was detected
-        if (hasNewContent)
-        {
-            Sleep(10);
-
-            bool readSuccess = ReadClipboard(selectionInfo.text);
-
-            if (clipboardBackup.HasData())
-            {
-                RestoreClipboard(clipboardBackup);
-                clipboard_sequence = GetClipboardSequenceNumber();
-            }
-
-            if (!readSuccess || selectionInfo.text.empty())
-                return false;
-
-            return true;
-        }
-    }
-
-    if (ShouldKeyInterruptViaClipboard())
-    {
-        if (clipboardBackup.HasData())
-        {
-            RestoreClipboard(clipboardBackup);
-            clipboard_sequence = GetClipboardSequenceNumber();
-        }
-        return false;
-    }
-
-    /**
-     * Ctrl+C
-     */
-
-    // renew the clipboard sequence number
-    clipboard_sequence = GetClipboardSequenceNumber();
-
-    // Send Ctrl+C to copy selected text
-    SendCopyKey(CopyKeyType::CtrlC);
-
-    // Wait for clipboard update with polling
-    bool hasNewContent = false;
-    // max wait time about 5m * 36 = 180ms
-    for (int i = 0; i < 36; i++)
-    {
-        if (GetClipboardSequenceNumber() != clipboard_sequence)
-        {
-            hasNewContent = true;
-            break;
-        }
-        Sleep(SLEEP_INTERVAL);
-    }
-
-    // Handle case when no clipboard update was detected
-    if (!hasNewContent)
-    {
-        if (clipboardBackup.HasData())
-        {
-            RestoreClipboard(clipboardBackup);
-            clipboard_sequence = GetClipboardSequenceNumber();
-        }
-        return false;
-    }
-
-    // some apps will change the clipboard content many times after the first time GetClipboardSequenceNumber() changed
-    // so we need to wait a little bit (eg. Adobe Acrobat) for those app in the delay read list
-    if (isInDelayReadList)
-    {
-        Sleep(135);
-    }
-    Sleep(10);
-
-    if (ShouldKeyInterruptViaClipboard())
-    {
-        if (clipboardBackup.HasData())
-        {
-            RestoreClipboard(clipboardBackup);
-            clipboard_sequence = GetClipboardSequenceNumber();
-        }
-        return false;
-    }
-
-    // Read the new clipboard content
-    bool readSuccess = ReadClipboard(selectionInfo.text);
-
-    // Restore previous clipboard content (all formats)
-    if (clipboardBackup.HasData())
-    {
-        RestoreClipboard(clipboardBackup);
-        clipboard_sequence = GetClipboardSequenceNumber();
-    }
-
-    if (!readSuccess || selectionInfo.text.empty())
-        return false;
-
-    return true;
-}
-
-/**
- * Send copy key combination based on type
- * @param type The type of copy key combination to send (CtrlInsert or CtrlC)
- */
-void SelectionHook::SendCopyKey(CopyKeyType type)
-{
-    bool isCPressing = (GetAsyncKeyState('C') & 0x8000) != 0;
-    bool isCtrlPressing = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    bool isAltPressing = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    bool isShiftPressing = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-
-    // if Ctrl+C is pressing, means user is doing copy action, we will not send anything
-    if (isCtrlPressing && isCPressing)
-        return;
-
-    WORD keyCode = (type == CopyKeyType::CtrlInsert) ? VK_INSERT : 'C';
-
-    std::vector<INPUT> inputs;
-    INPUT input = {};
-
-    // if Alt is pressing, we need to release it first
-    if (isAltPressing)
-    {
-        input.type = INPUT_KEYBOARD;
-        input.ki.wVk = VK_MENU;
-        input.ki.dwFlags = KEYEVENTF_KEYUP;
-        inputs.push_back(input);
-    }
-
-    if (isShiftPressing)
-    {
-        input.type = INPUT_KEYBOARD;
-        input.ki.wVk = VK_SHIFT;
-        input.ki.dwFlags = KEYEVENTF_KEYUP;
-        inputs.push_back(input);
-    }
-
-    // The following Ctrl+Insert or Ctrl+C key combinations are symmetric, meaning press and release events come in
-    // pairs
-
-    // Press the Ctrl key
-    if (!isCtrlPressing)
-    {
-        input.type = INPUT_KEYBOARD;
-        input.ki.wVk = VK_RCONTROL;
-        input.ki.dwFlags = 0;
-        inputs.push_back(input);
-    }
-
-    // Press the key (Insert or C)
-    input.type = INPUT_KEYBOARD;
-    input.ki.wVk = keyCode;
-    input.ki.dwFlags = 0;
-    inputs.push_back(input);
-
-    // Release the key (Insert or C)
-    input.type = INPUT_KEYBOARD;
-    input.ki.wVk = keyCode;
-    input.ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs.push_back(input);
-
-    // Release the Ctrl key
-    if (!isCtrlPressing)
-    {
-        input.type = INPUT_KEYBOARD;
-        input.ki.wVk = VK_RCONTROL;
-        input.ki.dwFlags = KEYEVENTF_KEYUP;
-        inputs.push_back(input);
-    }
-
-    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
-}
-
-/**
- * Check if some key is interrupted the copy process via clipboard
- * @return true if the key is interrupted via clipboard, false otherwise
- */
-bool SelectionHook::ShouldKeyInterruptViaClipboard()
-{
-    // if it's not triggered by user, and ctrl is pressing, it means user is doing other action, we will not process
-    // we will do the check every time when we have to copy text
-    bool isCtrlPressing = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    if (!is_triggered_by_user && isCtrlPressing)
-    {
-        return true;
-    }
-    return false;
-}
-
-/**
- * Get screen coordinates of a text range
- */
-bool SelectionHook::SetTextRangeCoordinates(IUIAutomationTextRange *pRange, TextSelectionInfo &selectionInfo)
-{
-    if (!pRange)
-        return false;
-
-    // Get range's bounding rectangles
-    SAFEARRAY *pRectArray = nullptr;
-    HRESULT hr = pRange->GetBoundingRectangles(&pRectArray);
-
-    if (SUCCEEDED(hr) && pRectArray)
-    {
-        // Access rect array data directly for better performance
-        double *pRects = nullptr;
-        HRESULT accessHr = SafeArrayAccessData(pRectArray, (void **)&pRects);
-
-        if (FAILED(accessHr) || !pRects)
-        {
-            SafeArrayDestroy(pRectArray);
-            return false;
-        }
-
-        LONG lowerBound, upperBound;
-        SafeArrayGetLBound(pRectArray, 1, &lowerBound);
-        SafeArrayGetUBound(pRectArray, 1, &upperBound);
-
-        int rectCount = (upperBound - lowerBound + 1) / 4;
-
-        // Find first rectangle with width > 1 pixel and height < 100 pixel
-        int firstValidRectIndex = -1;
-        for (int i = 0; i < rectCount; i++)
-        {
-            int rectIndex = i * 4;
-            double width = pRects[rectIndex + 2];
-            double height = pRects[rectIndex + 3];
-
-            if (width > 1.0 && height < 100.0)
-            {
-                firstValidRectIndex = rectIndex;
-                break;
-            }
-        }
-
-        // Find last rectangle with width > 1 pixel and height < 100 pixel
-        int lastValidRectIndex = -1;
-        for (int i = rectCount - 1; i >= 0; i--)
-        {
-            int rectIndex = i * 4;
-            double width = pRects[rectIndex + 2];
-            double height = pRects[rectIndex + 3];
-
-            if (width > 1.0 && height < 100.0)
-            {
-                lastValidRectIndex = rectIndex;
-                break;
-            }
-        }
-
-        bool found = false;
-
-        // If we found valid rectangles, populate selectionInfo before releasing the array
-        if (firstValidRectIndex >= 0 && lastValidRectIndex >= 0)
-        {
-            // Use first valid rectangle's top-left as start position (first paragraph left-top)
-            selectionInfo.startTop.x = static_cast<LONG>(pRects[firstValidRectIndex]);
-            selectionInfo.startTop.y = static_cast<LONG>(pRects[firstValidRectIndex + 1]);
-
-            // Set first paragraph's left-bottom point
-            selectionInfo.startBottom.x = static_cast<LONG>(pRects[firstValidRectIndex]);
-            selectionInfo.startBottom.y = static_cast<LONG>(pRects[firstValidRectIndex + 1] +
-                                                            pRects[firstValidRectIndex + 3]);  // top + height = bottom
-
-            // Use last valid rectangle's bottom-right as end position (last paragraph right-bottom)
-            selectionInfo.endBottom.x =
-                static_cast<LONG>(pRects[lastValidRectIndex] + pRects[lastValidRectIndex + 2]);  // left + width = right
-            selectionInfo.endBottom.y = static_cast<LONG>(pRects[lastValidRectIndex + 1] +
-                                                          pRects[lastValidRectIndex + 3]);  // top + height = bottom
-
-            // Set last paragraph's right-top point
-            selectionInfo.endTop.x =
-                static_cast<LONG>(pRects[lastValidRectIndex] + pRects[lastValidRectIndex + 2]);  // right
-            selectionInfo.endTop.y = static_cast<LONG>(pRects[lastValidRectIndex + 1]);          // top
-
-            selectionInfo.posLevel = SelectionPositionLevel::Full;
-            found = true;
-        }
-
-        // Always release the array lock and destroy, regardless of whether valid rects were found
-        SafeArrayUnaccessData(pRectArray);
-        SafeArrayDestroy(pRectArray);
-        return found;
-    }
-
-    return false;
 }
 
 /**
@@ -2345,11 +1411,6 @@ void SelectionHook::StopMouseKeyboardHookThread()
  */
 void SelectionHook::ReleaseThreadSafeFunctions()
 {
-    if (tsfn)
-    {
-        tsfn.Release();
-        tsfn = nullptr;
-    }
     if (mouse_tsfn)
     {
         mouse_tsfn.Release();
@@ -2442,7 +1503,7 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
         MSLLHOOKSTRUCT *pMouseInfo = (MSLLHOOKSTRUCT *)lParam;
 
         // Update the button bitmap BEFORE any filtering, so the state stays correct
-        // even when this event is skipped by is_processing / the mouse-move switch,
+        // even when this event is skipped by a retrieval gate / the mouse-move switch,
         // or dropped later by a full TSFN queue.
         switch (wParam)
         {
@@ -2477,7 +1538,7 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
         }
 
         // If not WM_MOUSEMOVE or WM_MOUSEMOVE has been requested, process event
-        if (!currentInstance->is_processing.load() &&
+        if (!currentInstance->IsRetrievalInFlight() &&
             !(wParam == WM_MOUSEMOVE && !currentInstance->is_enabled_mouse_move_event))
         {
             // Capture the remaining gesture inputs at event time. These queries are
@@ -2560,7 +1621,7 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
  */
 LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    if (nCode == HC_ACTION && currentInstance && !currentInstance->is_processing.load())
+    if (nCode == HC_ACTION && currentInstance && !currentInstance->IsRetrievalInFlight())
     {
         KBDLLHOOKSTRUCT *pKeyInfo = (KBDLLHOOKSTRUCT *)lParam;
         auto pKeyboardEvent = new KeyboardEventContext();

@@ -16,6 +16,8 @@
         ['OS=="win"', {
           "sources": [ 
             "src/windows/selection_hook.cc",
+            "src/windows/core/engine.cc",
+            "src/windows/core/worker.cc",
             "src/windows/lib/string_pool.cc",
             "src/windows/lib/utils.cc",
             "src/windows/lib/clipboard.cc",
@@ -86,4 +88,4 @@
       ]
     }
   ]
-} 
+}

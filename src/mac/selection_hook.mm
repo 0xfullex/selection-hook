@@ -17,7 +17,9 @@
  *   worker thread; see the note above GetSelectedText() in ProcessMouseEvent.
  * - Event thread: MouseKeyboardEventThreadProc() owns a CFRunLoop with two
  *   listen-only CGEventTaps. Tap callbacks must not touch N-API or block; they
- *   snapshot event-time state into a context and hand it to a TSFN.
+ *   snapshot event-time state into a context and hand it to a TSFN. The only
+ *   state they keep between events is the mid-drag cursor evidence
+ *   (drag_saw_ibeam, last_drag_cursor_sample_ms), which no other thread reads.
  *
  * Features:
  * - Detect text selections via mouse drag, double-click, or keyboard
@@ -66,6 +68,13 @@ constexpr int MIN_DRAG_DISTANCE = 8;          // Below this a press-release is a
 constexpr uint64_t MAX_DRAG_TIME_MS = 15000;  // A button held longer than this is not a selection.
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;  // Max travel between the two clicks of a double-click.
 static uint64_t DOUBLE_CLICK_TIME_MS = 500;   // Fixed; [NSEvent doubleClickInterval] is not consulted.
+// Mid-drag cursor sampling cadence. [NSCursor currentSystemCursor] costs ~0.1 ms per
+// call (WindowServer round trip), so kCGEventLeftMouseDragged is sampled at most once
+// per interval while the left button is held, and not at all once an I-beam was seen.
+// 50 ms keeps the worst case at 2 ms/s and still yields several samples per gesture:
+// Blink re-selects the cursor on every mouse move (plus a 20 ms update timer) and a
+// drag spans hundreds of ms.
+constexpr uint64_t DRAG_CURSOR_SAMPLE_INTERVAL_MS = 50;
 
 // Mouse button enum
 enum class MouseButton
@@ -98,6 +107,9 @@ struct MouseEventContext
                                 ///< distorted by main thread stalls
     bool cursorIBeam;           ///< Whether the system cursor was an I-beam at event time.
                                 ///< Only sampled on left button down/up, false otherwise
+    bool dragSawIBeam;          ///< Whether a throttled sample during the drag saw an I-beam
+                                ///< since the last left button down. Only carried on left
+                                ///< button up, false otherwise
     int64_t clipboardSequence;  ///< Clipboard change count at event time.
                                 ///< Only sampled on left button down, -1 otherwise
 };
@@ -233,6 +245,14 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     uint64_t last_mouse_down_time = 0;
     bool is_last_valid_click = false;
     bool is_last_mouse_down_valid_cursor = false;
+
+    // Mid-drag cursor evidence. Owned by the event thread: written only inside
+    // MouseEventCallback() between a left button down and its matching up, and reset in
+    // Start() before that thread exists (Stop() joins it, so a later Start() cannot race).
+    // ProcessMouseEvent() never reads these; the mouse-up snapshot carries the result as
+    // MouseEventContext::dragSawIBeam.
+    bool drag_saw_ibeam = false;
+    uint64_t last_drag_cursor_sample_ms = 0;
 
     // Previous modifier flags, used to derive key-down/key-up from flagsChanged
     CGEventFlags previous_flags = 0;
@@ -376,6 +396,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         last_mouse_down_time = 0;
         is_last_valid_click = false;
         is_last_mouse_down_valid_cursor = false;
+        drag_saw_ibeam = false;
+        last_drag_cursor_sample_ms = 0;
         previous_flags = 0;
 
         // Set flags before starting thread to ensure proper synchronization
@@ -1060,6 +1082,11 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                     (currentTime - currentInstance->last_mouse_down_time) <= DOUBLE_CLICK_TIME_MS;
                 // Both terms are event-time snapshots, not current system state
                 bool isValidCursor = currentInstance->is_last_mouse_down_valid_cursor || pMouseEvent->cursorIBeam;
+                // Drag only: both endpoint samples can miss the I-beam although the drag
+                // crossed text (see the sampling notes in MouseEventCallback), so a
+                // throttled mid-drag sample counts as evidence too. Double-click and
+                // shift-click are stationary gestures and keep the endpoint-only rule.
+                bool isValidDragCursor = isValidCursor || pMouseEvent->dragSawIBeam;
 
                 if ((currentTime - currentInstance->last_mouse_down_time) > MAX_DRAG_TIME_MS)
                 {
@@ -1069,7 +1096,7 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
                 else if (distance >= MIN_DRAG_DISTANCE)
                 {
                     // Only support IBeamCursor for now
-                    if (isValidCursor)
+                    if (isValidDragCursor)
                     {
                         shouldDetectSelection = true;
                         detectionType = SelectionDetectType::Drag;
@@ -1412,12 +1439,27 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
     // in ProcessMouseEvent would observe the state after the queue drains, and the
     // cursor shape has been measured to flip within 0.1s of real pointer movement.
     //
-    // Sampling is deliberately restricted to the left button down/up events:
-    // [NSCursor currentSystemCursor] costs ~0.1 ms per call (it crosses into
-    // WindowServer). Calling it for every kCGEventMouseMoved would burn several
-    // percent of a core on a high polling rate mouse and could accumulate into a
-    // kCGEventTapDisabledByTimeout. Only those two events ever consult it.
+    // The endpoint samples are still one step behind the app: the front app sets the
+    // cursor while handling its own mouse events, and this tap runs before the app has
+    // seen the event being sampled. Chromium sets it after a renderer hit test plus IPC
+    // (a frame or more late), and AppKit cursor rects are driven by mouse-moved, not
+    // mouse-dragged, unless a view opts in with NSTrackingEnabledDuringMouseDrag. Two
+    // common gestures therefore see an arrow at both endpoints even though the drag
+    // crossed text: pressing within that latency of entering the text, and starting or
+    // ending in the margin next to a paragraph (browsers, Electron).
+    // WebKit and Blink both re-select the cursor on every mouse move while the button
+    // is held, so a throttled sample during kCGEventLeftMouseDragged recovers those
+    // cases. It is extra evidence for the drag branch only; see ProcessMouseEvent.
+    //
+    // Cost: [NSCursor currentSystemCursor] costs ~0.1 ms per call (it crosses into
+    // WindowServer). Sampling every dragged event on a high polling rate mouse would
+    // burn several percent of a core and could accumulate into a
+    // kCGEventTapDisabledByTimeout, so drag samples are limited to one per
+    // DRAG_CURSOR_SAMPLE_INTERVAL_MS and stop after the first I-beam. Left button
+    // down/up are sampled unconditionally; kCGEventMouseMoved never is.
+    uint64_t timestampMs = CGEventGetTimestamp(event) / 1000000ULL;
     bool cursorIBeam = false;
+    bool dragSawIBeam = false;
     int64_t clipboardSequence = -1;
     if (type == kCGEventLeftMouseDown || type == kCGEventLeftMouseUp)
     {
@@ -1429,6 +1471,27 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
         {
             // Cheap by comparison (~0.6 us), but only mouse-down ever reads it
             clipboardSequence = GetClipboardSequence();
+            // A new gesture starts with no mid-drag evidence; the first drag sample is
+            // due one interval after the press.
+            hook->drag_saw_ibeam = false;
+            hook->last_drag_cursor_sample_ms = timestampMs;
+        }
+        else
+        {
+            // Hand the evidence to the snapshot and clear it, so a gesture whose
+            // mouse-down was never seen (tap re-enabled after a timeout, or started
+            // mid-press) cannot inherit it from the previous one.
+            dragSawIBeam = hook->drag_saw_ibeam;
+            hook->drag_saw_ibeam = false;
+        }
+    }
+    else if (type == kCGEventLeftMouseDragged && !hook->drag_saw_ibeam &&
+             timestampMs - hook->last_drag_cursor_sample_ms >= DRAG_CURSOR_SAMPLE_INTERVAL_MS)
+    {
+        hook->last_drag_cursor_sample_ms = timestampMs;
+        @autoreleasepool
+        {
+            hook->drag_saw_ibeam = IsIBeamCursor([NSCursor currentSystemCursor]);
         }
     }
 
@@ -1439,8 +1502,9 @@ CGEventRef SelectionHook::MouseEventCallback(CGEventTapProxy proxy, CGEventType 
                                                              .button = button,
                                                              .flag = flag,
                                                              .evFlags = CGEventGetFlags(event),
-                                                             .timestampMs = CGEventGetTimestamp(event) / 1000000ULL,
+                                                             .timestampMs = timestampMs,
                                                              .cursorIBeam = cursorIBeam,
+                                                             .dragSawIBeam = dragSawIBeam,
                                                              .clipboardSequence = clipboardSequence};
 
     // Send to main thread for processing

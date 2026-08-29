@@ -39,7 +39,7 @@ On a macOS dev machine with accessibility permission granted, `npm run test:loca
 
 ### Rules
 
-- A bug fix must come with a regression test that references the issue number and was shown to fail before the fix.
+- A bug fix must come with a regression test that was shown to fail before the fix. Reference the issue or PR number when one exists; otherwise the test's header comment must describe the pre-fix behavior it guards against.
 - `start()` may only be called inside `test/integration/scenarios/*.js`. Scenario files run in a watchdog child process via `runScenario()`, must not contain `.test.` in their name, and must check the `SELECTION_HOOK_SCENARIO` sentinel as their first statement.
 - `*.test.js` files under `test/integration/` only spawn scenarios and assert; parent-process calls are limited to APIs that do not start the hook.
 - Skipping is only allowed through `requires()` / `localTier()` from `test/helpers/capabilities.js`, and only for test names registered in `SKIP_ALLOWLIST` in `test/lib/gate.js`. Register new env / local tier tests there; never rename a test that is in the allowlist (`stop-race: input-monitoring` is also referenced by the release gate).

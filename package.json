@@ -30,8 +30,13 @@
     "prebuild:linux:x64": "prebuildify --napi --platform=linux --arch=x64",
     "prebuild:linux:arm64": "prebuildify --napi --platform=linux --arch=arm64",
     "demo": "node --trace-deprecation --force-node-api-uncaught-exceptions-policy=true examples/node-demo.js",
+    "test": "node scripts/run-tests.js unit && node scripts/run-tests.js integration",
+    "test:unit": "node scripts/run-tests.js unit",
+    "test:integration": "node scripts/run-tests.js integration",
+    "test:local": "node scripts/run-tests.js local",
     "typecheck": "tsc --noEmit",
-    "format": "find src -name '*.cc' -o -name '*.mm' -o -name '*.h' | xargs clang-format -i"
+    "format": "node scripts/format.js",
+    "format:check": "node scripts/format.js --check"
   },
   "keywords": [
     "node",

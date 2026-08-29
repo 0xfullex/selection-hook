@@ -8,3 +8,6 @@ bin
 .cursorrules
 .clang-format
 tsconfig.json
+test
+scripts
+test-results

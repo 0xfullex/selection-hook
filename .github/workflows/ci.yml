@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+          - os: ubuntu-24.04
+            format-check: true
+          - os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CLANG_FORMAT: clang-format-20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install Linux build and test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevdev-dev libx11-dev libxtst-dev libxfixes-dev libwayland-dev xvfb clang-format-20
+
+      - name: Install Python setuptools
+        if: runner.os == 'macOS'
+        run: brew install python-setuptools
+
+      - run: npm ci --ignore-scripts
+      - run: npm run rebuild
+      - run: npm run typecheck
+
+      - name: Check C++ formatting
+        if: matrix.format-check
+        run: npm run format:check
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:integration
+          else
+            npm run test:integration
+          fi
+
+      - name: Test summary
+        if: always()
+        run: node scripts/run-tests.js summary
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore

@@ -7,15 +7,44 @@ This is a Node.js native module (Node-API/N-API) that monitors text selections a
 ## Build & Validation
 
 - `npm run rebuild` - Rebuild native module for current platform
-- `npm run demo` - Run demo/test
+- `npm run demo` - Run demo
 - `npm run prebuild` - Prebuild all platforms
 - `npm run typecheck` - TypeScript type validation
-- `npm run format` - Format all C++ source files with clang-format
+- `npm run format` - Format all C++ source files with clang-format (cross-platform, `CLANG_FORMAT` env selects the binary)
+- `npm run format:check` - Fail if any C++ file is not formatted
+- `npm test` - Unit tests then integration tests (what CI runs)
+- `npm run test:unit` - L1 unit tests of `index.js` against a fake native module (`test/unit/`)
+- `npm run test:integration` - L2 integration tests against the real `.node` (`test/integration/`)
+- `npm run test:local` - Release gate: forced rebuild, unit + integration with local tier enabled, machine-judged (macOS only)
 
 After modifying code, run the relevant checks:
-- C++ code (`src/`) → `npm run rebuild` && `npm run format`
-- `index.js` or `index.d.ts` → `npm run typecheck`
+- C++ code (`src/`) → `npm run rebuild` && `npm run format` && `npm test`
+- `index.js` or `index.d.ts` → `npm run typecheck` && `npm run test:unit`
 - `package.json` → `npm install` (to keep `package-lock.json` in sync)
+- Test infrastructure (`scripts/run-tests.js`, `test/lib/`, `test/helpers/`) → `npm test`
+
+## Testing
+
+### Tiers
+
+- **gate**: build, typecheck, format, `native-load`, all unit tests, `api-smoke`, `lifecycle`, clipboard contract. Runs in CI on all platforms and locally. Must never skip; `scripts/run-tests.js` fails the run on any skip outside the allowlist.
+- **env**: needs real input monitoring (macOS accessibility permission, a display on Linux). Skips with `requires()` where the capability is missing (GitHub-hosted macOS runners cannot be granted accessibility).
+- **local**: writes to the real clipboard. Always runs in CI; on dev machines only with `SELECTION_HOOK_TEST_LOCAL=1` (set automatically by `npm run test:local`).
+
+CI (`.github/workflows/ci.yml`) runs gate + env + local on Windows, macOS, Linux x64 and Linux arm64 (Linux under `xvfb-run`). The release workflow depends on it.
+
+### Release gate (before every release)
+
+On a macOS dev machine with accessibility permission granted, `npm run test:local` must exit 0. It rebuilds first (a stale `build/` binary is loaded in preference to `prebuilds/`), then requires: no failures, no test skipped for missing input-monitoring, and `stop-race: input-monitoring` (issue #23) in the passed list. `npm run test:local -- --no-rebuild` is a quick mode and is not a release gate.
+
+### Rules
+
+- A bug fix must come with a regression test that references the issue number and was shown to fail before the fix.
+- `start()` may only be called inside `test/integration/scenarios/*.js`. Scenario files run in a watchdog child process via `runScenario()`, must not contain `.test.` in their name, and must check the `SELECTION_HOOK_SCENARIO` sentinel as their first statement.
+- `*.test.js` files under `test/integration/` only spawn scenarios and assert; parent-process calls are limited to APIs that do not start the hook.
+- Skipping is only allowed through `requires()` / `localTier()` from `test/helpers/capabilities.js`, and only for test names registered in `SKIP_ALLOWLIST` in `test/lib/gate.js`. Register new env / local tier tests there; never rename a test that is in the allowlist (`stop-race: input-monitoring` is also referenced by the release gate).
+- Unit tests must not skip and must not touch the native module; use `loadIndexWith()` from `test/helpers/fake-native.js`.
+- Do not add test-only entry points to `index.js` or the native code.
 
 ## Architecture
 

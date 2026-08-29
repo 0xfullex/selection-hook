@@ -15,7 +15,9 @@ const { runScenarioBody } = require("../../helpers/scenario-runtime.js");
 runScenarioBody((SelectionHook) => {
   const hook = new SelectionHook();
   hook.on("error", () => {});
-  if (!hook.start()) throw new Error("start() returned false");
+  // Keep the smoke test side-effect-free: Windows clipboard fallback may
+  // synthesize Ctrl+C, which terminates processes attached to the test console.
+  if (!hook.start({ enableClipboard: false })) throw new Error("start() returned false");
 
   const F = SelectionHook.FilterMode;
   const L = SelectionHook.FineTunedListType;

@@ -1,20 +1,42 @@
 /**
- * @file
- * @brief Windows N-API entry, input hooks, gesture classification, and retrieval coordination.
+ * Text Selection Hook for Windows
  *
- * This file is the platform skeleton rather than the retrieval implementation. It owns
- * the addon instance lifecycle, JavaScript callbacks, low-level input hook thread, and
- * event-time mouse snapshots.
+ * A Node Native Module that captures text selection events across applications
+ * on Windows using UI Automation and Accessibility APIs.
  *
  * Main components:
- * - SelectionHook: N-API surface, lifecycle, and result conversion.
- * - Hook thread: event capture only; it must not call UIA, MSAA, or clipboard retrieval.
- * - Automatic path: value snapshots dispatched to the MTA worker in core/.
- * - Synchronous path: getCurrentSelection() retains its calling-thread UIA client.
- * - Retrieval implementation: UIA/MSAA/clipboard compatibility logic in core/engine.*.
+ * - SelectionHook class (exported to JavaScript as TextSelectionHook): N-API
+ *   surface, lifecycle, gesture detection, and result bridging
+ * - Text selection detection: Uses UIAutomation and IAccessible interfaces
+ *   (pipeline in core/engine.cc; automatic retrieval runs on core/worker.cc)
+ * - Mouse/keyboard hook: Low-level Windows hooks for input monitoring
+ * - Thread management: Background threads for hooks with thread-safe callbacks
+ *
+ * Threads:
+ * - JS thread: every N-API method, ProcessMouseEvent/ProcessKeyboardEvent (TSFN
+ *   callbacks), and the synchronous getCurrentSelection() path, which keeps its
+ *   own calling-thread UI Automation client.
+ * - Hook thread: MouseKeyboardHookThreadProc() installs WH_MOUSE_LL / WH_KEYBOARD_LL
+ *   and runs the message wait loop. Hook callbacks must not call UIA, MSAA, or the
+ *   clipboard; they snapshot event-time state into a context and hand it to a TSFN.
+ * - MTA worker thread (core/worker.cc): owns its own COM apartment and UIA client
+ *   and runs automatic (gesture-triggered) retrieval so UIA/MSAA/clipboard work
+ *   never blocks the JS thread. Requests and results cross threads by value only.
+ *
+ * Features:
+ * - Detect text selections via mouse drag, double-click, or keyboard
+ * - Get selection coordinates and text content
+ * - Monitor mouse and keyboard events
+ * - Integration with Node.js via N-API
+ *
+ * Usage:
+ * This module exposes a JavaScript API through index.js that allows
+ * applications to monitor text selection events system-wide.
+ *
  *
  * Copyright (c) 2025 0xfullex (https://github.com/0xfullex/selection-hook)
  * Licensed under the MIT License
+ *
  */
 #define WIN32_LEAN_AND_MEAN 1
 

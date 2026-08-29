@@ -131,6 +131,9 @@ bool IsWindowFullscreen(NSRunningApplication *frontApp)
     {
         // Get the front window of the app
         AXUIElementRef appElement = GetAppElementFromFrontApp(frontApp);
+        if (!appElement)
+            return false;  // CFRelease(NULL) below would abort
+
         AXUIElementRef frontWindow = GetFrontWindowElementFromAppElement(appElement);
         if (!frontWindow)
         {

@@ -131,6 +131,9 @@ bool SelectionEngine::GetTextViaAXAPI(NSRunningApplication *frontApp, TextSelect
     }
 
     AXUIElementRef appElement = GetAppElementFromFrontApp(frontApp);
+    if (!appElement)
+        return false;  // CFRelease(NULL) below would abort
+
     AXUIElementRef focusedElement = GetFocusedElementFromAppElement(appElement);
 
     // if we can't find focusedElement, we'll fallback to find focusedWindow

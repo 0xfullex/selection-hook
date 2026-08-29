@@ -37,6 +37,7 @@
 
 #import <napi.h>
 
+#import <unistd.h>
 #import <atomic>
 #import <future>
 #import <string>
@@ -176,10 +177,11 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
     // current App(myself) process pid
-    // Assigned on the event thread in MouseKeyboardEventThreadProc(), so it is 0 until
-    // start() has run. Copied into SelectionConfigSnapshot::runningPid so the clipboard
-    // fallback never sends Cmd+C to this process.
-    pid_t running_pid = 0;
+    // Fixed for the life of the process, so it is initialised here rather than on the
+    // event thread: getCurrentSelection() must see the real pid even before start().
+    // Copied into SelectionConfigSnapshot::runningPid so the clipboard fallback never
+    // sends Cmd+C to this process.
+    const pid_t running_pid = getpid();
 
     CFRunLoopRef eventRunLoop = nullptr;
     std::promise<CFRunLoopRef> eventRunLoopPromise;
@@ -191,11 +193,6 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     CFRunLoopSourceRef keyboardRunLoopSource = nullptr;
 
     std::thread event_thread;
-
-    // user use GetCurrentSelection
-    // Set around getCurrentSelection() for parity with Windows, where the engine uses it
-    // to relax cursor-shape checks. The macOS pipeline does not read it today.
-    bool is_triggered_by_user = false;
 
     // Off by default; enableMouseMoveEvent() opts in. Checked on the event thread by
     // MouseEventCallback() to skip kCGEventMouseMoved before any allocation happens.
@@ -724,21 +721,16 @@ Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
 
         // Get selected text
         TextSelectionInfo selectionInfo;
-        is_triggered_by_user = true;
         if (!GetSelectedText(frontApp, selectionInfo) || IsTrimmedEmpty(selectionInfo.text))
         {
-            is_triggered_by_user = false;
             return env.Null();
         }
-
-        is_triggered_by_user = false;
 
         return CreateSelectionResultObject(env, selectionInfo);
     }
     catch (const std::exception &e)
     {
         Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
-        is_triggered_by_user = false;
         return env.Null();
     }
 }
@@ -749,16 +741,28 @@ Napi::Value SelectionHook::GetCurrentSelection(const Napi::CallbackInfo &info)
  * Shared entry for automatic (mouse gesture) and synchronous (getCurrentSelection)
  * retrieval. Only the reentrancy gate and the clipboard sequence write-back live
  * here; the retrieval pipeline itself is SelectionEngine in core/engine.mm.
+ *
+ * @warning The gate must be released by the RAII guard, never by a plain store at the
+ * end of the function. GetCurrentSelection() catches std::exception; if an allocation
+ * inside the snapshot or engine throws, a plain store is skipped and the gate stays
+ * locked, after which every gesture and getCurrentSelection() silently returns nothing
+ * for the rest of the process.
  */
 bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectionInfo &selectionInfo)
 {
     if (!frontApp)
         return false;
 
-    if (is_processing.load())
+    // Enter the gate atomically, mirroring the Windows SyncGateGuard.
+    bool expected = false;
+    if (!is_processing.compare_exchange_strong(expected, true))
         return false;
-    else
-        is_processing.store(true);
+
+    struct GateGuard
+    {
+        std::atomic<bool> &gate;
+        ~GateGuard() { gate.store(false); }
+    } gateGuard{is_processing};
 
     SelectionConfigSnapshot config = BuildSelectionConfigSnapshot();
     SelectionEngine engine;
@@ -767,8 +771,6 @@ bool SelectionHook::GetSelectedText(NSRunningApplication *frontApp, TextSelectio
     // The clipboard fallback refreshes the sequence after every restore. Store it so the
     // next gesture compares against the value produced by the library, not by the user.
     clipboard_sequence = endingClipboardSequence;
-
-    is_processing.store(false);
 
     return result;
 }
@@ -961,9 +963,6 @@ void SelectionHook::MouseKeyboardEventThreadProc()
         CFRunLoopAddSource(eventRunLoop, keyboardRunLoopSource, kCFRunLoopDefaultMode);
         CGEventTapEnable(keyboardEventTap, true);
     }
-
-    // save current process pid
-    running_pid = getpid();
 
     // Run the event loop - this will block until CFRunLoopStop() is called
     CFRunLoopRun();

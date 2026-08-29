@@ -25,8 +25,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      CLANG_FORMAT: clang-format-20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -38,7 +36,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libevdev-dev libx11-dev libxtst-dev libxfixes-dev libwayland-dev xvfb clang-format-20
+          sudo apt-get install -y libevdev-dev libx11-dev libxtst-dev libxfixes-dev libwayland-dev xvfb
 
       - name: Install Python setuptools
         if: runner.os == 'macOS'
@@ -50,7 +48,11 @@ jobs:
 
       - name: Check C++ formatting
         if: matrix.format-check
-        run: npm run format:check
+        env:
+          CLANG_FORMAT: clang-format-20
+        run: |
+          sudo apt-get install -y clang-format-20
+          npm run format:check
 
       - name: Unit tests
         run: npm run test:unit
@@ -62,15 +64,3 @@ jobs:
           else
             npm run test:integration
           fi
-
-      - name: Test summary
-        if: always()
-        run: node scripts/run-tests.js summary
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-results-${{ matrix.os }}
-          path: test-results/
-          if-no-files-found: ignore

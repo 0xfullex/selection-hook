@@ -5,7 +5,10 @@
  *   node scripts/run-tests.js unit
  *   node scripts/run-tests.js integration
  *   node scripts/run-tests.js local [--no-rebuild]   (release gate, macOS only)
- *   node scripts/run-tests.js summary                (print / publish test-results/*.tap)
+ *   node scripts/run-tests.js summary                (re-print test-results/*.tap from a previous run)
+ *
+ * unit / integration also append a markdown summary to $GITHUB_STEP_SUMMARY when
+ * running inside GitHub Actions.
  *
  * Exit codes: 0 pass, 1 test failure or policy / gate violation,
  *             2 infrastructure error (missing tap, no test files, rebuild failed, wrong platform).
@@ -112,6 +115,14 @@ function runTier(tier) {
   const policy = checkSkipPolicy(summary, tier);
   if (!policy.ok) printViolations(`[run-tests] ${tier}: skip policy violations`, policy.violations);
 
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const md = [toMarkdown(tier, summary)];
+    if (!policy.ok) {
+      md.push("**Skip policy violations**", "", ...policy.violations.map((v) => `- ${v}`), "");
+    }
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+  }
+
   const failed = r.status !== 0 || summary.failed.length > 0 || !policy.ok;
   return { code: failed ? EXIT_FAIL : EXIT_PASS, summary };
 }
@@ -185,24 +196,15 @@ function toMarkdown(tier, summary) {
 
 function cmdSummary() {
   let found = 0;
-  const md = [`## Test summary (${process.platform}/${process.arch}, node ${process.versions.node})`, ""];
-
   for (const tier of Object.keys(TIERS)) {
     const summary = readSummary(tier);
     if (!summary) {
       log(`== ${tier}: no tap output ==`);
-      md.push(`### ${tier}`, "", "_no tap output_", "");
       continue;
     }
     found++;
     printSummary(tier, summary);
-    md.push(toMarkdown(tier, summary));
   }
-
-  if (process.env.GITHUB_STEP_SUMMARY) {
-    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
-  }
-
   return found === 0 ? EXIT_INFRA : EXIT_PASS;
 }
 

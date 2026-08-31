@@ -4,6 +4,13 @@
  * it actually enters CFRunLoopRun(); a stop request delivered in that window
  * used to be silently discarded, leaving stop() blocked in join() forever.
  *
+ * Linux uses the same immediate-stop pressure to guard the XRecord startup
+ * handshake. Before the fix, stop could disable the context before the worker
+ * enabled it, then wait forever for the worker to leave XRecordEnableContext().
+ * On Wayland's no-input fallback, changing the debounce shutdown predicate
+ * without its condition-variable mutex could likewise lose the wake between
+ * the worker's predicate check and wait, leaving stop() blocked in join().
+ *
  * Requires input-monitoring: without event taps the run loop returns at once
  * and the race cannot be triggered.
  */

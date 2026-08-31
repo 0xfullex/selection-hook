@@ -489,8 +489,14 @@ void SelectionHook::StopNativeProducers()
 {
     running = false;
     mouse_keyboard_running = false;
-    debounce_running = false;
-    debounce_cv.notify_one();
+    {
+        // Keep the predicate update under the condition-variable mutex. Without
+        // this lock, stop() can notify after the debounce thread checks the
+        // predicate but before it begins waiting, losing the wake permanently.
+        std::lock_guard<std::mutex> lock(debounce_mutex);
+        debounce_running = false;
+    }
+    debounce_cv.notify_all();
 
     if (protocol)
     {
@@ -685,7 +691,10 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         if (is_no_input_fallback)
         {
             fprintf(stderr, "[Wayland] No input devices available, using data-control debounce fallback (Path C)\n");
-            debounce_running = true;
+            {
+                std::lock_guard<std::mutex> lock(debounce_mutex);
+                debounce_running = true;
+            }
             debounce_thread = std::thread(&SelectionHook::DebounceThreadProc, this);
         }
     }
@@ -1525,7 +1534,12 @@ void SelectionHook::ProcessSelectionEvent(Napi::Env env, Napi::Function function
     else if (currentInstance->is_no_input_fallback && !currentInstance->is_selection_passive_mode)
     {
         // Path C: No-input fallback - reset debounce timer
-        currentInstance->debounce_last_event_time.store(pEvent->timestamp_ms);
+        {
+            // The predicate and notification use the same mutex so an idle
+            // debounce thread cannot miss the first data-control event.
+            std::lock_guard<std::mutex> lock(currentInstance->debounce_mutex);
+            currentInstance->debounce_last_event_time.store(pEvent->timestamp_ms);
+        }
         currentInstance->debounce_cv.notify_one();
     }
     // else: no pending gesture and no fallback, skip

@@ -1,6 +1,9 @@
 /**
  * start -> stop -> start -> stop on one instance; isRunning() and the status
  * event sequence must track each transition.
+ *
+ * On Wayland without input-device access, this also guards the debounce-thread
+ * shutdown race where an immediate stop could lose its condition-variable wake.
  */
 // Scenario scripts must only run under runScenario(); a bare `node --test`
 // would otherwise execute this file (and call start()) without a watchdog.

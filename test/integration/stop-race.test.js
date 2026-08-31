@@ -1,5 +1,9 @@
 /**
- * Regression tests for issue #23 (macOS): stop() right after start() hung forever.
+ * Regression tests for stop() right after start(). Issue #23 originally covered
+ * macOS; on Linux, XRecord could also disable the context before its monitoring
+ * thread enabled it and then hang forever while joining that thread. Wayland's
+ * no-input debounce fallback could independently lose its shutdown wake when
+ * the condition-variable predicate was changed without holding its mutex.
  *
  * "stop-race: input-monitoring" is the release-gate test (test/lib/gate.js
  * GATE_TEST_NAME); it needs real input-monitoring so it skips on GitHub-hosted

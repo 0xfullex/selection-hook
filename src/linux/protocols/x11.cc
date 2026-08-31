@@ -7,7 +7,9 @@
 
 #include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -53,6 +55,14 @@ constexpr long X11_None = None;
 class X11Protocol : public ProtocolBase
 {
   private:
+    enum class XRecordStartupState
+    {
+        Idle,
+        WaitingForStartOfData,
+        Ready,
+        Failed,
+    };
+
     Display *display;
     int screen;
     Window root;
@@ -67,6 +77,12 @@ class X11Protocol : public ProtocolBase
     // Thread management
     std::atomic<bool> input_monitoring_running;
     std::thread input_monitoring_thread;
+
+    // XRecordDisableContext only unblocks a context that the server has already
+    // enabled. Wait for StartOfData so an immediate stop cannot disable too early.
+    std::mutex xrecord_startup_mutex;
+    std::condition_variable xrecord_startup_cv;
+    XRecordStartupState xrecord_startup_state;
 
     // Callback functions
     MouseEventCallback mouse_callback;
@@ -108,6 +124,7 @@ class X11Protocol : public ProtocolBase
           control_display(nullptr),
           record_initialized(false),
           input_monitoring_running(false),
+          xrecord_startup_state(XRecordStartupState::Idle),
           mouse_callback(nullptr),
           keyboard_callback(nullptr),
           callback_context(nullptr),
@@ -381,9 +398,33 @@ class X11Protocol : public ProtocolBase
         if (!display || !record_initialized || input_monitoring_running)
             return false;
 
+        {
+            std::lock_guard<std::mutex> lock(xrecord_startup_mutex);
+            xrecord_startup_state = XRecordStartupState::WaitingForStartOfData;
+        }
+
         // Start XRecord monitoring thread
         input_monitoring_running = true;
         input_monitoring_thread = std::thread(&X11Protocol::XRecordMonitoringThreadProc, this);
+
+        // XRecordEnableContext sends StartOfData only after the server enables
+        // the context. Returning before that point lets stop() disable a context
+        // that is not active yet, after which the worker can block forever.
+        {
+            std::unique_lock<std::mutex> lock(xrecord_startup_mutex);
+            xrecord_startup_cv.wait(
+                lock, [this] { return xrecord_startup_state != XRecordStartupState::WaitingForStartOfData; });
+            if (xrecord_startup_state != XRecordStartupState::Ready)
+            {
+                lock.unlock();
+                input_monitoring_running = false;
+                if (input_monitoring_thread.joinable())
+                {
+                    input_monitoring_thread.join();
+                }
+                return false;
+            }
+        }
 
         // Start XFixes monitoring thread if initialized
         if (xfixes_initialized)
@@ -555,12 +596,27 @@ void X11Protocol::CleanupXRecord()
 void X11Protocol::XRecordMonitoringThreadProc()
 {
     if (!record_display || !record_initialized)
+    {
+        std::lock_guard<std::mutex> lock(xrecord_startup_mutex);
+        xrecord_startup_state = XRecordStartupState::Failed;
+        xrecord_startup_cv.notify_all();
         return;
+    }
 
     // Enable XRecord context — blocks until XRecordDisableContext is called from StopInputMonitoring.
     // Per the XRecord spec, re-enabling an already-enabled context produces BadMatch,
     // so this must be a single call, not a retry loop.
     XRecordEnableContext(record_display, record_context, XRecordDataCallback, (XPointer)this);
+
+    const bool exited_without_stop = input_monitoring_running.exchange(false);
+    {
+        std::lock_guard<std::mutex> lock(xrecord_startup_mutex);
+        if (xrecord_startup_state == XRecordStartupState::WaitingForStartOfData || exited_without_stop)
+        {
+            xrecord_startup_state = XRecordStartupState::Failed;
+        }
+    }
+    xrecord_startup_cv.notify_all();
 }
 
 // Static callback function for XRecord
@@ -569,7 +625,29 @@ void X11Protocol::XRecordDataCallback(XPointer closure, XRecordInterceptData *da
     X11Protocol *instance = reinterpret_cast<X11Protocol *>(closure);
     if (instance && data)
     {
+        if (data->category == XRecordStartOfData)
+        {
+            {
+                std::lock_guard<std::mutex> lock(instance->xrecord_startup_mutex);
+                if (instance->xrecord_startup_state == XRecordStartupState::WaitingForStartOfData)
+                {
+                    instance->xrecord_startup_state = XRecordStartupState::Ready;
+                }
+            }
+            instance->xrecord_startup_cv.notify_all();
+        }
+
+        if (!data->data)
+        {
+            XRecordFreeData(data);
+            return;
+        }
+
         instance->ProcessXRecordData(data);
+    }
+    else if (data)
+    {
+        XRecordFreeData(data);
     }
 }
 

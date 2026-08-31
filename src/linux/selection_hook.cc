@@ -270,6 +270,12 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static void OnKeyboardEventCallback(void *context, KeyboardEventContext *keyboardEvent);
     static void OnSelectionEventCallback(void *context, SelectionChangeContext *selectionEvent);
 
+    void RegisterEnvironmentCleanupHook(Napi::Env env);
+    void RemoveEnvironmentCleanupHook();
+    void StopNativeProducers();
+    void ReleaseThreadSafeFunctions(napi_threadsafe_function_release_mode mode);
+    static void EnvironmentCleanupHook(void *data);
+
     // Emit text selection event (shared by Path A, Path B, and Path C).
     // Returns true if the event was successfully emitted, false otherwise.
     bool EmitSelectionEvent(SelectionDetectType type, Point start, Point end);
@@ -347,6 +353,12 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
 
+    // Register after all four TSFNs so Node's LIFO environment cleanup reaches
+    // this instance before the TSFN-owned cleanup hooks invalidate their state.
+    napi_env owner_env = nullptr;
+    bool cleanup_hook_registered = false;
+    bool environment_closing = false;
+
     // the text selection is processing, we should ignore some events
     std::atomic<bool> is_processing{false};
     // user use GetCurrentSelection
@@ -370,7 +382,8 @@ static SelectionHook *currentInstance = nullptr;
 /**
  * Constructor - initializes display protocol
  */
-SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<SelectionHook>(info)
+SelectionHook::SelectionHook(const Napi::CallbackInfo &info)
+    : Napi::ObjectWrap<SelectionHook>(info), owner_env(info.Env())
 {
     Napi::Env env = info.Env();
     Napi::HandleScope scope(env);
@@ -411,47 +424,19 @@ SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<
  */
 SelectionHook::~SelectionHook()
 {
-    // Stop debounce thread (Path C)
-    debounce_running = false;
-    debounce_cv.notify_one();
-    if (debounce_thread.joinable())
-        debounce_thread.join();
-
-    // Stop worker thread
-    bool was_running = running.exchange(false);
-    if (was_running && tsfn)
-    {
-        tsfn.Release();
-    }
-
-    // Stop input monitoring via protocol
-    if (protocol)
-    {
-        protocol->StopInputMonitoring();
-        protocol->CleanupInputMonitoring();
-    }
-
-    // Ensure mouse_keyboard_running is set to false
-    mouse_keyboard_running = false;
-
-    // Release thread-safe functions
-    if (mouse_tsfn)
-    {
-        mouse_tsfn.Release();
-    }
-    if (keyboard_tsfn)
-    {
-        keyboard_tsfn.Release();
-    }
-    if (selection_tsfn)
-    {
-        selection_tsfn.Release();
-    }
-
     // Clear current instance if it's us
     if (currentInstance == this)
     {
         currentInstance = nullptr;
+    }
+
+    StopNativeProducers();
+
+    if (!environment_closing)
+    {
+        // Environment teardown owns TSFN cleanup before ObjectWrap finalization.
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
     }
 
     // Cleanup protocol
@@ -459,6 +444,118 @@ SelectionHook::~SelectionHook()
     {
         protocol->Cleanup();
     }
+}
+
+/**
+ * @brief Register ordered cleanup for abrupt Node.js/Electron environment teardown.
+ * @param[in] env Environment that owns this instance and its TSFNs.
+ * @warning Register only after every TSFN has been created. Node invokes cleanup hooks
+ * in reverse registration order; changing that order recreates issue #24 by allowing a
+ * TSFN cleanup hook to invalidate its state before this instance releases the handle.
+ */
+void SelectionHook::RegisterEnvironmentCleanupHook(Napi::Env env)
+{
+    if (cleanup_hook_registered)
+    {
+        return;
+    }
+
+    const napi_status status = napi_add_env_cleanup_hook(env, EnvironmentCleanupHook, this);
+    if (status != napi_ok)
+    {
+        throw std::runtime_error("Failed to register environment cleanup hook");
+    }
+    cleanup_hook_registered = true;
+}
+
+/** Remove the cleanup hook when normal stop or GC owns teardown. */
+void SelectionHook::RemoveEnvironmentCleanupHook()
+{
+    if (!cleanup_hook_registered)
+    {
+        return;
+    }
+
+    napi_remove_env_cleanup_hook(owner_env, EnvironmentCleanupHook, this);
+    cleanup_hook_registered = false;
+}
+
+/**
+ * @brief Stop and join every native producer before its TSFN can be released.
+ * @note Both protocol implementations make CleanupInputMonitoring() stop their
+ * monitoring threads before clearing callback state.
+ */
+void SelectionHook::StopNativeProducers()
+{
+    running = false;
+    mouse_keyboard_running = false;
+    debounce_running = false;
+    debounce_cv.notify_one();
+
+    if (protocol)
+    {
+        protocol->CleanupInputMonitoring();
+    }
+
+    if (debounce_thread.joinable())
+    {
+        debounce_thread.join();
+    }
+
+    debounce_last_event_time.store(0);
+    is_gesture_button_down.store(false);
+    had_selection_during_drag.store(false);
+    is_no_input_fallback = false;
+}
+
+/**
+ * @brief Relinquish all main-thread TSFN references exactly once.
+ * @param[in] mode Normal release for stop/GC, abort for environment teardown.
+ * @note Native producers must be stopped and joined before calling this method.
+ */
+void SelectionHook::ReleaseThreadSafeFunctions(napi_threadsafe_function_release_mode mode)
+{
+    auto release = [mode](Napi::ThreadSafeFunction &function)
+    {
+        if (!function)
+        {
+            return;
+        }
+
+        if (mode == napi_tsfn_abort)
+        {
+            function.Abort();
+        }
+        else
+        {
+            function.Release();
+        }
+        function = nullptr;
+    };
+
+    release(tsfn);
+    release(mouse_tsfn);
+    release(keyboard_tsfn);
+    release(selection_tsfn);
+}
+
+/**
+ * @brief Stop native work before Node tears down TSFN and ObjectWrap finalizers.
+ * @param[in] data SelectionHook registered after its four TSFNs were created.
+ */
+void SelectionHook::EnvironmentCleanupHook(void *data)
+{
+    auto *hook = static_cast<SelectionHook *>(data);
+    hook->cleanup_hook_registered = false;
+    hook->environment_closing = true;
+
+    if (currentInstance == hook)
+    {
+        currentInstance = nullptr;
+    }
+
+    hook->StopNativeProducers();
+    hook->ReleaseThreadSafeFunctions(napi_tsfn_abort);
 }
 
 /**
@@ -530,30 +627,40 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     // Create thread-safe function from JavaScript callback
     Napi::Function callback = info[0u].As<Napi::Function>();
 
-    tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1,
-                                         [this](Napi::Env) { running = false; });
+    tsfn = Napi::ThreadSafeFunction::New(env, callback, "TextSelectionCallback", 0, 1);
 
     // Create thread-safe function for mouse events
-    mouse_tsfn = Napi::ThreadSafeFunction::New(env, callback, "MouseEventCallback", DEFAULT_MOUSE_EVENT_QUEUE_SIZE, 1,
-                                               [this](Napi::Env) { mouse_keyboard_running = false; });
+    mouse_tsfn = Napi::ThreadSafeFunction::New(env, callback, "MouseEventCallback", DEFAULT_MOUSE_EVENT_QUEUE_SIZE, 1);
 
     // Create thread-safe function for keyboard events
     keyboard_tsfn =
-        Napi::ThreadSafeFunction::New(env, callback, "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1,
-                                      [this](Napi::Env) { mouse_keyboard_running = false; });
+        Napi::ThreadSafeFunction::New(env, callback, "KeyboardEventCallback", DEFAULT_KEYBOARD_EVENT_QUEUE_SIZE, 1);
 
     // Create thread-safe function for selection change events (Path A/B)
     selection_tsfn = Napi::ThreadSafeFunction::New(env, callback, "SelectionEventCallback", 64, 1);
+
+    try
+    {
+        // Node cleanup hooks run in reverse registration order. Register ours only
+        // after all TSFN-owned hooks so abrupt Electron/Worker teardown reaches us
+        // first while every TSFN handle is still valid (issue #24).
+        RegisterEnvironmentCleanupHook(env);
+    }
+    catch (const std::exception &e)
+    {
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return;
+    }
 
     // Initialize input monitoring via protocol
     if (!protocol->InitializeInputMonitoring(&SelectionHook::OnMouseEventCallback,
                                              &SelectionHook::OnKeyboardEventCallback,
                                              &SelectionHook::OnSelectionEventCallback, this))
     {
-        selection_tsfn.Release();
-        mouse_tsfn.Release();
-        keyboard_tsfn.Release();
-        tsfn.Release();
+        StopNativeProducers();
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
         Napi::Error::New(env, "Failed to initialize input monitoring").ThrowAsJavaScriptException();
         return;
     }
@@ -584,12 +691,11 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     }
     catch (const std::exception &e)
     {
-        protocol->CleanupInputMonitoring();
-        selection_tsfn.Release();
-        mouse_tsfn.Release();
-        keyboard_tsfn.Release();
-        tsfn.Release();
-        Napi::Error::New(env, "Failed to start input monitoring").ThrowAsJavaScriptException();
+        StopNativeProducers();
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
+        Napi::Error::New(env, std::string("Failed to start input monitoring: ") + e.what())
+            .ThrowAsJavaScriptException();
         return;
     }
 }
@@ -600,63 +706,15 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
 void SelectionHook::Stop(const Napi::CallbackInfo &info)
 {
     // Do nothing if not running
-    if (!running)
+    if (!running && !mouse_keyboard_running && !debounce_thread.joinable() && !cleanup_hook_registered && !tsfn &&
+        !mouse_tsfn && !keyboard_tsfn && !selection_tsfn)
     {
         return;
     }
 
-    // Set running flags to false first
-    running = false;
-    mouse_keyboard_running = false;
-
-    // Stop and cleanup input monitoring via protocol (this will wait for threads to finish)
-    if (protocol)
-    {
-        protocol->CleanupInputMonitoring();
-    }
-
-    // Give a small delay to ensure any pending callbacks complete
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    // Stop debounce thread (Path C)
-    debounce_running = false;
-    debounce_cv.notify_one();
-    if (debounce_thread.joinable())
-        debounce_thread.join();
-    debounce_last_event_time.store(0);
-    is_gesture_button_down.store(false);
-    had_selection_during_drag.store(false);
-    is_no_input_fallback = false;
-
-    // Release thread-safe functions after threads have stopped
-    try
-    {
-        if (tsfn)
-        {
-            tsfn.Release();
-            tsfn = nullptr;
-        }
-        if (mouse_tsfn)
-        {
-            mouse_tsfn.Release();
-            mouse_tsfn = nullptr;
-        }
-        if (keyboard_tsfn)
-        {
-            keyboard_tsfn.Release();
-            keyboard_tsfn = nullptr;
-        }
-        if (selection_tsfn)
-        {
-            selection_tsfn.Release();
-            selection_tsfn = nullptr;
-        }
-    }
-    catch (const std::exception &e)
-    {
-        // Log error but don't throw to prevent further issues
-        fprintf(stderr, "Error releasing ThreadSafeFunction: %s\n", e.what());
-    }
+    StopNativeProducers();
+    RemoveEnvironmentCleanupHook();
+    ReleaseThreadSafeFunctions(napi_tsfn_release);
 }
 
 /**

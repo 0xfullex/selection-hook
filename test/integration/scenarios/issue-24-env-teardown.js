@@ -1,8 +1,9 @@
 /**
  * Regression scenario for issue #24. Terminating a Node.js Worker destroys its
  * Node-API environment while the native hook and its TSFNs are still active.
- * Before the fixes, macOS could hang or abort and Windows could access-violate
- * when SelectionHook::~SelectionHook() released a TSFN already being torn down.
+ * Before the fixes, macOS and Linux could hang or abort and Windows could
+ * access-violate when SelectionHook::~SelectionHook() released a TSFN already
+ * being torn down.
  */
 if (process.env.SELECTION_HOOK_SCENARIO !== "1") {
   console.error("scenario must run via runScenario()");

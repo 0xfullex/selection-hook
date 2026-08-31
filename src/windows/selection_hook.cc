@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -190,7 +191,10 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Mouse and keyboard event handling methods
     void MouseKeyboardHookThreadProc();
     void StopMouseKeyboardHookThread();
-    void ReleaseThreadSafeFunctions();
+    void RegisterEnvironmentCleanupHook(Napi::Env env);
+    void RemoveEnvironmentCleanupHook();
+    void ReleaseThreadSafeFunctions(napi_threadsafe_function_release_mode mode);
+    static void EnvironmentCleanupHook(void *data);
     static LRESULT CALLBACK MouseHookCallback(int nCode, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam);
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
@@ -215,6 +219,12 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
 
     std::atomic<bool> running{false};
     std::atomic<bool> mouse_keyboard_running{false};
+
+    // Register after all three TSFNs so Node's LIFO environment cleanup reaches
+    // this instance before the TSFN-owned cleanup hooks invalidate their state.
+    napi_env owner_env = nullptr;
+    bool cleanup_hook_registered = false;
+    bool environment_closing = false;
 
     std::thread mouse_keyboard_hook_thread;
     HANDLE mouse_keyboard_ready_event = NULL;
@@ -282,7 +292,8 @@ static SelectionHook *currentInstance = nullptr;
  * @note This UIA client is reserved for synchronous getCurrentSelection(). The automatic
  * worker creates and owns a separate MTA client when start() is called.
  */
-SelectionHook::SelectionHook(const Napi::CallbackInfo &info) : Napi::ObjectWrap<SelectionHook>(info)
+SelectionHook::SelectionHook(const Napi::CallbackInfo &info)
+    : Napi::ObjectWrap<SelectionHook>(info), owner_env(info.Env())
 {
     Napi::Env env = info.Env();
     Napi::HandleScope scope(env);
@@ -365,7 +376,12 @@ SelectionHook::~SelectionHook()
     // The hook thread must stop before the thread-safe functions it uses are released.
     StopMouseKeyboardHookThread();
     StopSelectionWorker();
-    ReleaseThreadSafeFunctions();
+    if (!environment_closing)
+    {
+        // Environment teardown owns TSFN cleanup before ObjectWrap finalization.
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
+    }
 
     // Release the synchronous UIA client on its owning thread.
     if (pUIAutomation)
@@ -380,6 +396,64 @@ SelectionHook::~SelectionHook()
         CoUninitialize();
         com_initialized_by_us = false;
     }
+}
+
+/**
+ * @brief Register ordered cleanup for abrupt Node.js/Electron environment teardown.
+ * @param[in] env Environment that owns this instance and its TSFNs.
+ * @warning Register only after every TSFN has been created. Node invokes cleanup hooks
+ * in reverse registration order; changing that order recreates issue #24 by allowing a
+ * TSFN cleanup hook to invalidate its state before this instance releases the handle.
+ */
+void SelectionHook::RegisterEnvironmentCleanupHook(Napi::Env env)
+{
+    if (cleanup_hook_registered)
+    {
+        return;
+    }
+
+    const napi_status status = napi_add_env_cleanup_hook(env, EnvironmentCleanupHook, this);
+    if (status != napi_ok)
+    {
+        throw std::runtime_error("Failed to register environment cleanup hook");
+    }
+    cleanup_hook_registered = true;
+}
+
+/** Remove the cleanup hook when normal stop or GC owns teardown. */
+void SelectionHook::RemoveEnvironmentCleanupHook()
+{
+    if (!cleanup_hook_registered)
+    {
+        return;
+    }
+
+    napi_remove_env_cleanup_hook(owner_env, EnvironmentCleanupHook, this);
+    cleanup_hook_registered = false;
+}
+
+/**
+ * @brief Stop native work before Node tears down TSFN and ObjectWrap finalizers.
+ * @param[in] data SelectionHook registered after its three TSFNs were created.
+ */
+void SelectionHook::EnvironmentCleanupHook(void *data)
+{
+    auto *hook = static_cast<SelectionHook *>(data);
+    hook->cleanup_hook_registered = false;
+    hook->environment_closing = true;
+
+    if (currentInstance == hook)
+    {
+        currentInstance = nullptr;
+    }
+    hook->selection_result_owner->owner.store(nullptr, std::memory_order_release);
+    hook->running = false;
+    hook->mouse_keyboard_running = false;
+    hook->selection_generation.fetch_add(1, std::memory_order_acq_rel);
+
+    hook->StopMouseKeyboardHookThread();
+    hook->StopSelectionWorker();
+    hook->ReleaseThreadSafeFunctions(napi_tsfn_abort);
 }
 
 /**
@@ -461,8 +535,23 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     if (!StartSelectionWorker(env, callback, workerError))
     {
         mouse_keyboard_running = false;
-        ReleaseThreadSafeFunctions();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
         Napi::Error::New(env, workerError).ThrowAsJavaScriptException();
+        return;
+    }
+
+    try
+    {
+        // Register after the hook and worker TSFNs so environment cleanup reaches
+        // this instance first while every handle is still valid (issue #24).
+        RegisterEnvironmentCleanupHook(env);
+    }
+    catch (const std::exception &e)
+    {
+        mouse_keyboard_running = false;
+        StopSelectionWorker();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
         return;
     }
 
@@ -486,7 +575,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         mouse_keyboard_running = false;
         StopMouseKeyboardHookThread();
         StopSelectionWorker();
-        ReleaseThreadSafeFunctions();
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
         Napi::Error::New(env, "Failed to create mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
     }
@@ -500,7 +590,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         mouse_keyboard_running = false;
         StopMouseKeyboardHookThread();
         StopSelectionWorker();
-        ReleaseThreadSafeFunctions();
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
         Napi::Error::New(env, "Failed to create mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
     }
@@ -511,7 +602,8 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         mouse_keyboard_running = false;
         StopMouseKeyboardHookThread();
         StopSelectionWorker();
-        ReleaseThreadSafeFunctions();
+        RemoveEnvironmentCleanupHook();
+        ReleaseThreadSafeFunctions(napi_tsfn_release);
         Napi::Error::New(env, "Failed to initialize mouse keyboard hook thread").ThrowAsJavaScriptException();
         return;
     }
@@ -539,7 +631,8 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
     mouse_keyboard_running = false;
     StopMouseKeyboardHookThread();
     StopSelectionWorker();
-    ReleaseThreadSafeFunctions();
+    RemoveEnvironmentCleanupHook();
+    ReleaseThreadSafeFunctions(napi_tsfn_release);
 }
 
 /**
@@ -1429,20 +1522,31 @@ void SelectionHook::StopMouseKeyboardHookThread()
 }
 
 /**
- * Release all JavaScript callbacks after the hook thread has stopped using them.
+ * @brief Release hook-thread JavaScript callbacks after their producer has stopped.
+ * @param[in] mode Normal release for stop/GC, abort for environment teardown.
  */
-void SelectionHook::ReleaseThreadSafeFunctions()
+void SelectionHook::ReleaseThreadSafeFunctions(napi_threadsafe_function_release_mode mode)
 {
-    if (mouse_tsfn)
+    auto release = [mode](Napi::ThreadSafeFunction &function)
     {
-        mouse_tsfn.Release();
-        mouse_tsfn = nullptr;
-    }
-    if (keyboard_tsfn)
-    {
-        keyboard_tsfn.Release();
-        keyboard_tsfn = nullptr;
-    }
+        if (!function)
+        {
+            return;
+        }
+
+        if (mode == napi_tsfn_abort)
+        {
+            function.Abort();
+        }
+        else
+        {
+            function.Release();
+        }
+        function = nullptr;
+    };
+
+    release(mouse_tsfn);
+    release(keyboard_tsfn);
 }
 
 /**

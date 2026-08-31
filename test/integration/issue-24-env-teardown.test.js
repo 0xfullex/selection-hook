@@ -9,9 +9,9 @@ const assert = require("node:assert/strict");
 const { runScenario, describeScenario } = require("../helpers/scenario.js");
 
 test("issue #24: active hook survives Node environment teardown", async () => {
-  // Issue #24 and this cleanup-hook implementation are macOS-specific. Return
-  // normally rather than skipping: gate tests may not introduce new skips.
-  if (process.platform !== "darwin") return;
+  // The cleanup-hook implementation applies to the native TSFN-backed macOS
+  // and Windows hooks. Return normally elsewhere: gate tests may not add skips.
+  if (process.platform !== "darwin" && process.platform !== "win32") return;
 
   const result = await runScenario("issue-24-env-teardown", { timeoutMs: 15000 });
   assert.equal(result.timedOut, false, describeScenario("issue-24-env-teardown", result));

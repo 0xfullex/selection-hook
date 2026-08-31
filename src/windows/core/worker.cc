@@ -310,8 +310,7 @@ void SelectionWorker::ThreadMain(const std::shared_ptr<State> &state, napi_threa
             {
                 std::unique_lock<std::mutex> lock(state->mutex);
                 state->cv.wait(lock,
-                               [state]
-                               {
+                               [state] {
                                    return state->stopRequested.load(std::memory_order_acquire) ||
                                           state->pendingRequest != nullptr;
                                });

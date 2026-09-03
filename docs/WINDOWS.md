@@ -60,6 +60,8 @@ This process is designed to be non-destructive — the user's clipboard is saved
 
 Clipboard transactions are serialized. If automatic fallback is using the clipboard, public clipboard methods return their existing failure value immediately instead of waiting for the worker.
 
+The fallback also refuses any window created by the calling thread, because that thread would have to dispatch the simulated keypress while it is blocked waiting for the clipboard. See [Same-Process Text Selection](#same-process-text-selection).
+
 ### Cursor Shape Detection
 
 Before triggering the clipboard operation, selection-hook checks the **current cursor shape** to avoid unnecessary clipboard operations:
@@ -152,4 +154,17 @@ Due to [User Interface Privilege Isolation (UIPI)](https://learn.microsoft.com/e
 
 ### Synchronous `getCurrentSelection()`
 
-`getCurrentSelection()` remains synchronous for API compatibility and uses the calling thread's UI Automation client. An accessibility provider that does not return from a synchronous UIA call can therefore still block that caller. The MTA worker isolates automatic retrieval; it is not a hard-cancellation boundary for this explicit synchronous API.
+`getCurrentSelection()` remains synchronous for API compatibility and uses the calling thread's UI Automation client. An accessibility provider that does not return from a synchronous UIA call can therefore still block that caller. The MTA worker isolates automatic retrieval; it is not a hard-cancellation boundary for this explicit synchronous API. Microsoft specifically warns that a client interacting with [its own UI on the UI thread](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading) can become very slow or stop responding, so this risk is highest for same-process selections.
+
+### Same-Process Text Selection
+
+Selecting text inside the host application itself is supported. Only the clipboard fallback is restricted.
+
+Windows delivers a synthesized keystroke to the [message queue of the thread that created the target window](https://learn.microsoft.com/en-us/windows/win32/winmsg/about-messages-and-message-queues), and only that thread's message loop can dispatch it. The clipboard fallback simulates Ctrl+Insert/Ctrl+C and then blocks in a `Sleep()` poll loop waiting for the clipboard to change, so it cannot run on the thread that owns the target window.
+
+- **Automatic `text-selection` events are unaffected.** They run on the MTA worker, which owns no windows, so the main thread remains free to dispatch the keystroke. This also matches Microsoft's guidance to [make UI Automation calls from a separate MTA thread that owns no windows](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading) when a client automates its own UI. A main thread busy with a long JavaScript task can still make the fallback time out, but it cannot deadlock.
+- **`getCurrentSelection()` runs on the calling thread.** When the window under the mouse was created by that same thread, the clipboard fallback is refused and the call returns `null` immediately instead of blocking. UIA and IAccessible still run normally, so this only affects selections that no accessibility provider can extract.
+
+The refusal matters most for Electron apps launched with `--disable-renderer-accessibility`, a workaround for a [Chromium accessibility crash](https://issues.chromium.org/issues/40809069). That flag disables the renderer's accessibility tree and makes both UIA and IAccessible fail, leaving the clipboard fallback as the only remaining path.
+
+**Workaround:** run selection-hook in a separate process, using Electron's [`utilityProcess`](https://www.electronjs.org/docs/latest/api/utility-process) or `child_process`. The host's main thread is then free to process the simulated keypress while selection-hook waits for the clipboard change in its own process.

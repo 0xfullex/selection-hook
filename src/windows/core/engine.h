@@ -112,6 +112,9 @@ class SelectionEngine
     /**
      * @warning This is a complete backup/copy/read/restore transaction. Every exit after
      * a non-empty backup must restore it and update clipboardSequence_.
+     * @warning Refuses a window owned by the calling thread. That thread would have to
+     * dispatch the synthesized copy key while blocked in the poll loops, so the retrieval
+     * cannot succeed and the queued keys would overwrite the restored clipboard later.
      */
     bool GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool ShouldProcessViaClipboard(const std::wstring &programName) const;

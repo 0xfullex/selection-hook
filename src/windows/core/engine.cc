@@ -683,6 +683,18 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
     if (!hwnd || IsStopping())
         return false;
 
+    // The copy shortcut synthesized below is delivered through the message queue of the
+    // thread that created hwnd, and only that thread's message loop can dispatch it. When
+    // it is this thread, the poll loops hold it inside Sleep(): retrieval then fails after
+    // the full Ctrl+Insert and Ctrl+C budget, and the still-queued keys reach the window
+    // once the caller returns, after restoreBackup() has restored the user's clipboard.
+    // The application then performs a real copy, silently overwriting it. Reject before
+    // touching the clipboard at all.
+    // Keep this a thread comparison. The MTA worker never owns the target window, so
+    // automatic same-process retrieval works; a process comparison would reject it too.
+    if (IsWindowOnCallingThread(hwnd))
+        return false;
+
     // Clipboard extraction is one indivisible save/copy/read/restore transaction.
     std::unique_lock<std::mutex> clipboardLock(g_clipboard_mutex, std::defer_lock);
     if (clipboardLockMode_ == ClipboardLockMode::TryOnly)

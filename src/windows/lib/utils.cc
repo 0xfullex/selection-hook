@@ -88,3 +88,16 @@ bool GetProgramNameFromHwnd(HWND hwnd, std::wstring &programName)
 
     return true;
 }
+
+/**
+ * Check whether a window was created by the calling thread
+ */
+bool IsWindowOnCallingThread(HWND hwnd)
+{
+    // Both ids are read here, on the thread doing the work, rather than captured once.
+    // The same retrieval code runs on the JS thread for getCurrentSelection() and on the
+    // MTA worker for automatic events, so only the live calling thread answers the
+    // question correctly. Windows also reuses a thread id after its thread exits, and the
+    // worker can be abandoned and recreated, so a cached id can outlive its thread.
+    return hwnd != nullptr && GetWindowThreadProcessId(hwnd, nullptr) == GetCurrentThreadId();
+}

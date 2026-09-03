@@ -62,6 +62,8 @@ Selection-hook 在 Windows 上使用**三级回退策略**来提取选中的文�
 
 剪贴板事务会串行执行。如果自动回退正在使用剪贴板，公开剪贴板方法会立即返回既有的失败值，而不会等待 worker。
 
+回退还会拒绝由调用线程创建的窗口，因为那条线程需要在阻塞等待剪贴板的同时去派发模拟按键。参见[同进程文本选择](#同进程文本选择)。
+
 ### 光标形状检测
 
 在触发剪贴板操作之前，selection-hook 会检查**当前光标形状**，以避免不必要的剪贴板操作：
@@ -154,4 +156,17 @@ hook.setFineTunedList(
 
 ### 同步 `getCurrentSelection()`
 
-为保持 API 兼容，`getCurrentSelection()` 仍为同步方法，并使用调用线程上的 UI Automation client。因此，如果 accessibility provider 的同步 UIA 调用不返回，调用线程仍可能被阻塞。MTA worker 隔离的是自动 retrieval，并不为这个显式同步 API 提供硬取消边界。
+为保持 API 兼容，`getCurrentSelection()` 仍为同步方法，并使用调用线程上的 UI Automation client。因此，如果 accessibility provider 的同步 UIA 调用不返回，调用线程仍可能被阻塞。MTA worker 隔离的是自动 retrieval，并不为这个显式同步 API 提供硬取消边界。微软明确警告，client 在 UI 线程上访问[自身 UI](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading) 可能变得极慢甚至无响应，因此同进程选区的这一风险最高。
+
+### 同进程文本选择
+
+支持在宿主应用自身内部划词，只有剪贴板回退受限。
+
+Windows 将模拟按键投递到[创建目标窗口的那条线程的消息队列](https://learn.microsoft.com/en-us/windows/win32/winmsg/about-messages-and-message-queues)，且只有那条线程的消息循环能派发它。剪贴板回退会先模拟 Ctrl+Insert/Ctrl+C，再在 `Sleep()` 轮询循环中阻塞等待剪贴板变化，因此它不能运行在拥有目标窗口的那条线程上。
+
+- **自动 `text-selection` 事件不受影响。** 它们运行在不拥有任何窗口的 MTA worker 上，主线程仍可正常派发按键。这也符合微软的指引：client 需要自动化自身 UI 时，应[在一条不拥有窗口的独立 MTA 线程上发起 UI Automation 调用](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)。如果主线程正忙于一个耗时的 JavaScript 任务，回退仍可能超时，但不会死锁。
+- **`getCurrentSelection()` 运行在调用线程上。** 当鼠标下的窗口正是由该线程创建时，剪贴板回退会被拒绝，调用立即返回 `null` 而不会阻塞。UIA 和 IAccessible 仍照常运行，所以只有任何 accessibility provider 都无法提取的选区会受影响。
+
+这一拒绝对使用 `--disable-renderer-accessibility` 启动的 Electron 应用影响最大。该标志是为规避一个 [Chromium accessibility 崩溃](https://issues.chromium.org/issues/40809069)，但它会完全禁用渲染进程的 accessibility tree，导致 UIA 和 IAccessible 都失败，使剪贴板回退成为唯一路径。
+
+**解决方法：** 使用 Electron 的 [`utilityProcess`](https://www.electronjs.org/docs/latest/api/utility-process) 或 `child_process` 在独立进程中运行 selection-hook。这样宿主主线程可以正常处理模拟按键，而 selection-hook 在自己的进程中等待剪贴板变化。

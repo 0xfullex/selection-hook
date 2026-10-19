@@ -118,12 +118,35 @@ class SelectionEngine
 
     /**
      * @warning This is a complete backup/copy/read/restore transaction. Every exit after
-     * a non-empty backup must restore it and update clipboardSequence_.
+     * a cleared clipboard must attempt restore unless physical copy/cut evidence is complete.
      * @warning Refuses a window owned by the calling thread. That thread would have to
      * dispatch the synthesized copy key while blocked in the poll loops, so the retrieval
      * cannot succeed and the queued keys would overwrite the restored clipboard later.
      */
     bool GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo);
+
+    /**
+     * @param[in] hwnd Borrowed target window.
+     * @param[out] selectionInfo Receives text independently of restoration success.
+     * @return true when nonempty text was read.
+     * @note Ordinary transactions restore even empty originals, unless a real copy/cut
+     * keydown is followed by a confirmed clipboard write. Inactive hooks default to restore.
+     */
+    bool GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInfo &selectionInfo);
+
+    /**
+     * @param[in] hwnd Borrowed target window.
+     * @param[out] selectionInfo Receives the legacy delay-list selection.
+     * @return true when the historical path reads nonempty text.
+     * @warning Preserve the delay-list waits, input modifiers, and restore behavior until
+     * compatibility fixtures and real delay-list applications justify changing them.
+     */
+    bool GetTextViaClipboardLegacy(HWND hwnd, TextSelectionInfo &selectionInfo);
+
+    /** @return true after at most five OpenClipboard attempts with four 5 ms gaps. */
+    bool OpenClipboardWithRetry() const;
+    /** @param[out] text Clipboard text. @return true when bounded open and ordinary read succeed. */
+    bool ReadClipboardWithRetry(std::wstring &text) const;
     bool ShouldProcessViaClipboard(const std::wstring &programName) const;
 
     /**
@@ -137,10 +160,12 @@ class SelectionEngine
     bool IsStopping() const;
 
     /**
+     * @param[in] type Copy shortcut to inject.
+     * @param[in] inputTag Tag for every input, including modifier releases; zero keeps legacy behavior.
      * @warning The injected modifier sequence is compatibility behavior. Changes require
      * physical Alt/Shift/Ctrl state and copy-shortcut regression testing.
      */
-    void SendCopyKey(CopyKeyType type) const;
+    void SendCopyKey(CopyKeyType type, ULONG_PTR inputTag = 0) const;
     void SetStage(RetrievalStage stage) const;
 
     IUIAutomation *automation_ = nullptr;

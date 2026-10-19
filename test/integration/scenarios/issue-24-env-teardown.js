@@ -17,7 +17,7 @@ if (!isMainThread) {
   const SelectionHook = require(path.join(__dirname, "..", "..", "..", "index.js"));
   const hook = new SelectionHook();
   hook.on("error", () => {});
-  if (!hook.start()) throw new Error("start() returned false");
+  if (!hook.start({ enableClipboard: false })) throw new Error("start() returned false");
 
   // Keep the wrapper reachable until worker.terminate() begins environment
   // teardown. The test intentionally does not call stop() or cleanup().

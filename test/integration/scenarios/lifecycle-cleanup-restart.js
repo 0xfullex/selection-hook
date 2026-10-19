@@ -13,13 +13,13 @@ const { runScenarioBody } = require("../../helpers/scenario-runtime.js");
 runScenarioBody((SelectionHook) => {
   const hook = new SelectionHook();
   hook.on("error", () => {});
-  const firstStart = hook.start();
+  const firstStart = hook.start({ enableClipboard: false });
   hook.cleanup();
   const runningAfterCleanup = hook.isRunning();
 
   // cleanup() removed all listeners, re-attach before starting again
   hook.on("error", () => {});
-  const secondStart = hook.start();
+  const secondStart = hook.start({ enableClipboard: false });
   const runningAfterSecondStart = hook.isRunning();
   const stopped = hook.stop();
   hook.cleanup();

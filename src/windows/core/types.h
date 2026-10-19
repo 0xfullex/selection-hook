@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include "clipboard_activity.h"
+
 // How the mouse gesture identified a possible text selection.
 enum class SelectionDetectType
 {
@@ -143,6 +145,7 @@ struct TextSelectionInfo
  */
 struct SelectionConfigSnapshot
 {
+    std::shared_ptr<ClipboardActivityState> clipboardActivity;  ///< Survives stop until transaction cleanup.
     bool clipboardEnabled = true;
     bool triggeredByUser = false;
     FilterMode clipboardFilterMode = FilterMode::Default;

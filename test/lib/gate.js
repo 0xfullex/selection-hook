@@ -23,6 +23,8 @@ const GATE_TEST_NAME = "stop-race: input-monitoring";
  */
 const SKIP_ALLOWLIST = {
   [GATE_TEST_NAME]: ["needs input-monitoring:"],
+  "windows clipboard native: restore": ["needs windows-native-fixtures: Windows only"],
+  "windows clipboard native: activity": ["needs windows-native-fixtures: Windows only"],
   "clipboard: round-trip": ["local tier:", "needs clipboard:"],
   "clipboard: round-trip unicode multiline": ["local tier:", "needs clipboard:"],
 };
@@ -70,7 +72,7 @@ function evaluateGate(summary, { platform }) {
  * @param {"unit"|"integration"} tier
  * @returns {{ ok: boolean, violations: string[] }}
  */
-function checkSkipPolicy(summary, tier) {
+function checkSkipPolicy(summary, tier, { platform = process.platform } = {}) {
   if (tier !== "unit" && tier !== "integration") {
     throw new Error(`unknown tier: ${tier}`);
   }
@@ -78,7 +80,12 @@ function checkSkipPolicy(summary, tier) {
   const violations = [];
 
   for (const { name, reason } of summary.skipped) {
-    if (tier === "unit") {
+    // These two executable fixtures require Win32 and a Windows compiler. No other
+    // unit skip, and no Windows fixture skip on Windows, is permitted.
+    const windowsFixture = name === "windows clipboard native: restore" || name === "windows clipboard native: activity";
+    const allowedUnitPlatformSkip = platform !== "win32" && windowsFixture &&
+      reason === "needs windows-native-fixtures: Windows only";
+    if (tier === "unit" && !allowedUnitPlatformSkip) {
       violations.push(`unit tests must not skip: ${name} (${reason || "no reason"})`);
       continue;
     }

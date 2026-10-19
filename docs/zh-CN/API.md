@@ -141,6 +141,12 @@ if (selection) {
 
 启用文本选择的剪贴板回退。默认启用。
 
+在 Windows 上，不在 `INCLUDE_CLIPBOARD_DELAY_READ` 列表中的应用采用优先恢复原剪贴板的回退方式：备份所有能够复制的格式，并在取词后尝试恢复，包括将原本为空的剪贴板恢复为空。不支持或无法读取的格式会被跳过，不会因此拒绝取词，但这些格式无法恢复。
+
+默认恢复原内容；只有在事务期间观察到用户实际按下 Ctrl+C、Ctrl+X、Ctrl+Insert 或 Shift+Delete，随后确认剪贴板序列号变化时，才保留新内容。带有额外修饰键的组合和程序注入的快捷键不算用户复制证据。一旦识别到上述实际按键，即使序列号尚未变化，本次事务也会立即停止后续复制注入。取词可能返回 `null` 或不触发 `text-selection` 事件，但已经读到的文字仍会返回。如果未确认按键之后的序列号变化，仍会恢复原剪贴板。普通按键、鼠标输入和右键菜单复制都不算证据，因此右键菜单复制的新内容可能被恢复操作覆盖。
+
+恢复属于尽力而为。本路径每次打开剪贴板最多尝试五次，失败后的重试间隔为 5 ms。某个格式失败时仍会尝试恢复其余已备份格式，恢复失败不会丢弃已经读到的文字。调用 `stop()` 或发生清理时仍会尝试恢复，除非此前已确认用户复制了新内容。Windows API 持续失败时可能无法完整恢复。配置在 `INCLUDE_CLIPBOARD_DELAY_READ` 中的应用保持原有行为，上述优先恢复原剪贴板的改动不适用。详见 [Windows 剪贴板回退](WINDOWS.md#剪贴板回退)。
+
 **返回值：** `boolean` — 启用成功返回 `true`。
 
 #### `disableClipboard(): boolean`
@@ -546,7 +552,7 @@ if (data.mousePosEnd.x !== SelectionHook.INVALID_COORDINATE) {
 | 常量 | 值 | 描述 |
 |------|-----|------|
 | `EXCLUDE_CLIPBOARD_CURSOR_DETECT` | `0` | 排除剪贴板操作的光标检测。适用于使用自定义光标的应用程序（例如 Adobe Acrobat），这些应用中光标形状检测可能不可靠。 |
-| `INCLUDE_CLIPBOARD_DELAY_READ` | `1` | 读取剪贴板内容时包含延迟。适用于快速连续多次修改剪贴板内容的应用程序（例如 Adobe Acrobat）。 |
+| `INCLUDE_CLIPBOARD_DELAY_READ` | `1` | 为短时间内多次写入剪贴板的应用（例如 Adobe Acrobat）增加读取延迟。列表中的应用继续使用原有剪贴板路径，行为保持不变；`enableClipboard()` 中所述优先恢复原剪贴板的改动不适用。 |
 
 > **平台：** 仅限 Windows。
 

@@ -229,6 +229,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     std::thread mouse_keyboard_hook_thread;
     HANDLE mouse_keyboard_ready_event = NULL;
     HANDLE mouse_keyboard_stop_event = NULL;
+    std::shared_ptr<ClipboardActivityState> clipboard_activity = std::make_shared<ClipboardActivityState>();
 
     // Mouse button bitmap, updated on the hook thread before any filtering so the
     // state survives events that are skipped or dropped. Snapshotted into every
@@ -530,6 +531,7 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
         mouse_keyboard_running = true;
     }
 
+    clipboard_activity = std::make_shared<ClipboardActivityState>();
     retrieval_gates = std::make_shared<RetrievalGates>();
     std::string workerError;
     if (!StartSelectionWorker(env, callback, workerError))
@@ -1253,6 +1255,7 @@ SelectionConfigSnapshot SelectionHook::BuildSelectionConfigSnapshot(bool trigger
     // Copy every retrieval input at dispatch time. The MTA worker must not read mutable
     // vectors, cursors, or filter settings directly from the JS-owned instance.
     SelectionConfigSnapshot config;
+    config.clipboardActivity = clipboard_activity;
     config.clipboardEnabled = is_enabled_clipboard;
     config.triggeredByUser = triggeredByUser;
     config.clipboardFilterMode = clipboard_filter_mode;
@@ -1498,6 +1501,7 @@ Napi::Object SelectionHook::CreateSelectionResultObject(Napi::Env env, const Tex
  */
 void SelectionHook::StopMouseKeyboardHookThread()
 {
+    clipboard_activity->Invalidate();
     if (mouse_keyboard_stop_event)
     {
         SetEvent(mouse_keyboard_stop_event);
@@ -1558,8 +1562,6 @@ void SelectionHook::MouseKeyboardHookThreadProc()
 
     // Force Windows to create this thread's message queue before Start() returns.
     PeekMessageW(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE);
-    SetEvent(mouse_keyboard_ready_event);
-
     HHOOK mouseHook = SetWindowsHookEx(WH_MOUSE_LL, MouseHookCallback, NULL, 0);
     HHOOK keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardHookCallback, NULL, 0);
 
@@ -1571,6 +1573,14 @@ void SelectionHook::MouseKeyboardHookThreadProc()
     {
         fprintf(stderr, "[selection-hook] SetWindowsHookEx(WH_KEYBOARD_LL) failed, error: %lu\n", GetLastError());
     }
+
+    // A synchronous query issued immediately after start must see trustworthy hooks.
+    // Partial installation still signals readiness and retains the existing error report.
+    if (mouseHook && keyboardHook)
+        clipboard_activity->Activate();
+    else
+        clipboard_activity->Invalidate();
+    SetEvent(mouse_keyboard_ready_event);
 
     // Wait for either a sticky stop request or input for the hook message queue.
     DWORD waitFlags = MWMO_INPUTAVAILABLE;
@@ -1603,6 +1613,8 @@ void SelectionHook::MouseKeyboardHookThreadProc()
         }
         break;
     }
+
+    clipboard_activity->Invalidate();
 
     if (mouseHook != NULL)
     {
@@ -1747,6 +1759,13 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
  */
 LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    if (nCode == HC_ACTION && currentInstance)
+    {
+        const auto *key = reinterpret_cast<const KBDLLHOOKSTRUCT *>(lParam);
+        const bool down = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+        currentInstance->clipboard_activity->RecordKey(down, key->vkCode, key->flags, key->dwExtraInfo,
+                                                       GetClipboardSequenceNumber());
+    }
     if (nCode == HC_ACTION && currentInstance && !currentInstance->IsRetrievalInFlight())
     {
         KBDLLHOOKSTRUCT *pKeyInfo = (KBDLLHOOKSTRUCT *)lParam;

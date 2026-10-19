@@ -127,6 +127,8 @@ selectionHook.cleanup();
 
 Selection Hook 使用原生 OS 无障碍 API 直接从当前聚焦的应用程序读取选中文本 — 无需轮询。剪贴板回退默认启用，但仅在无障碍 API 无法获取文本时作为最后手段触发，因此在绝大多数情况下剪贴板不会被触及。如果需要确保零剪贴板干扰，可以通过 `disableClipboard()` 或在启动配置中设置 `{ enableClipboard: false }` 完全禁用回退。
 
+在 Windows 上，不在 `INCLUDE_CLIPBOARD_DELAY_READ` 列表中的应用会尝试恢复可备份的剪贴板格式（包括原本为空的状态），并保留已确认的用户复制或剪切。不支持的格式不会阻止取词，恢复属于尽力而为。识别到实际复制或剪切快捷键后会停止后续复制注入，因此取词可能没有结果。延迟读取列表中的应用保持原有行为。具体规则与限制见 [Windows 剪贴板回退](docs/zh-CN/WINDOWS.md#剪贴板回退)。
+
 ## 📖 使用指南
 
 如需了解深入的使用模式、平台配置、Electron 集成和配置选项，请参阅 [docs/GUIDE.md](docs/zh-CN/GUIDE.md)。

@@ -139,6 +139,12 @@ Disable mouse move events. This is the default state.
 
 Enable clipboard fallback for text selection. Enabled by default.
 
+On Windows, applications outside `INCLUDE_CLIPBOARD_DELAY_READ` use restore-first fallback: it backs up all formats it can copy and attempts to restore them after retrieval, including restoring an originally empty clipboard to empty. Unsupported or unreadable formats are skipped without refusing retrieval, but cannot be restored.
+
+The original is restored unless a physical Ctrl+C, Ctrl+X, Ctrl+Insert, or Shift+Delete keydown is observed during the transaction and a later clipboard sequence change is confirmed. Extra modifiers and injected shortcuts do not qualify. Recognizing one of these physical shortcuts immediately prevents further copy injections in that transaction, even before the sequence changes. Retrieval may return `null` or emit no `text-selection` event, but text already read is still returned. Without the later confirmed change, restoration remains the default. Ordinary keys, mouse input, and context-menu copy do not qualify; content copied through a context menu may therefore be overwritten.
+
+Restoration is best effort. Each clipboard open in this path has at most five attempts with 5 ms between failed attempts. A failed format does not prevent attempts to restore the remaining saved formats, and restoration failure does not discard text already read. `stop()` or teardown still attempts restoration unless a user copy was already confirmed. Persistent Windows API failures can prevent full restoration. Applications configured in `INCLUDE_CLIPBOARD_DELAY_READ` retain the legacy behavior unchanged; these restore-first changes do not apply. See [Windows clipboard fallback](WINDOWS.md#clipboard-fallback) for details.
+
 **Returns:** `boolean` — `true` if enabled successfully.
 
 #### `disableClipboard(): boolean`
@@ -544,7 +550,7 @@ Defines types for fine-tuned application behavior lists.
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `EXCLUDE_CLIPBOARD_CURSOR_DETECT` | `0` | Exclude cursor detection for clipboard operations. Useful for applications with custom cursors (e.g., Adobe Acrobat) where cursor shape detection may not work reliably. |
-| `INCLUDE_CLIPBOARD_DELAY_READ` | `1` | Include delay when reading clipboard content. Useful for applications that modify clipboard content multiple times in quick succession (e.g., Adobe Acrobat). |
+| `INCLUDE_CLIPBOARD_DELAY_READ` | `1` | Add a clipboard read delay for applications that write multiple times in quick succession (e.g., Adobe Acrobat). Listed applications retain the legacy clipboard path unchanged; the restore-first changes described under `enableClipboard()` do not apply. |
 
 > **Platform:** Windows only.
 

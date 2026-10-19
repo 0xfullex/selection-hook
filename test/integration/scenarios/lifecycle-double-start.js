@@ -16,8 +16,8 @@ runScenarioBody((SelectionHook) => {
   hook.on("error", () => {});
   const statuses = [];
   hook.on("status", (s) => statuses.push(s));
-  const first = hook.start();
-  const second = hook.start();
+  const first = hook.start({ enableClipboard: false });
+  const second = hook.start({ enableClipboard: false });
   const running = hook.isRunning();
   hook.stop();
   hook.cleanup();

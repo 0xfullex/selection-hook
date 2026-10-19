@@ -20,7 +20,7 @@ runScenarioBody((SelectionHook) => {
   const hook = new SelectionHook();
   hook.on("error", () => {});
   const trusted = process.platform === "darwin" ? hook.macIsProcessTrusted() : null;
-  const started = hook.start();
+  const started = hook.start({ enableClipboard: false });
   const runningAfterStart = hook.isRunning();
   const stopped = hook.stop();
   const runningAfterStop = hook.isRunning();

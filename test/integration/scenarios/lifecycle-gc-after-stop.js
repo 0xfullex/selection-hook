@@ -19,7 +19,7 @@ runScenarioBody((SelectionHook) => {
   if (typeof global.gc !== "function") throw new Error("global.gc missing: run with --expose-gc");
   let hook = new SelectionHook();
   hook.on("error", () => {});
-  if (!hook.start()) throw new Error("start() returned false");
+  if (!hook.start({ enableClipboard: false })) throw new Error("start() returned false");
   if (!hook.stop()) throw new Error("stop() returned false");
   hook = null;
   global.gc();

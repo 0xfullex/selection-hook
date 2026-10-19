@@ -52,9 +52,33 @@ bool WriteClipboard(const std::wstring &content);
  */
 bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened = false);
 
+/** Detailed outcome of restoring the backupable formats, including an empty original. */
+enum class ClipboardRestoreStatus
+{
+    Restored,
+    Partial,
+    OpenFailed,
+    EmptyFailed,
+    CloseFailed
+};
+
+/** Counts every backed-up format attempted; Windows owns only successfully set handles. */
+struct ClipboardRestoreResult
+{
+    ClipboardRestoreStatus status = ClipboardRestoreStatus::Restored;
+    size_t restoredFormats = 0;
+    size_t failedFormats = 0;
+};
+
 /**
- * Restores all clipboard formats from a ClipboardBackup structure
- * @param backup The backup to restore from
- * @return true if successful, false on failure
+ * @brief Restore every backupable format, continuing after individual failures.
+ * @param[in] backup Snapshot; an originally empty clipboard is restored to empty.
+ * @param[in] isClipboardOpened True when the caller already holds OpenClipboard.
+ * @param[out] result Optional detailed result. Partial means at least one format failed,
+ * or the nonempty original had no backupable formats.
+ * @return true only if every backed-up format was restored and all owned API steps succeeded.
+ * @note No retry is hidden here. The ordinary engine transaction opens with bounded retries;
+ * the legacy caller retains its original single OpenClipboard attempt and HasData guard.
  */
-bool RestoreClipboard(const ClipboardBackup &backup);
+bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened = false,
+                      ClipboardRestoreResult *result = nullptr);

@@ -48,15 +48,23 @@ The clipboard fallback is the most complex part of the Windows implementation. I
 
 ### How It Works
 
+For applications outside `INCLUDE_CLIPBOARD_DELAY_READ`, the fallback uses the following restore-first transaction:
+
 1. **Saves** the current clipboard content
 2. **Simulates Ctrl+Insert** (safer — less likely to conflict with application shortcuts)
 3. **Waits** a short period, checking if the clipboard changed
 4. If no change, **simulates Ctrl+C** as a second attempt
 5. **Waits** for the clipboard to change
 6. **Reads** the new clipboard content
-7. **Restores** the original clipboard content
+7. **Attempts to restore** the original clipboard content
 
-This process is designed to be non-destructive — the user's clipboard is saved and restored, so in the vast majority of cases, the clipboard operation is invisible to the user.
+The original clipboard is restored on a best-effort basis, including restoring an originally empty clipboard to empty. All formats that can be backed up are saved; unsupported or unreadable formats are skipped without refusing text retrieval. Those skipped formats cannot be restored.
+
+The only exception to restoration is an observed physical **Ctrl+C**, **Ctrl+X**, **Ctrl+Insert**, or **Shift+Delete** keydown during the transaction, followed by a confirmed clipboard sequence change. These shortcuts must have no extra modifiers; injected shortcuts do not qualify. Once such a physical shortcut is recognized, no further copy shortcuts are injected in that transaction, even if the sequence has not changed yet. Retrieval may then return `null` (or emit no `text-selection` event), but text already read is still returned. Without a confirmed later sequence change, the original clipboard is restored.
+
+Ordinary keys, mouse clicks, scrolling, and context-menu copy do not qualify as evidence of a user copy. In particular, content copied through a context menu during the transaction may be overwritten by restoration. If hook input cannot be observed reliably, restoration remains the default.
+
+Each clipboard open in this transaction has at most five attempts, separated by 5 ms after a failed attempt. Restoration continues with the remaining saved formats if one format fails, and failure does not discard text already read. `stop()` or teardown during a transaction still attempts restoration, unless a user copy was already confirmed. Persistent Windows API failures can leave the clipboard unrestored or only partly restored; full restoration is not guaranteed.
 
 Clipboard transactions are serialized. If automatic fallback is using the clipboard, public clipboard methods return their existing failure value immediately instead of waiting for the worker.
 
@@ -114,6 +122,8 @@ hook.setFineTunedList(
 **Problem:** Some applications modify the clipboard multiple times after a Ctrl+C operation (e.g., Adobe Acrobat writes plain text first, then overwrites with rich text). Reading the clipboard too early may return incomplete or intermediate content.
 
 **Solution:** Add these applications to the `INCLUDE_CLIPBOARD_DELAY_READ` list. This adds an extra delay before reading the clipboard, allowing the application to finish writing.
+
+Applications on this list retain the legacy clipboard path unchanged. The restore-first behavior above, including empty-clipboard restoration, physical copy/cut detection, and bounded open retries, does not apply to them.
 
 ```javascript
 hook.setFineTunedList(

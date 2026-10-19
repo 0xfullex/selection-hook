@@ -31,7 +31,7 @@ runScenarioBody((SelectionHook) => {
   for (let i = 0; i < FRESH_INSTANCE_CYCLES; i++) {
     const hook = new SelectionHook();
     hook.on("error", () => {});
-    if (!hook.start()) throw new Error(`start() returned false on fresh instance cycle ${i}`);
+    if (!hook.start({ enableClipboard: false })) throw new Error(`start() returned false on fresh instance cycle ${i}`);
     hook.stop();
     hook.cleanup();
   }
@@ -40,7 +40,7 @@ runScenarioBody((SelectionHook) => {
   const hook = new SelectionHook();
   hook.on("error", () => {});
   for (let i = 0; i < SAME_INSTANCE_CYCLES; i++) {
-    if (!hook.start()) throw new Error(`start() returned false on same instance cycle ${i}`);
+    if (!hook.start({ enableClipboard: false })) throw new Error(`start() returned false on same instance cycle ${i}`);
     hook.stop();
   }
   hook.cleanup();

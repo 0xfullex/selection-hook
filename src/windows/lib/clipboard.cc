@@ -233,15 +233,26 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
  * CF_ENHMETAFILE is restored via SetEnhMetaFileBits.
  * On SetClipboardData failure, the allocated handle is freed by us.
  */
-bool RestoreClipboard(const ClipboardBackup &backup)
+bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened, ClipboardRestoreResult *result)
 {
-    if (!backup.HasData())
-        return true;  // Nothing to restore
-
-    if (!OpenClipboard(nullptr))
-        return false;
-
-    EmptyClipboard();
+    ClipboardRestoreResult outcome;
+    const auto finish = [&]()
+    {
+        if (result)
+            *result = outcome;
+        return outcome.status == ClipboardRestoreStatus::Restored;
+    };
+    if (!isClipboardOpened && !OpenClipboard(nullptr))
+    {
+        outcome.status = ClipboardRestoreStatus::OpenFailed;
+        return finish();
+    }
+    if (!EmptyClipboard())
+    {
+        outcome.status = ClipboardRestoreStatus::EmptyFailed;
+        // Preserve main's best effort: even if Empty fails, attempt every available
+        // format. Keep EmptyFailed as the primary outcome, including partial counts.
+    }
 
     for (const auto &entry : backup.formats)
     {
@@ -249,38 +260,52 @@ bool RestoreClipboard(const ClipboardBackup &backup)
         if (entry.format == CF_ENHMETAFILE)
         {
             HENHMETAFILE hEmf = SetEnhMetaFileBits(static_cast<UINT>(entry.dataSize), entry.data.data());
-            if (hEmf)
+            if (!hEmf)
             {
-                if (SetClipboardData(CF_ENHMETAFILE, hEmf) == nullptr)
-                {
-                    DeleteEnhMetaFile(hEmf);  // Not GlobalFree -- this is a GDI handle
-                }
+                ++outcome.failedFormats;
+                continue;
             }
+            if (SetClipboardData(CF_ENHMETAFILE, hEmf) == nullptr)
+            {
+                DeleteEnhMetaFile(hEmf);  // Not GlobalFree -- this is a GDI handle
+                ++outcome.failedFormats;
+            }
+            else
+                ++outcome.restoredFormats;
             continue;
         }
 
         // Generic HGLOBAL path
         HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, entry.dataSize);
         if (!hData)
+        {
+            ++outcome.failedFormats;
             continue;
-
+        }
         void *pDest = GlobalLock(hData);
         if (!pDest)
         {
             GlobalFree(hData);
+            ++outcome.failedFormats;
             continue;
         }
-
         memcpy(pDest, entry.data.data(), entry.dataSize);
         GlobalUnlock(hData);
-
         if (SetClipboardData(entry.format, hData) == nullptr)
         {
             GlobalFree(hData);  // On failure, we must free the handle ourselves
+            ++outcome.failedFormats;
         }
-        // On success, system owns hData -- do NOT free
+        else
+        {
+            // On success, system owns hData -- do NOT free
+            ++outcome.restoredFormats;
+        }
     }
-
-    CloseClipboard();
-    return true;
+    if (outcome.status == ClipboardRestoreStatus::Restored &&
+        (outcome.failedFormats != 0 || (!backup.isEmpty && backup.formats.empty())))
+        outcome.status = ClipboardRestoreStatus::Partial;
+    if (!isClipboardOpened && !CloseClipboard() && outcome.status != ClipboardRestoreStatus::EmptyFailed)
+        outcome.status = ClipboardRestoreStatus::CloseFailed;
+    return finish();
 }

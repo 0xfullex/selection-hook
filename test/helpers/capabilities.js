@@ -24,6 +24,11 @@ function tryLoadSelectionHook() {
 }
 
 const probes = {
+  // Pure platform probe: unit fixtures must not load the addon or inspect a desktop.
+  "windows-native-fixtures"() {
+    return isWindows ? { ok: true } : { ok: false, detail: "Windows only" };
+  },
+
   // The native .node can be loaded and a native instance constructed.
   // index.js swallows the load error, so constructing is the only real probe.
   native() {

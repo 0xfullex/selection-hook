@@ -149,6 +149,8 @@ test("skip-policy: allowlist covers the gate test name and the clipboard round-t
   assert.deepEqual(Object.keys(SKIP_ALLOWLIST).sort(), [
     "clipboard: round-trip",
     "clipboard: round-trip unicode multiline",
+    "windows clipboard native: restore",
+    "windows clipboard native: activity",
     GATE_TEST_NAME,
   ].sort());
   for (const prefixes of Object.values(SKIP_ALLOWLIST)) {
@@ -156,3 +158,17 @@ test("skip-policy: allowlist covers the gate test name and the clipboard round-t
     assert.equal(prefixes.length > 0, true);
   }
 });
+
+for (const name of ["windows clipboard native: restore", "windows clipboard native: activity"]) {
+  test(`skip-policy: ${name} accepts only its non-Windows platform skip`, () => {
+    const skipped = summary({ skipped: [{ name, reason: "needs windows-native-fixtures: Windows only" }] });
+    for (const platform of ["darwin", "linux"]) {
+      assert.equal(checkSkipPolicy(skipped, "unit", { platform }).ok, true);
+    }
+    assert.equal(checkSkipPolicy(skipped, "unit", { platform: "win32" }).ok, false);
+    assert.equal(checkSkipPolicy(summary({ skipped: [{ name, reason: "local tier: optional" }] }),
+      "unit", { platform: "linux" }).ok, false);
+    assert.equal(checkSkipPolicy(summary({ skipped: [{ name: name + " extra", reason: "needs windows-native-fixtures: Windows only" }] }),
+      "unit", { platform: "linux" }).ok, false);
+  });
+}

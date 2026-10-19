@@ -22,11 +22,11 @@ runScenarioBody((SelectionHook) => {
   const running = [];
   const results = [];
 
-  results.push(hook.start());
+  results.push(hook.start({ enableClipboard: false }));
   running.push(hook.isRunning());
   results.push(hook.stop());
   running.push(hook.isRunning());
-  results.push(hook.start());
+  results.push(hook.start({ enableClipboard: false }));
   running.push(hook.isRunning());
   results.push(hook.stop());
   running.push(hook.isRunning());

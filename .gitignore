@@ -14,3 +14,4 @@ compile_commands.json
 CLAUDE.local.md
 GEMINI.md
 test-results
+.worktrees

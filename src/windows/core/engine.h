@@ -98,11 +98,18 @@ class SelectionEngine
     TextRetrievalResult GetTextViaUIAutomation(HWND hwnd, TextSelectionInfo &selectionInfo);
 
     /**
-     * @warning DocumentRange fallback is safe only for the focused element. Ancestors
-     * must pass false or a provider may return an entire document as selected text.
+     * @brief Read the explicit selection of an element's UIA TextPattern.
+     * @param[in] element Focused element or one of its ancestors.
+     * @param[out] selectionInfo Receives text and coordinates on success.
+     * @return true when GetSelection yields non-empty text with usable coordinates.
+     * @warning Only GetSelection may be used. UIA defines no text attribute that marks a
+     * range as selected, so probing DocumentRange can only return the whole document, and
+     * Chromium answers document-range queries on its browser UI thread, freezing every
+     * browser window for seconds per call (issue #25). A new fallback needs a named
+     * provider that exposes selection no other way, plus a timing check against a complex
+     * Chromium page with no selection.
      */
-    bool TryGetTextViaTextPattern(IUIAutomationElement *element, TextSelectionInfo &selectionInfo,
-                                  bool allowDocumentFallback);
+    bool TryGetTextViaTextPattern(IUIAutomationElement *element, TextSelectionInfo &selectionInfo);
 
     /** Retrieve from the legacy window client object. */
     TextRetrievalResult GetTextViaAccessible(HWND hwnd, TextSelectionInfo &selectionInfo);

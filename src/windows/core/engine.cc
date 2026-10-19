@@ -24,11 +24,6 @@
 
 #pragma comment(lib, "Oleacc.lib")  // For IAccessible.
 
-// UI Automation constant missing from some older Windows SDKs.
-#ifndef UIA_IsSelectionActivePropertyId
-#define UIA_IsSelectionActivePropertyId 30034
-#endif
-
 namespace
 {
 // Clipboard fallback is a process-wide transaction: backup, clear, synthesize copy,
@@ -356,18 +351,15 @@ TextRetrievalResult SelectionEngine::ProcessAccessibleSelection(IAccessible *acc
 /**
  * Read selection through a UIA TextPattern.
  *
- * When allowDocumentFallback is false, only GetSelection is safe. The active-selection
- * attribute on an ancestor document can be unreliable and could expose the whole page.
+ * Only GetSelection is used, for the focused element and for ancestors alike. UIA has
+ * no text attribute that marks a range as selected, so a DocumentRange probe can only
+ * return the entire document. See issue #25.
  */
-bool SelectionEngine::TryGetTextViaTextPattern(IUIAutomationElement *element, TextSelectionInfo &selectionInfo,
-                                               bool allowDocumentFallback)
+bool SelectionEngine::TryGetTextViaTextPattern(IUIAutomationElement *element, TextSelectionInfo &selectionInfo)
 {
     if (!element || IsStopping())
         return false;
 
-    // Ancestor walk-up calls this with allowDocumentFallback=false. IsSelectionActive
-    // is only trustworthy on the focused element; using an ancestor document range can
-    // return the entire page as though it were the selection.
     bool result = false;
     IUIAutomationTextPattern *textPattern = nullptr;
     HRESULT hr = element->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern),
@@ -410,72 +402,15 @@ bool SelectionEngine::TryGetTextViaTextPattern(IUIAutomationElement *element, Te
             ranges->Release();
         }
 
-        // Some providers expose the active selection only through DocumentRange.
-        if (!result && allowDocumentFallback && !IsStopping())
-        {
-            IUIAutomationTextRange *documentRange = nullptr;
-            hr = textPattern->get_DocumentRange(&documentRange);
-            if (SUCCEEDED(hr) && documentRange)
-            {
-                bool hasSelection = false;
-                // Query the selection attribute before GetText(-1). This avoids reading
-                // the entire document when there is no active selection.
-                VARIANT active;
-                VariantInit(&active);
-                const HRESULT attributeHr = documentRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &active);
-                if (SUCCEEDED(attributeHr) && active.vt == VT_BOOL && active.boolVal == VARIANT_TRUE && !IsStopping())
-                {
-                    BSTR text = nullptr;
-                    hr = documentRange->GetText(-1, &text);
-                    if (SUCCEEDED(hr) && text)
-                    {
-                        std::wstring selectedText(text, SysStringLen(text));
-                        RemoveObjectReplacementChars(selectedText);
-                        if (!selectedText.empty())
-                        {
-                            selectionInfo.text = std::move(selectedText);
-                            if (SetTextRangeCoordinates(documentRange, selectionInfo))
-                            {
-                                result = true;
-                                hasSelection = true;
-                            }
-                        }
-                        SysFreeString(text);
-                    }
-                }
-                VariantClear(&active);
-
-                // Compatibility fallback for providers that report the active flag only
-                // after expanding the range to TextUnit_Document.
-                if (!hasSelection && !IsStopping())
-                {
-                    hr = documentRange->ExpandToEnclosingUnit(TextUnit_Document);
-                    if (SUCCEEDED(hr))
-                    {
-                        VariantInit(&active);
-                        hr = documentRange->GetAttributeValue(UIA_IsSelectionActivePropertyId, &active);
-                        if (SUCCEEDED(hr) && active.vt == VT_BOOL && active.boolVal == VARIANT_TRUE && !IsStopping())
-                        {
-                            BSTR text = nullptr;
-                            hr = documentRange->GetText(-1, &text);
-                            if (SUCCEEDED(hr) && text)
-                            {
-                                std::wstring documentText(text, SysStringLen(text));
-                                RemoveObjectReplacementChars(documentText);
-                                if (!documentText.empty())
-                                {
-                                    selectionInfo.text = std::move(documentText);
-                                    result = SetTextRangeCoordinates(documentRange, selectionInfo);
-                                }
-                                SysFreeString(text);
-                            }
-                        }
-                        VariantClear(&active);
-                    }
-                }
-                documentRange->Release();
-            }
-        }
+        // No DocumentRange fallback when GetSelection finds nothing (issue #25). The former
+        // probe passed 30034 to GetAttributeValue, but 30034 is
+        // UIA_IsScrollPatternAvailablePropertyId, an element property rather than a text
+        // attribute, and UIA defines no text attribute that marks a range as selected.
+        // Conforming providers therefore answered ReservedNotSupportedValue, and a provider
+        // answering TRUE would have produced the whole document as the selection. Chromium
+        // evaluates document-range attributes on its browser UI thread by walking the page,
+        // which froze every browser window for ~30 s per call on complex pages, twice per
+        // gesture that ends without a selection (scrollbar drag, double-click on blank space).
         textPattern->Release();
     }
     return result;
@@ -519,7 +454,7 @@ TextRetrievalResult SelectionEngine::GetTextViaUIAutomation(HWND hwnd, TextSelec
         controlType_ = controlType;
 
     // Approach 1: native UIA TextPattern on the focused element.
-    if (TryGetTextViaTextPattern(focusedElement, selectionInfo, true))
+    if (TryGetTextViaTextPattern(focusedElement, selectionInfo))
         result = TextRetrievalResult::TextFound;
 
     // Approach 2: UIA's LegacyIAccessible bridge.
@@ -567,8 +502,8 @@ TextRetrievalResult SelectionEngine::GetTextViaUIAutomation(HWND hwnd, TextSelec
                 if (FAILED(hr) || !parent)
                     break;
                 current = parent;
-                // Ancestors may use GetSelection only; document fallback is unsafe here.
-                if (TryGetTextViaTextPattern(current, selectionInfo, false))
+                // Ancestors are read through GetSelection only, like the focused element.
+                if (TryGetTextViaTextPattern(current, selectionInfo))
                     result = TextRetrievalResult::TextFound;
             }
             if (current)

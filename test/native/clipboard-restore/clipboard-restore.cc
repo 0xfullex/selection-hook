@@ -828,6 +828,37 @@ int main()
                 result.restoredFormats == 2 && result.failedFormats == 0,
             "already-open restoration reports EmptyFailed while counting successful subsequent Set calls");
       CloseClipboard(); }
+    // Coverage of existing behavior (not a bug fix): the third automatic Ctrl checkpoint, taken
+    // after the 10 ms settle that follows an injected Ctrl+C write, must still abort when the
+    // user presses a physical Ctrl during that settle. Without it the unattended text would be
+    // read and a possible user copy could be kept instead of restoring the original.
+    Reset(); CopyText(L"old"); ctrlInsertNoCopy = true;
+    { SelectionEngine e; TextSelectionInfo s; e.config.triggeredByUser = false; e.clipboardSequence_ = sequence;
+      // Callbacks are one-shot: the first fires for CtrlInsert, the second after the CtrlC send.
+      onSend = [] { onSend = [] { onSleep = [] { held[VK_CONTROL] = true; }; }; };
+      Check(!Run(e, s) && s.text.empty() && sentInputs.size() == 2 && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "automatic physical Ctrl during CtrlC settle aborts without text and restores original"); }
+    // Coverage of existing behavior (not a bug fix): when the clipboard sequence has already
+    // moved by the time the read opens the clipboard, that candidate is rejected for the whole
+    // transaction. A user write that lands after the read must not be kept as a user copy.
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] {
+          CopyText(L"user");
+          onOpen = [] { ++sequence; onClose = [] { CopyText(L"later-user"); }; };
+      };
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "read Open seeing a moved sequence rejects a later user write and restores original"); }
+    // Coverage of existing behavior (not a bug fix): a D1 user write already visible before the
+    // CtrlInsert poll window starts is detected in that window against the retained baseline,
+    // so only the 10 ms settle sleeps run (no 20 x 5 ms CtrlInsert poll before the CtrlC stage).
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onClose = [] { onSequence = [] { onSequence = [] { Shortcut(); CopyText(L"user"); }; }; };
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")) &&
+                waits == std::vector<DWORD>(2, 5),
+            "D1 pending write before CtrlInsert window is detected there without polling on"); }
     Clear();
     Check(liveBlocks == 0 && activeLocks == 0 && wrongFrees == 0 && !opened,
           "all allocated handles and locks released with matching ownership");

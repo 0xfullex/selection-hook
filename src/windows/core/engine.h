@@ -130,7 +130,8 @@ class SelectionEngine
      * @param[out] selectionInfo Receives text independently of restoration success.
      * @return true when nonempty text was read.
      * @note Ordinary transactions restore even empty originals, unless a real copy/cut
-     * keydown is followed by a confirmed clipboard write. Inactive hooks default to restore.
+     * keydown is followed by a confirmed clipboard write and no copy input was injected in
+     * the transaction. Inactive hooks default to restore.
      */
     bool GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInfo &selectionInfo);
 

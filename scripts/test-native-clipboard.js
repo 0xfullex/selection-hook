@@ -18,6 +18,9 @@ const engine = fs.readFileSync(path.join(root, "src/windows/core/engine.cc"), "u
 function method(signature) {
   const start = engine.indexOf(signature);
   if (start < 0) throw new Error(`production method missing: ${signature}`);
+  if (engine.indexOf(signature, start + signature.length) !== -1) {
+    throw new Error(`production method is not unique: ${signature}`);
+  }
   const opening = engine.indexOf("{", start);
   let depth = 1;
   let end = opening + 1;
@@ -35,7 +38,7 @@ const methods = [
   "bool SelectionEngine::GetTextViaClipboardLegacy(",
   "bool SelectionEngine::OpenClipboardWithRetry(",
   "bool SelectionEngine::ReadClipboardWithRetry(",
-  "void SelectionEngine::SendCopyKey(",
+  "bool SelectionEngine::SendCopyKey(",
   "bool SelectionEngine::ShouldKeyInterruptViaClipboard(",
   "bool SelectionEngine::SleepInterruptibly(",
 ].map(method).join("\n\n") + "\n";
@@ -48,7 +51,6 @@ function run(command, args) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 const nodeGyp = require.resolve("node-gyp/bin/node-gyp.js");
-// A checkout-local cache survives isolated child environments and has no machine/version pin.
-const devdir = process.env.npm_config_devdir || path.join(root, "build/node-gyp-cache");
-run(process.execPath, [nodeGyp, "configure", "build", "--directory", fixture, "--devdir", devdir]);
-run(path.join(fixture, `build/Release/clipboard-${group}.exe`), []);
+const configuration = (process.env.npm_package_config_node_gyp_debug ?? process.env.npm_config_debug) ? "Debug" : "Release";
+run(process.execPath, [nodeGyp, "configure", "build", `clipboard-${group}`, "--directory", fixture]);
+run(path.join(fixture, `build/${configuration}/clipboard-${group}.exe`), []);

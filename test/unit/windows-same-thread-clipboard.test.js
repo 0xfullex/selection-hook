@@ -42,7 +42,7 @@ function clipboardFallback() {
   return between(
     source("src/windows/core/engine.cc"),
     "bool SelectionEngine::GetTextViaClipboard",
-    "void SelectionEngine::SendCopyKey"
+    "bool SelectionEngine::SendCopyKey"
   );
 }
 

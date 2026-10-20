@@ -20,6 +20,16 @@ inline ULONG_PTR ClipboardActivityInputTag()
 /** Identifies one transaction serialized by the existing process clipboard mutex. */
 using ClipboardTransactionToken = uint32_t;
 
+/**
+ * @return True only for a known, strictly later sequence within half the DWORD range.
+ * @note Unsigned subtraction handles wraparound; zero and half-range ambiguity fail closed.
+ */
+inline bool ClipboardSequenceIsLater(DWORD sequence, DWORD previous)
+{
+    const uint32_t distance = static_cast<uint32_t>(sequence - previous);
+    return sequence != 0 && previous != 0 && distance != 0 && distance < 0x80000000u;
+}
+
 /** Evidence is sticky until EndTransaction, including after hook invalidation. */
 struct ClipboardCopyIntent
 {
@@ -31,9 +41,10 @@ struct ClipboardCopyIntent
  * @brief Tracks physical copy/cut shortcuts without blocking the low-level hook.
  * @note Only the clipboard-mutex holder may begin/end transactions or observe a sequence.
  * The hook thread alone updates modifiers. Injected events never update physical state.
- * @warning This proves key-before-write ordering, not the writer's identity. A previously
- * injected copy can still complete late. Do not add an owner/process filter: it rejects
- * focused applications when the retrieval target is the window under another mouse.
+ * @warning The engine must exclude every own sequence, including outstanding injected
+ * results, before confirming a candidate. This proves ordering, not writer identity.
+ * Do not add an owner/process filter: it rejects focused applications when retrieval
+ * targets the window under the mouse in another application.
  */
 class ClipboardActivityState
 {
@@ -57,8 +68,8 @@ class ClipboardActivityState
     /** @brief Disable new evidence while retaining any complete user-copy evidence. */
     void Invalidate()
     {
-        active_.store(false, std::memory_order_release);
-        transaction_.fetch_and(~Trusted, std::memory_order_acq_rel);
+        active_.store(false, std::memory_order_seq_cst);
+        transaction_.fetch_and(~Trusted, std::memory_order_seq_cst);
     }
 
     /** @return Fresh token; callers must already own the process clipboard mutex. */
@@ -67,11 +78,11 @@ class ClipboardActivityState
         generation_ = (generation_ + 1) & GenerationMask;
         if (generation_ == 0)
             generation_ = 1;
-        transaction_.store((uint64_t{generation_} << 32) | (active_.load(std::memory_order_acquire) ? Trusted : 0),
-                           std::memory_order_release);
+        transaction_.store((uint64_t{generation_} << 32) | (active_.load(std::memory_order_seq_cst) ? Trusted : 0),
+                           std::memory_order_seq_cst);
         // Invalidate can race the store above. Never revive trust after it completes.
-        if (!active_.load(std::memory_order_acquire))
-            transaction_.fetch_and(~Trusted, std::memory_order_acq_rel);
+        if (!active_.load(std::memory_order_seq_cst))
+            transaction_.fetch_and(~Trusted, std::memory_order_seq_cst);
         return generation_;
     }
 
@@ -88,14 +99,14 @@ class ClipboardActivityState
      * @param[in] key Windows virtual key code.
      * @param[in] flags Low-level keyboard flags, including LLKHF_INJECTED.
      * @param[in] extraInfo Windows input tag; our own tag is excluded independently.
-     * @param[in] sequence Clipboard sequence at this key event; zero is uncertain.
      * @note One CAS bounds hook work and prevents an old event entering a new transaction.
      */
-    void RecordKey(bool down, DWORD key, DWORD flags, ULONG_PTR extraInfo, DWORD sequence)
+    void RecordKey(bool down, DWORD key, DWORD flags, ULONG_PTR extraInfo)
     {
         // Capture the transaction before processing this event. A callback paused across
         // Begin/End must not attach its old key to whichever transaction is current later.
         uint64_t current = transaction_.load(std::memory_order_acquire);
+        const DWORD sequence = GetClipboardSequenceNumber();
         if (!active_.load(std::memory_order_acquire) || (flags & LLKHF_INJECTED) != 0 ||
             extraInfo == ClipboardActivityInputTag())
             return;
@@ -113,11 +124,17 @@ class ClipboardActivityState
             return;
 
         const uint32_t modifiers = modifiers_.load(std::memory_order_acquire);
+        // A missed physical keyup must not turn an ordinary key into copy evidence.
         const bool ctrl = (modifiers & CtrlMask) != 0;
         const bool shift = (modifiers & ShiftMask) != 0;
+        const bool ctrlHeld =
+            ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LCONTROL) | GetAsyncKeyState(VK_RCONTROL)) & 0x8000) !=
+            0;
+        const bool shiftHeld =
+            ((GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_LSHIFT) | GetAsyncKeyState(VK_RSHIFT)) & 0x8000) != 0;
         const bool altOrWin = (modifiers & (AltMask | WinMask)) != 0;
-        const bool copy = ctrl && !shift && !altOrWin && (key == 'C' || key == 'X' || key == VK_INSERT);
-        const bool cut = shift && !ctrl && !altOrWin && key == VK_DELETE;
+        const bool copy = ctrl && ctrlHeld && !shift && !altOrWin && (key == 'C' || key == 'X' || key == VK_INSERT);
+        const bool cut = shift && shiftHeld && !ctrl && !altOrWin && key == VK_DELETE;
         if (!copy && !cut)
             return;
 
@@ -126,11 +143,11 @@ class ClipboardActivityState
     }
 
     /**
-     * @brief Confirm a post-key write only while the clipboard is successfully opened.
+     * @brief Confirm a candidate observed while unlocked, then verified on opening.
      * @param[in] token Current transaction.
-     * @param[in] sequence Stable clipboard sequence while opened; zero is uncertain.
-     * @param[in] clearSequence Sequence produced by this transaction's own clear.
-     * @note Our clear cannot prove a user copy. Restore is never observed by this method.
+     * @param[in] sequence Candidate matching the sequence immediately after OpenClipboard.
+     * @param[in] clearSequence Sequence sampled after closing our clear.
+     * @note The engine must first check all other own sequences and later verify stability.
      */
     void ObserveSequence(ClipboardTransactionToken token, DWORD sequence, DWORD clearSequence)
     {
@@ -139,7 +156,7 @@ class ClipboardActivityState
             !active_.load(std::memory_order_acquire))
             return;
         const DWORD keySequence = static_cast<DWORD>(current);
-        if (keySequence == 0 || sequence == 0 || sequence == keySequence || sequence == clearSequence)
+        if (!ClipboardSequenceIsLater(sequence, keySequence) || !ClipboardSequenceIsLater(sequence, clearSequence))
             return;
         // Invalidate clears Trusted atomically, so a racing confirmation fails closed.
         transaction_.compare_exchange_strong(current, current | Observed, std::memory_order_acq_rel);

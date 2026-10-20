@@ -5,7 +5,7 @@
  * decides whether a run is green is itself covered by test/unit/gate.test.js.
  *
  * Tiers:
- *   gate  - must run everywhere, may never skip
+ *   gate  - must run everywhere, except the non-Windows native-fixture skips below
  *   env   - runs where the capability exists, skips with "needs <cap>: ..."
  *   local - runs in CI and on opt-in dev machines, skips with "local tier: ..."
  */
@@ -16,15 +16,20 @@
  */
 const GATE_TEST_NAME = "stop-race: input-monitoring";
 
+const WINDOWS_NATIVE_FIXTURES = {
+  restore: "windows clipboard native: restore",
+  activity: "windows clipboard native: activity",
+};
+const WINDOWS_NATIVE_FIXTURE_SKIP = "needs windows-native-fixtures: Windows only";
+
 /**
- * Integration tests that are allowed to skip, keyed by exact test name, with
+ * Tests that are allowed to skip, keyed by exact test name, with
  * the reason prefixes each may use. Anything not listed here is gate tier and
  * must not skip. Add an entry when adding an env / local tier test.
  */
 const SKIP_ALLOWLIST = {
   [GATE_TEST_NAME]: ["needs input-monitoring:"],
-  "windows clipboard native: restore": ["needs windows-native-fixtures: Windows only"],
-  "windows clipboard native: activity": ["needs windows-native-fixtures: Windows only"],
+  ...Object.fromEntries(Object.values(WINDOWS_NATIVE_FIXTURES).map((name) => [name, [WINDOWS_NATIVE_FIXTURE_SKIP]])),
   "clipboard: round-trip": ["local tier:", "needs clipboard:"],
   "clipboard: round-trip unicode multiline": ["local tier:", "needs clipboard:"],
 };
@@ -82,9 +87,9 @@ function checkSkipPolicy(summary, tier, { platform = process.platform } = {}) {
   for (const { name, reason } of summary.skipped) {
     // These two executable fixtures require Win32 and a Windows compiler. No other
     // unit skip, and no Windows fixture skip on Windows, is permitted.
-    const windowsFixture = name === "windows clipboard native: restore" || name === "windows clipboard native: activity";
+    const windowsFixture = Object.values(WINDOWS_NATIVE_FIXTURES).includes(name);
     const allowedUnitPlatformSkip = platform !== "win32" && windowsFixture &&
-      reason === "needs windows-native-fixtures: Windows only";
+      reason === WINDOWS_NATIVE_FIXTURE_SKIP;
     if (tier === "unit" && !allowedUnitPlatformSkip) {
       violations.push(`unit tests must not skip: ${name} (${reason || "no reason"})`);
       continue;
@@ -103,4 +108,4 @@ function checkSkipPolicy(summary, tier, { platform = process.platform } = {}) {
   return { ok: violations.length === 0, violations };
 }
 
-module.exports = { GATE_TEST_NAME, SKIP_ALLOWLIST, evaluateGate, checkSkipPolicy };
+module.exports = { GATE_TEST_NAME, WINDOWS_NATIVE_FIXTURES, SKIP_ALLOWLIST, evaluateGate, checkSkipPolicy };

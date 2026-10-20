@@ -250,7 +250,7 @@ bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened, Cli
     if (!EmptyClipboard())
     {
         outcome.status = ClipboardRestoreStatus::EmptyFailed;
-        // Preserve main's best effort: even if Empty fails, attempt every available
+        // Preserve best-effort recovery: even if Empty fails, attempt every available
         // format. Keep EmptyFailed as the primary outcome, including partial counts.
     }
 

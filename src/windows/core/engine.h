@@ -162,10 +162,12 @@ class SelectionEngine
     /**
      * @param[in] type Copy shortcut to inject.
      * @param[in] inputTag Tag for every input, including modifier releases; zero keeps legacy behavior.
+     * @return False when held Ctrl+C skips injection or SendInput inserts no events.
+     * True includes partial insertion, which must conservatively count as outstanding.
      * @warning The injected modifier sequence is compatibility behavior. Changes require
      * physical Alt/Shift/Ctrl state and copy-shortcut regression testing.
      */
-    void SendCopyKey(CopyKeyType type, ULONG_PTR inputTag = 0) const;
+    bool SendCopyKey(CopyKeyType type, ULONG_PTR inputTag = 0) const;
     void SetStage(RetrievalStage stage) const;
 
     IUIAutomation *automation_ = nullptr;

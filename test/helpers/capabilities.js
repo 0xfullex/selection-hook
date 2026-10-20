@@ -1,5 +1,5 @@
 /**
- * Capability probes and tier helpers for integration tests.
+ * Capability probes and tier helpers for integration tests and Windows native unit fixtures.
  *
  * Skipping is only allowed through requires() / localTier(), and only for
  * tests registered in SKIP_ALLOWLIST (test/lib/gate.js). The reason strings

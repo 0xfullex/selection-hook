@@ -27,7 +27,7 @@ After modifying code, run the relevant checks:
 
 ### Tiers
 
-- **gate**: build, typecheck, format, `native-load`, all unit tests, `api-smoke`, `lifecycle`, clipboard contract. Runs in CI on all platforms and locally. Must never skip; `scripts/run-tests.js` fails the run on any skip outside the allowlist.
+- **gate**: build, typecheck, format, `native-load`, all unit tests, `api-smoke`, `lifecycle`, clipboard contract. Runs in CI on all platforms and locally. Must never skip except for the two Windows native unit fixtures described below; `scripts/run-tests.js` fails the run on any skip outside the allowlist.
 - **env**: needs real input monitoring (macOS accessibility permission, a display on Linux). Skips with `requires()` where the capability is missing (GitHub-hosted macOS runners cannot be granted accessibility).
 - **local**: writes to the real clipboard. Always runs in CI; on dev machines only with `SELECTION_HOOK_TEST_LOCAL=1` (set automatically by `npm run test:local`).
 
@@ -43,7 +43,7 @@ On a macOS dev machine with accessibility permission granted, `npm run test:loca
 - `start()` may only be called inside `test/integration/scenarios/*.js`. Scenario files run in a watchdog child process via `runScenario()`, must not contain `.test.` in their name, and must check the `SELECTION_HOOK_SCENARIO` sentinel as their first statement.
 - `*.test.js` files under `test/integration/` only spawn scenarios and assert; parent-process calls are limited to APIs that do not start the hook.
 - Skipping is only allowed through `requires()` / `localTier()` from `test/helpers/capabilities.js`, and only for test names registered in `SKIP_ALLOWLIST` in `test/lib/gate.js`. Register new env / local tier tests there; never rename a test that is in the allowlist (`stop-race: input-monitoring` is also referenced by the release gate).
-- Unit tests must not skip and must not touch the native module; use `loadIndexWith()` from `test/helpers/fake-native.js`.
+- Unit tests must not skip and must not touch the native module; use `loadIndexWith()` from `test/helpers/fake-native.js`. The only exceptions are `windows clipboard native: restore` and `windows clipboard native: activity`, which compile production C++ against deterministic Win32 fakes without loading the addon. They may skip only on non-Windows platforms, with the exact reason `needs windows-native-fixtures: Windows only`; neither may skip on Windows.
 - Do not add test-only entry points to `index.js` or the native code.
 
 ## Architecture

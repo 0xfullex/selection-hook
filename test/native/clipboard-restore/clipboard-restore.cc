@@ -36,10 +36,11 @@ static int failSetCount = 0, failedSetFormat = 0;
 static bool failEmpty = false, failClose = false, failEmf = false;
 static SIZE_T allocationExtra = 0;
 static bool copyOnSend = true, ctrlInsertNoCopy = false;
+static int sendInputResult = -1;
 static std::vector<std::vector<INPUT>> sentInputs;
 static std::vector<DWORD> waits;
 static std::vector<size_t> injectionWaitOffsets;
-static std::function<void()> onSleep, onSend, onEmpty, onClose;
+static std::function<void()> onSleep, onSend, onEmpty, onClose, onGet, onOpen, onLock, onSequence;
 static std::function<bool(int)> failOpenAt;
 static std::shared_ptr<ClipboardActivityState> activity;
 
@@ -101,7 +102,9 @@ BOOL OpenClipboard(HWND owner)
     }
     if ((failOpenAt && failOpenAt(openCalls)) || opened)
         return 0;
-    return opened = true;
+    opened = true;
+    Fire(onOpen);
+    return 1;
 }
 BOOL CloseClipboard()
 {
@@ -122,6 +125,7 @@ BOOL EmptyClipboard()
 }
 HANDLE GetClipboardData(UINT format)
 {
+    Fire(onGet);
     auto it = clipboard.find(format);
     return it == clipboard.end() ? nullptr : it->second;
 }
@@ -159,6 +163,7 @@ HGLOBAL GlobalFree(HGLOBAL handle)
 SIZE_T GlobalSize(HGLOBAL handle) { return static_cast<Block *>(handle)->bytes.size(); }
 void *GlobalLock(HGLOBAL handle)
 {
+    Fire(onLock);
     if (++lockCalls == failLockCall)
         return nullptr;
     ++activeLocks;
@@ -196,7 +201,7 @@ int MultiByteToWideChar(UINT, DWORD, const char *text, int, wchar_t *out, int)
             out[i] = text[i];
     return length;
 }
-DWORD GetClipboardSequenceNumber() { return sequence; }
+DWORD GetClipboardSequenceNumber() { Fire(onSequence); return sequence; }
 short GetAsyncKeyState(int key) { return held[key] ? static_cast<short>(0x8000) : 0; }
 void Sleep(DWORD ms)
 {
@@ -207,6 +212,11 @@ UINT SendInput(UINT count, INPUT *inputs, int)
 {
     injectionWaitOffsets.push_back(waits.size());
     sentInputs.emplace_back(inputs, inputs + count);
+    if (sendInputResult == 0)
+    {
+        Fire(onSend);
+        return 0;
+    }
     bool insert = false;
     for (UINT i = 0; i < count; ++i)
     {
@@ -214,12 +224,12 @@ UINT SendInput(UINT count, INPUT *inputs, int)
         insert = insert || key.wVk == VK_INSERT;
         if (activity)
             activity->RecordKey((key.dwFlags & KEYEVENTF_KEYUP) == 0, key.wVk, LLKHF_INJECTED,
-                                key.dwExtraInfo, sequence);
+                                key.dwExtraInfo);
     }
     if (copyOnSend && !(insert && ctrlInsertNoCopy))
         CopyText(L"selected");
     Fire(onSend);
-    return count;
+    return sendInputResult < 0 ? count : static_cast<UINT>(sendInputResult);
 }
 
 static std::mutex g_clipboard_mutex;
@@ -250,7 +260,7 @@ class SelectionEngine
     bool GetTextViaClipboardLegacy(HWND, TextSelectionInfo &);
     bool OpenClipboardWithRetry() const;
     bool ReadClipboardWithRetry(std::wstring &) const;
-    void SendCopyKey(CopyKeyType, ULONG_PTR = 0) const;
+    bool SendCopyKey(CopyKeyType, ULONG_PTR = 0) const;
     bool ShouldKeyInterruptViaClipboard() const;
     bool SleepInterruptibly(DWORD) const;
 };
@@ -275,10 +285,11 @@ static void Reset(bool hooks = true)
     allocationExtra = 0;
     copyOnSend = true;
     ctrlInsertNoCopy = false;
+    sendInputResult = -1;
     sentInputs.clear();
     injectionWaitOffsets.clear();
     waits.clear();
-    onSleep = onSend = onEmpty = onClose = {};
+    onSleep = onSend = onEmpty = onClose = onGet = onOpen = onLock = onSequence = {};
     failOpenAt = {};
     activity = std::make_shared<ClipboardActivityState>();
     if (hooks)
@@ -291,10 +302,13 @@ static bool Run(SelectionEngine &engine, TextSelectionInfo &selection)
 }
 static void Shortcut(DWORD modifier = VK_LCONTROL, DWORD key = 'C')
 {
-    activity->RecordKey(true, modifier, 0, 0, sequence);
-    activity->RecordKey(true, key, 0, 0, sequence);
-    activity->RecordKey(false, key, 0, 0, sequence);
-    activity->RecordKey(false, modifier, 0, 0, sequence);
+    held[modifier] = true;
+    held[modifier == VK_LSHIFT || modifier == VK_RSHIFT ? VK_SHIFT : VK_CONTROL] = true;
+    activity->RecordKey(true, modifier, 0, 0);
+    activity->RecordKey(true, key, 0, 0);
+    activity->RecordKey(false, key, 0, 0);
+    activity->RecordKey(false, modifier, 0, 0);
+    held[modifier] = held[VK_CONTROL] = held[VK_SHIFT] = false;
 }
 static ClipboardBackup TwoFormats()
 {
@@ -306,6 +320,109 @@ static ClipboardBackup TwoFormats()
 int main()
 {
     std::cout.setf(std::ios::unitbuf);
+    // Round two: 0497638 cancelled retrieval on a pending shortcut and accepted
+    // outstanding injected writes and its own CloseClipboard bump as user evidence.
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] { CopyText(L"user"); };
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "D1 pre-injection Ctrl+C+C returns and preserves user text without injection"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); held[VK_CONTROL] = held['C'] = true; };
+      onSleep = [] { CopyText(L"user"); };
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "D1 held Ctrl+C+C returns user text while both keys remain pressed"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onClose = [] { onSequence = [] { onSequence = [] { Shortcut(); CopyText(L"user"); }; }; };
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "D1 user write before initial pending poll baseline is returned and preserved"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s; int sleeps = 0; std::function<void()> advance;
+      onEmpty = [] { Shortcut(); };
+      advance = [&] { if (++sleeps == 20) onSequence = [] { CopyText(L"user"); };
+                     else onSleep = advance; };
+      onSleep = advance;
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "D1 pending write between poll windows is returned without consuming its baseline"); }
+    Reset(); CopyText(L"old"); copyOnSend = false; held[VK_CONTROL] = held['C'] = true;
+    { SelectionEngine e; TextSelectionInfo s;
+      onSleep = [] { Shortcut(); CopyText(L"user"); };
+      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "D1 skipped held Ctrl+C injection leaves subsequent repeat write eligible as user copy"); }
+    for (int inserted : {0, 1})
+    {
+        Reset(); CopyText(L"old"); copyOnSend = false; sendInputResult = inserted;
+        SelectionEngine e; TextSelectionInfo s;
+        onSleep = [] { Shortcut(); CopyText(L"user"); };
+        Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(inserted == 0 ? L"user" : L"old")),
+              inserted == 0 ? "zero SendInput insertion leaves user write eligible" :
+                              "partial SendInput insertion remains conservatively outstanding");
+    }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onSleep = [] { Shortcut(); CopyText(L"selected"); };
+      Check(Run(e, s) && s.text == L"selected" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "E1 outstanding injected result after key returns text but restores original"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onSend = [] { onSend = [] { Shortcut(); CopyText(L"first injected");
+                                 onSleep = [] { CopyText(L"second injected"); }; }; };
+      Check(Run(e, s) && s.text == L"second injected" && sentInputs.size() == 2 &&
+                HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "E1 two outstanding injections each consume their own distinct write before user evidence"); }
+    Reset(); CopyText(L"old");
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); onClose = [] { ++sequence; }; };
+      Check(!Run(e, s) && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "E2 clear Close bump is our own sequence and cannot preserve empty content"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] { CopyText(L"user"); onGet = [] { ++sequence; onLock = [] { ++sequence; }; }; };
+      Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "user candidate survives sequence bump caused by our locked read"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] { CopyText(L"user"); onGet = [] { sequence = 0; }; };
+      Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "unknown sequence during locked read cannot establish final stability"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] { CopyText(L"user"); onGet = [] { onClose = [] { CopyText(L"external"); }; }; };
+      Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "external write after reading user candidate invalidates sticky preservation"); }
+    Reset(); CopyText(L"old"); copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] { CopyText(L"user"); onOpen = [] { ++sequence; }; };
+      Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "opening sequence different from unlocked candidate forces restoration"); }
+    for (DWORD candidate : {DWORD{0}, DWORD{0x80000003u}})
+    {
+        Reset(); CopyText(L"old"); copyOnSend = false;
+        SelectionEngine e; TextSelectionInfo s;
+        onEmpty = [] { Shortcut(); };
+        onSleep = [=] { CopyText(L"user"); sequence = candidate; };
+        Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "unknown or half-range ambiguous candidate returns text but restores original");
+    }
+    Reset(); CopyText(L"old"); sequence = 0xfffffffdu; copyOnSend = false;
+    { SelectionEngine e; TextSelectionInfo s;
+      onEmpty = [] { Shortcut(); };
+      onSleep = [] { CopyText(L"user"); sequence = 1; };
+      Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+            "strictly later user candidate remains valid across DWORD wraparound"); }
+    Reset(); CopyText(L"old");
+    { SelectionEngine e; TextSelectionInfo s;
+      onSleep = [] { onClose = [] { failClose = true; }; };
+      Check(Run(e, s) && s.text == L"selected" && e.clipboardSequence_ != sequence &&
+                HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "engine restore Close failure keeps text without publishing success"); }
     Reset();
     { SelectionEngine e; TextSelectionInfo s;
       Check(Run(e, s) && s.text == L"selected" && clipboard.empty(), "empty original restored empty");
@@ -403,7 +520,7 @@ int main()
     { std::wstring text; Check(ReadClipboard(text) && text.size() == 1,
                               "main-compatible read does not reject lone surrogate"); }
     Reset(); CopyText(L"old");
-    { SelectionEngine e; TextSelectionInfo s; onSleep = [] { activity->RecordKey(true, 'A', 0, 0, sequence); };
+    { SelectionEngine e; TextSelectionInfo s; onSleep = [] { activity->RecordKey(true, 'A', 0, 0); };
       Check(Run(e, s) && HasBytes(CF_UNICODETEXT, Bytes(L"old")), "ordinary input does not revoke restoration"); }
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s; onSleep = [] { CopyText(L"staged second write"); };
@@ -445,7 +562,8 @@ int main()
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s; s.programName = L"delay"; e.config.includeClipboardDelayRead = {"delay"};
       Check(Run(e, s) && waits == std::vector<DWORD>(29, 5) && sentInputs.size() == 1 &&
-                sentInputs[0][1].ki.wVk == 'C', "delay-list keeps CtrlC-only 135 plus ten-ms waits");
+                sentInputs[0][1].ki.wVk == 'C' && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "delay-list keeps restored content and CtrlC-only 135 plus ten-ms waits");
       bool untagged = true;
       for (const auto &input : sentInputs[0]) untagged = untagged && input.ki.dwExtraInfo == 0;
       Check(untagged, "legacy input default tag remains zero"); }

@@ -1576,6 +1576,9 @@ void SelectionHook::MouseKeyboardHookThreadProc()
 
     // A synchronous query issued immediately after start must see trustworthy hooks.
     // Partial installation still signals readiness and retains the existing error report.
+    // This Activate-before-ready ordering, partial-install invalidation, RecordKey wiring,
+    // and stop invalidation require real input and have no automated coverage. Test-only
+    // entry points in production code are prohibited, so validate this wiring manually.
     if (mouseHook && keyboardHook)
         clipboard_activity->Activate();
     else
@@ -1763,8 +1766,7 @@ LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, L
     {
         const auto *key = reinterpret_cast<const KBDLLHOOKSTRUCT *>(lParam);
         const bool down = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
-        currentInstance->clipboard_activity->RecordKey(down, key->vkCode, key->flags, key->dwExtraInfo,
-                                                       GetClipboardSequenceNumber());
+        currentInstance->clipboard_activity->RecordKey(down, key->vkCode, key->flags, key->dwExtraInfo);
     }
     if (nCode == HC_ACTION && currentInstance && !currentInstance->IsRetrievalInFlight())
     {

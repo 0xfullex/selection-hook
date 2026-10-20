@@ -453,19 +453,54 @@ int main()
         TextSelectionInfo s;
         e.config.triggeredByUser = false;
         e.clipboardSequence_ = sequence;
-        onEmpty = [] { Shortcut(VK_LSHIFT, VK_DELETE); };
+        bool shortcutBeforeInjection = false;
+        onEmpty = [&] { shortcutBeforeInjection = sentInputs.empty(); Shortcut(VK_LSHIFT, VK_DELETE); };
         onSleep = [] { CopyText(L"user"); };
-        Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+        Check(Run(e, s) && !e.config.triggeredByUser && shortcutBeforeInjection && s.text == L"user" &&
+                  sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
               "D1 zero-injection automatic ShiftDelete remains eligible without Ctrl interruption");
+    }
+    // Round four covers the accepted automatic boundary using a released physical Ctrl.
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        e.config.triggeredByUser = false;
+        e.clipboardSequence_ = sequence;
+        bool shortcutBeforeInjection = false, ctrlReleased = false;
+        onEmpty = [&] {
+            shortcutBeforeInjection = sentInputs.empty();
+            Shortcut();
+            ctrlReleased = (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0;
+        };
+        onSleep = [] { CopyText(L"user"); };
+        Check(Run(e, s) && !e.config.triggeredByUser && shortcutBeforeInjection && ctrlReleased &&
+                  s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+              "D1 zero-injection automatic released CtrlC returns and preserves user text without Ctrl interruption");
     }
     // Round two: 0497638 cancelled retrieval on a pending shortcut and accepted
     // outstanding injected writes and its own CloseClipboard bump as user evidence.
-    Reset(); CopyText(L"old"); copyOnSend = false;
-    { SelectionEngine e; TextSelectionInfo s;
-      onEmpty = [] { Shortcut(); };
-      onSleep = [] { CopyText(L"user"); };
-      Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
-            "D1 pre-injection Ctrl+C+C returns and preserves user text without injection"); }
+    struct PreInjectionShortcut { DWORD modifier; DWORD key; const char *name; };
+    const PreInjectionShortcut shortcuts[] = {
+        {VK_LCONTROL, 'C', "D1 pre-injection Ctrl+C+C returns and preserves user text without injection"},
+        {VK_LCONTROL, 'X', "D1 explicit pre-injection CtrlX returns and preserves user text without injection"},
+        {VK_LCONTROL, VK_INSERT, "D1 explicit pre-injection CtrlInsert returns and preserves user text without injection"},
+        {VK_LSHIFT, VK_DELETE, "D1 explicit pre-injection ShiftDelete returns and preserves user text without injection"},
+    };
+    for (const auto &shortcut : shortcuts)
+    {
+        Reset(); CopyText(L"old"); copyOnSend = false;
+        SelectionEngine e; TextSelectionInfo s;
+        e.config.triggeredByUser = true;
+        bool shortcutBeforeInjection = false;
+        onEmpty = [&] { shortcutBeforeInjection = sentInputs.empty(); Shortcut(shortcut.modifier, shortcut.key); };
+        onSleep = [] { CopyText(L"user"); };
+        Check(Run(e, s) && e.config.triggeredByUser && shortcutBeforeInjection && s.text == L"user" &&
+                  sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+              shortcut.name);
+    }
     Reset(); CopyText(L"old"); copyOnSend = false;
     { SelectionEngine e; TextSelectionInfo s;
       onEmpty = [] { Shortcut(); held[VK_CONTROL] = held['C'] = true; };

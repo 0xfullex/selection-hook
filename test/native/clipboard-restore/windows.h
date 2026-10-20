@@ -4,7 +4,7 @@
 #include <cstring>
 
 using UINT = unsigned int;
-using DWORD = unsigned long;
+using DWORD = std::uint32_t;
 using BYTE = unsigned char;
 using SIZE_T = std::size_t;
 using BOOL = int;

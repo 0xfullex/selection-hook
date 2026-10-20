@@ -761,48 +761,33 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
     CloseClipboard();
     backupOpen.open = false;
     const DWORD clearSequence = GetClipboardSequenceNumber();
-    // At most a clear, two attributed copies, and a read bump are observed on one path.
-    // Fail closed on overflow without allocating after clear.
-    DWORD ownSequences[4] = {clearSequence};
-    size_t ownSequenceCount = 1;
-    bool ownSequenceOverflow = false;
-    unsigned outstandingInjections = 0;
-    DWORD injectionSequence = 0;
+    // A successful SendCopyKey includes partial input delivery. Sequence hops cannot
+    // distinguish injected writes from user writes, so any delivery requires restore.
+    // Tradeoff: a user's Ctrl+C after any injection is overwritten by restoration.
+    bool injectedCopy = false;
+    bool interruptedByKey = false;
+    const auto keyInterrupt = [&]()
+    {
+        if (!ShouldKeyInterruptViaClipboard())
+            return false;
+        // Automatic Ctrl interruption must restore even if a user write arrives
+        // during finish. Explicit retrieval never takes this interruption path.
+        interruptedByKey = true;
+        return true;
+    };
     DWORD userCandidate = 0;
     DWORD stableUserSequence = 0;
+    DWORD candidateFloor = clearSequence;
     // A pending user write may arrive before either polling window starts. Keep its
     // last unconsumed baseline instead of swallowing that write as a fresh baseline.
     DWORD pendingPollSequence = clearSequence;
     bool rejectedCandidate = false;
-    const auto recordOwn = [&](DWORD sequence)
-    {
-        if (ownSequences[ownSequenceCount - 1] == sequence)
-            return;
-        if (ownSequenceCount == sizeof(ownSequences) / sizeof(ownSequences[0]))
-            ownSequenceOverflow = true;
-        else
-            ownSequences[ownSequenceCount++] = sequence;
-    };
-    const auto attributeInjection = [&](DWORD sequence)
-    {
-        // Each outstanding copy needs a distinct observed write, even if the user's
-        // shortcut arrives meanwhile. Re-reading one sequence cannot consume another
-        // injection's attribution. Prefer restoration whenever writes remain uncertain.
-        if (outstandingInjections != 0 && sequence != injectionSequence)
-        {
-            recordOwn(sequence);
-            injectionSequence = sequence;
-            --outstandingInjections;
-        }
-    };
-
     const auto observe = [&](DWORD sequence)
     {
-        if (!activity || userCandidate != 0 || rejectedCandidate || outstandingInjections != 0 || ownSequenceOverflow)
+        if (!activity || injectedCopy || interruptedByKey || userCandidate != 0 || rejectedCandidate)
             return;
-        for (size_t i = 0; i < ownSequenceCount; ++i)
-            if (!ClipboardSequenceIsLater(sequence, ownSequences[i]))
-                return;
+        if (!ClipboardSequenceIsLater(sequence, candidateFloor))
+            return;
         activity->ObserveSequence(token, sequence, clearSequence);
         if (activity->CaptureIntent(token).userCopyObserved)
             userCandidate = stableUserSequence = sequence;
@@ -811,7 +796,6 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
     {
         // A candidate must have been visible while unlocked and still match on open.
         const DWORD beforeOpen = GetClipboardSequenceNumber();
-        attributeInjection(beforeOpen);
         ClipboardRestoreResult result;
         if (!OpenClipboardWithRetry())
         {
@@ -822,9 +806,10 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
             const DWORD opening = GetClipboardSequenceNumber();
             if (opening == beforeOpen)
                 observe(opening);
-            const bool keepUserCopy = userCandidate != 0 && stableUserSequence != 0 && !rejectedCandidate &&
-                                      !ownSequenceOverflow && opening == beforeOpen && opening == stableUserSequence &&
-                                      activity && activity->CaptureIntent(token).userCopyObserved;
+            const bool keepUserCopy = !injectedCopy && !interruptedByKey && userCandidate != 0 &&
+                                      stableUserSequence != 0 && !rejectedCandidate && opening == beforeOpen &&
+                                      opening == stableUserSequence && activity &&
+                                      activity->CaptureIntent(token).userCopyObserved;
             if (keepUserCopy)
             {
                 CloseClipboard();
@@ -854,7 +839,6 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
     const auto readSelection = [&]()
     {
         const DWORD beforeOpen = GetClipboardSequenceNumber();
-        attributeInjection(beforeOpen);
         if (!OpenClipboardWithRetry())
             return false;
         CloseClipboardScope readOpen;
@@ -865,65 +849,65 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
             rejectedCandidate = true;
         const bool found = ReadClipboard(selectionInfo.text, true) && !selectionInfo.text.empty();
         const DWORD afterRead = GetClipboardSequenceNumber();
-        if (afterRead != opening)
-            recordOwn(afterRead);
         // Other processes cannot open the clipboard during our read. Its own delayed
-        // rendering bumps belong to Own but do not invalidate the original candidate U.
+        // rendering bumps do not invalidate the original candidate U.
         if (userCandidate != 0)
             stableUserSequence = afterRead;
+        else
+            // An unconfirmed locked-read bump cannot become U during finish.
+            // A subsequent unlocked write may still qualify above this lower bound.
+            candidateFloor = afterRead;
+        // Assume reader CloseClipboard does not bump the sequence: round-two E2
+        // measured ordinary reads at 5 -> 5 and delayed reads at 11 -> 11. Finish
+        // still rejects a later unlocked change instead of attributing it to this read.
         CloseClipboard();
         readOpen.open = false;
         return found;
     };
 
+    if (IsStopping() || keyInterrupt())
     {
-        if (IsStopping() || (ShouldKeyInterruptViaClipboard() && !pendingCopy()))
+        return false;
+    }
+
+    // Ctrl+Insert is tried first because it is less likely than Ctrl+C to collide
+    // with application shortcuts, though some applications do not support it.
+    const DWORD beforeCtrlInsert = GetClipboardSequenceNumber();
+    if (!pendingCopy())
+    {
+        clipboardSequence_ = pendingPollSequence = beforeCtrlInsert;
+        if (SendCopyKey(CopyKeyType::CtrlInsert, ClipboardActivityInputTag()))
+        {
+            injectedCopy = true;
+        }
+    }
+    else
+        clipboardSequence_ = pendingPollSequence;
+    bool hasCtrlInsertContent = false;
+    SetStage(RetrievalStage::ClipboardPoll);
+    // Poll for up to about 100 ms (20 * 5 ms).
+    for (int i = 0; i < 20 && !IsStopping(); i++)
+    {
+        const DWORD sequence = GetClipboardSequenceNumber();
+        if (sequence != clipboardSequence_)
+        {
+            hasCtrlInsertContent = true;
+            break;
+        }
+        if (!SleepInterruptibly(sleepInterval))
+            break;
+    }
+    SetStage(RetrievalStage::Clipboard);
+    if (hasCtrlInsertContent)
+    {
+        if (!SleepInterruptibly(10))
         {
             return false;
         }
-
-        // Ctrl+Insert is tried first because it is less likely than Ctrl+C to collide
-        // with application shortcuts, though some applications do not support it.
-        const DWORD beforeInjection = GetClipboardSequenceNumber();
-        if (!pendingCopy())
-        {
-            clipboardSequence_ = pendingPollSequence = beforeInjection;
-            if (SendCopyKey(CopyKeyType::CtrlInsert, ClipboardActivityInputTag()))
-            {
-                if (outstandingInjections == 0)
-                    injectionSequence = beforeInjection;
-                ++outstandingInjections;
-            }
-        }
-        else
-            clipboardSequence_ = pendingPollSequence;
-        bool hasNewContent = false;
-        SetStage(RetrievalStage::ClipboardPoll);
-        // Poll for up to about 100 ms (20 * 5 ms).
-        for (int i = 0; i < 20 && !IsStopping(); i++)
-        {
-            const DWORD sequence = GetClipboardSequenceNumber();
-            if (sequence != clipboardSequence_)
-            {
-                attributeInjection(sequence);
-                hasNewContent = true;
-                break;
-            }
-            if (!SleepInterruptibly(sleepInterval))
-                break;
-        }
-        SetStage(RetrievalStage::Clipboard);
-        if (hasNewContent)
-        {
-            if (!SleepInterruptibly(10))
-            {
-                return false;
-            }
-            return readSelection();
-        }
+        return readSelection();
     }
 
-    if (IsStopping() || (ShouldKeyInterruptViaClipboard() && !pendingCopy()))
+    if (IsStopping() || keyInterrupt())
     {
         return false;
     }
@@ -935,9 +919,7 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
         clipboardSequence_ = pendingPollSequence = beforeInjection;
         if (SendCopyKey(CopyKeyType::CtrlC, ClipboardActivityInputTag()))
         {
-            if (outstandingInjections == 0)
-                injectionSequence = beforeInjection;
-            ++outstandingInjections;
+            injectedCopy = true;
         }
     }
     else
@@ -950,7 +932,6 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
         const DWORD sequence = GetClipboardSequenceNumber();
         if (sequence != clipboardSequence_)
         {
-            attributeInjection(sequence);
             hasNewContent = true;
             break;
         }
@@ -963,7 +944,7 @@ bool SelectionEngine::GetTextViaClipboardTransaction(HWND hwnd, TextSelectionInf
         return false;
     }
 
-    if (!SleepInterruptibly(10) || (ShouldKeyInterruptViaClipboard() && !pendingCopy()))
+    if (!SleepInterruptibly(10) || keyInterrupt())
     {
         return false;
     }

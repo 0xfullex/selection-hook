@@ -37,6 +37,7 @@ static bool failEmpty = false, failClose = false, failEmf = false;
 static SIZE_T allocationExtra = 0;
 static bool copyOnSend = true, ctrlInsertNoCopy = false;
 static int sendInputResult = -1;
+static DWORD nextSetBump = 1, nextCloseBump = 0;
 static std::vector<std::vector<INPUT>> sentInputs;
 static std::vector<DWORD> waits;
 static std::vector<size_t> injectionWaitOffsets;
@@ -110,6 +111,8 @@ BOOL CloseClipboard()
 {
     ++closeCalls;
     opened = false;
+    sequence += nextCloseBump;
+    nextCloseBump = 0;
     Fire(onClose);
     return !failClose;
 }
@@ -140,7 +143,8 @@ HANDLE SetClipboardData(UINT format, HANDLE handle)
     if (clipboard.count(format))
         FreeBlock(clipboard[format], clipboard[format]->emf);
     clipboard[format] = static_cast<Block *>(handle);
-    ++sequence;
+    sequence += nextSetBump;
+    nextSetBump = 1;
     return handle;
 }
 int CountClipboardFormats() { return static_cast<int>(clipboard.size()); }
@@ -286,6 +290,8 @@ static void Reset(bool hooks = true)
     copyOnSend = true;
     ctrlInsertNoCopy = false;
     sendInputResult = -1;
+    nextSetBump = 1;
+    nextCloseBump = 0;
     sentInputs.clear();
     injectionWaitOffsets.clear();
     waits.clear();
@@ -317,9 +323,141 @@ static ClipboardBackup TwoFormats()
     backup.formats = {{CF_DIB, {1, 2}, 2}, {0xc101, {3, 4}, 2}};
     return backup;
 }
+// Model cumulative sampled offsets from Open: Empty +1, Set +2, Close +5.
+static void BeginStagedWrite()
+{
+    const DWORD before = sequence;
+    OpenClipboard(nullptr);
+    EmptyClipboard();
+    std::cout << "DATA writer Empty " << before << " -> " << sequence << '\n';
+}
+static void EndStagedWrite(const std::wstring &text)
+{
+    const DWORD before = sequence;
+    nextSetBump = 1;
+    SetClipboardData(CF_UNICODETEXT, NewBlock(Bytes(text)));
+    std::cout << "DATA writer Set " << before << " -> " << sequence << '\n';
+    const DWORD beforeClose = sequence;
+    nextCloseBump = 3;
+    CloseClipboard();
+    std::cout << "DATA writer Close " << beforeClose << " -> " << sequence << '\n';
+}
 int main()
 {
     std::cout.setf(std::ios::unitbuf);
+    // e674825 attributed sampled sequence hops to injections, then misclassified
+    // another hop of that same write as a user copy. Any actual injection restores.
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        onSend = [] {
+            Shortcut();
+            BeginStagedWrite();
+            onSleep = [] { EndStagedWrite(L"selected"); };
+        };
+        Check(Run(e, s) && s.text == L"selected" && sentInputs.size() == 1 &&
+                  HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "e674 B1 intermediate sampled injected write then stable final value restores original");
+    }
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        onSend = [] {
+            onSend = [] {
+                Shortcut();
+                BeginStagedWrite();
+                onSleep = [] {
+                    EndStagedWrite(L"selected");
+                    onGet = [] {
+                        onClose = [] {
+                            OpenClipboard(nullptr);
+                            EndStagedWrite(L"selected");
+                        };
+                    };
+                };
+            };
+        };
+        Check(Run(e, s) && s.text == L"selected" && sentInputs.size() == 2 &&
+                  HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "e674 B2 two outstanding injections and one multihop split writer restore original");
+    }
+    Reset();
+    CopyText(L"old");
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        onSleep = [] { Shortcut(); CopyText(L"user"); };
+        Check(Run(e, s) && s.text == L"user" && sentInputs.size() == 1 &&
+                  HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "e674 R1 known injected CtrlInsert result then user CtrlC restores original and returns text");
+    }
+    // e674825 bypassed the automatic Ctrl interruption when pendingCopy was set.
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        e.config.triggeredByUser = false;
+        e.clipboardSequence_ = sequence;
+        onEmpty = [] { Shortcut(); held[VK_CONTROL] = held['C'] = true; };
+        onSleep = [] { CopyText(L"user"); };
+        Check(!Run(e, s) && s.text.empty() && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "e674 R2 automatic pending shortcut and held Ctrl abort without text and restore original");
+    }
+    for (bool split : {false, true})
+    {
+        Reset();
+        CopyText(L"old");
+        copyOnSend = false;
+        SelectionEngine e;
+        TextSelectionInfo s;
+        onEmpty = [] { Shortcut(); };
+        onSleep = [=] {
+            BeginStagedWrite();
+            EndStagedWrite(L"user");
+            if (split)
+            {
+                OpenClipboard(nullptr);
+                EndStagedWrite(L"user");
+            }
+        };
+        Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+              split ? "D1 zero-injection user write across two Open Close phases stays eligible" :
+                      "D1 zero-injection multihop Empty Set Close user write stays eligible");
+    }
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        e.config.triggeredByUser = false;
+        e.clipboardSequence_ = sequence;
+        onEmpty = [] { Shortcut(); held[VK_CONTROL] = held['C'] = true; };
+        onClose = [] { onSequence = [] { onSequence = [] { CopyText(L"user"); }; }; };
+        Check(!Run(e, s) && s.text.empty() && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "e674 R2 automatic held Ctrl interruption restores even when user write arrives at finish");
+    }
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        e.config.triggeredByUser = false;
+        e.clipboardSequence_ = sequence;
+        onEmpty = [] { Shortcut(VK_LSHIFT, VK_DELETE); };
+        onSleep = [] { CopyText(L"user"); };
+        Check(Run(e, s) && s.text == L"user" && sentInputs.empty() && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
+              "D1 zero-injection automatic ShiftDelete remains eligible without Ctrl interruption");
+    }
     // Round two: 0497638 cancelled retrieval on a pending shortcut and accepted
     // outstanding injected writes and its own CloseClipboard bump as user evidence.
     Reset(); CopyText(L"old"); copyOnSend = false;
@@ -359,20 +497,20 @@ int main()
         onSleep = [] { Shortcut(); CopyText(L"user"); };
         Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(inserted == 0 ? L"user" : L"old")),
               inserted == 0 ? "zero SendInput insertion leaves user write eligible" :
-                              "partial SendInput insertion remains conservatively outstanding");
+                              "R1 partial SendInput insertion always restores original");
     }
     Reset(); CopyText(L"old"); copyOnSend = false;
     { SelectionEngine e; TextSelectionInfo s;
       onSleep = [] { Shortcut(); CopyText(L"selected"); };
       Check(Run(e, s) && s.text == L"selected" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
-            "E1 outstanding injected result after key returns text but restores original"); }
+            "R1 delayed injected result after key returns text but restores original"); }
     Reset(); CopyText(L"old"); copyOnSend = false;
     { SelectionEngine e; TextSelectionInfo s;
       onSend = [] { onSend = [] { Shortcut(); CopyText(L"first injected");
                                  onSleep = [] { CopyText(L"second injected"); }; }; };
       Check(Run(e, s) && s.text == L"second injected" && sentInputs.size() == 2 &&
                 HasBytes(CF_UNICODETEXT, Bytes(L"old")),
-            "E1 two outstanding injections each consume their own distinct write before user evidence"); }
+            "R1 two injected copies with distinct writes return text and restore original"); }
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s;
       onEmpty = [] { Shortcut(); onClose = [] { ++sequence; }; };
@@ -384,6 +522,59 @@ int main()
       onSleep = [] { CopyText(L"user"); onGet = [] { ++sequence; onLock = [] { ++sequence; }; }; };
       Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
             "user candidate survives sequence bump caused by our locked read"); }
+    // The round-three Own removal let finish promote a locked-read bump to U,
+    // although the unlocked content preceded the physical shortcut keydown.
+    Reset();
+    CopyText(L"old");
+    copyOnSend = false;
+    sendInputResult = 0;
+    {
+        SelectionEngine e;
+        TextSelectionInfo s;
+        DWORD keySequence = 0, readOpening = 0, afterLockedRead = 0;
+        onSleep = [&] {
+            CopyText(L"before-key");
+            Shortcut();
+            keySequence = sequence;
+            onGet = [&] {
+                readOpening = sequence;
+                ++sequence;
+                afterLockedRead = sequence;
+            };
+        };
+        const bool found = Run(e, s);
+        const bool restoredOriginal = HasBytes(CF_UNICODETEXT, Bytes(L"old"));
+        Check(found && s.text == L"before-key" && keySequence == readOpening &&
+                  afterLockedRead == readOpening + 1 && restoredOriginal,
+              "R1 zero-injection own locked-read bump cannot promote before-key content to user candidate");
+        std::cout << "DATA own-read returned=" << found << " beforeKeyText=" << (s.text == L"before-key")
+                  << " keySequence=" << keySequence << " readOpening=" << readOpening
+                  << " afterLockedRead=" << afterLockedRead << " finishSequence=" << sequence
+                  << " restoredOriginal=" << restoredOriginal << " sendInputResult=" << sendInputResult
+                  << " fakeWin32=1\n";
+    }
+    for (bool writeAfterRead : {false, true})
+    {
+        Reset();
+        CopyText(L"old");
+        copyOnSend = false;
+        sendInputResult = 0;
+        SelectionEngine e;
+        TextSelectionInfo s;
+        onSleep = [=] {
+            CopyText(L"before-key");
+            Shortcut();
+            if (writeAfterRead)
+                onGet = [] {
+                    ++sequence;
+                    onClose = [] { CopyText(L"later-user"); };
+                };
+        };
+        Check(Run(e, s) && s.text == L"before-key" &&
+                  HasBytes(CF_UNICODETEXT, Bytes(writeAfterRead ? L"later-user" : L"old")),
+              writeAfterRead ? "R1 unlocked external write after unconfirmed own-read bump stays eligible" :
+                               "R1 before-key content without own-read bump restores original");
+    }
     Reset(); CopyText(L"old"); copyOnSend = false;
     { SelectionEngine e; TextSelectionInfo s;
       onEmpty = [] { Shortcut(); };
@@ -433,9 +624,9 @@ int main()
     {
         Reset(); CopyText(L"old"); SelectionEngine e; TextSelectionInfo s;
         onSleep = [=] { Shortcut(shortcut.first, shortcut.second); CopyText(L"user"); };
-        Check(Run(e, s) && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
-              "physical copy/cut keydown followed by sequence preserves user content");
-        Check(e.clipboardSequence_ != sequence, "preserved user write is not published as our restoration");
+        Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+              "e674 R1 physical copy/cut after injection returns user text and restores original");
+        Check(e.clipboardSequence_ == sequence, "R1 restoration after user copy publishes final sequence");
     }
     Reset(); CopyText(L"old"); copyOnSend = false;
     { SelectionEngine e; TextSelectionInfo s; onSleep = [] { Shortcut(); };
@@ -457,8 +648,8 @@ int main()
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s;
       onSleep = [] { Shortcut(); CopyText(L"user"); failOpens = 5; };
-      Check(!Run(e, s) && HasBytes(CF_UNICODETEXT, Bytes(L"user")),
-            "failed first observe does not latch; later opened finish confirms user write"); }
+      Check(!Run(e, s) && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "e674 R1 failed read open after injected copy still restores original"); }
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s; onClose = [] { onClose = [] { failOpens = 5; }; };
       Check(Run(e, s) && s.text == L"selected" && openCalls == 7,
@@ -535,7 +726,8 @@ int main()
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s;
       onSleep = [] { Shortcut(); CopyText(L"user"); onClose = [] { activity->Invalidate(); stopping = true; }; };
-      Check(Run(e, s) && HasBytes(CF_UNICODETEXT, Bytes(L"user")), "complete observed copy remains preserved after stop"); }
+      Check(Run(e, s) && s.text == L"user" && HasBytes(CF_UNICODETEXT, Bytes(L"old")),
+            "e674 R1 observed user copy after injection restores original even after stop"); }
     Reset(); CopyText(L"old");
     { SelectionEngine e; TextSelectionInfo s; onSleep = [] { failSetCount = 1; };
       Check(Run(e, s) && s.text == L"selected", "already-read text survives partial restore failure"); }

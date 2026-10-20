@@ -11,8 +11,17 @@
 
 static std::map<int, bool> held;
 static DWORD keySequence = 10;
-DWORD GetClipboardSequenceNumber() { return keySequence; }
-short GetAsyncKeyState(int key) { return held[key] ? static_cast<short>(0x8000) : 0; }
+static int sequenceQueries = 0, asyncQueries = 0;
+DWORD GetClipboardSequenceNumber()
+{
+    ++sequenceQueries;
+    return keySequence;
+}
+short GetAsyncKeyState(int key)
+{
+    ++asyncQueries;
+    return held[key] ? static_cast<short>(0x8000) : 0;
+}
 static int failures = 0;
 static void Check(bool condition, const char *name)
 {
@@ -35,10 +44,26 @@ static void Key(ClipboardActivityState &state, DWORD key, DWORD sequence = 10, b
 
 int main()
 {
+    {
+        held.clear();
+        ClipboardActivityState state;
+        state.Activate();
+        auto token = state.BeginTransaction();
+        sequenceQueries = asyncQueries = 0;
+        Key(state, VK_LCONTROL);
+        Key(state, 'A');
+        Key(state, 'A', 10, false);
+        Key(state, 'C', 10, false);
+        Check(sequenceQueries == 0 && asyncQueries == 0,
+              "non-copy keys and modifier bookkeeping avoid clipboard and async queries");
+        Key(state, 'C');
+        Check(state.CaptureIntent(token).pendingCopy && sequenceQueries == 1 && asyncQueries != 0,
+              "copy keydown alone queries sequence and physical modifier state");
+    }
     // 0497638 trusted a seeded modifier after its physical state had been lost.
     {
         held.clear();
-        held.clear(); ClipboardActivityState state;
+        ClipboardActivityState state;
         held[VK_RCONTROL] = true;
         state.Activate();
         held.clear();
@@ -49,7 +74,8 @@ int main()
     for (const auto shortcut : {std::pair<DWORD, DWORD>{VK_LCONTROL, 'C'}, {VK_RCONTROL, 'X'},
                                 {VK_RCONTROL, VK_INSERT}, {VK_LSHIFT, VK_DELETE}})
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, shortcut.first);
@@ -72,7 +98,8 @@ int main()
 
     for (DWORD modifier : {VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN})
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, VK_LCONTROL);
@@ -83,7 +110,8 @@ int main()
     }
     for (DWORD modifier : {VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN})
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, VK_RSHIFT);
@@ -94,7 +122,8 @@ int main()
     for (const auto event : {std::pair<DWORD, ULONG_PTR>{LLKHF_INJECTED, 0},
                              {0, ClipboardActivityInputTag()}, {LLKHF_INJECTED, 123}})
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, VK_LCONTROL, 10, true, event.first, event.second);
@@ -105,7 +134,8 @@ int main()
         Check(!state.CaptureIntent(token).pendingCopy, "own tag or any injected shortcut cannot form evidence");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, 'C');
@@ -121,7 +151,8 @@ int main()
         Check(!state.CaptureIntent(token).pendingCopy, "released modifiers cannot leak into a later key");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         held[VK_RCONTROL] = true;
         state.Activate();
         held.clear();
@@ -131,7 +162,8 @@ int main()
         Check(!state.CaptureIntent(token).pendingCopy, "async release rejects stale seed despite ignored injected release");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         state.ObserveSequence(token, 11, 9);
@@ -149,7 +181,8 @@ int main()
         state.EndTransaction(token);
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto old = state.BeginTransaction();
         Key(state, VK_LCONTROL);
@@ -164,7 +197,8 @@ int main()
         Check(state.CaptureIntent(current).pendingCopy, "an old EndTransaction cannot disarm a current token");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         auto token = state.BeginTransaction();
         Key(state, VK_LCONTROL);
         Key(state, 'C');
@@ -178,7 +212,8 @@ int main()
         Check(!restarted.CaptureIntent(next).pendingCopy, "fresh start cannot inherit previous physical modifiers");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, VK_CONTROL, 0);
@@ -189,7 +224,8 @@ int main()
     }
     for (DWORD modifier : {VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN})
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         held[modifier] = true;
         state.Activate();
         held.clear();
@@ -202,7 +238,8 @@ int main()
               "physical release clears each seeded left/right modifier deterministically");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, VK_LCONTROL);
@@ -212,7 +249,8 @@ int main()
         Check(state.CaptureIntent(token).userCopyObserved, "repeat before first observation cannot replace first key sequence");
     }
     {
-        held.clear(); ClipboardActivityState state;
+        held.clear();
+        ClipboardActivityState state;
         state.Activate();
         auto token = state.BeginTransaction();
         Key(state, VK_LCONTROL);

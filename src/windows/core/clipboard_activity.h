@@ -21,6 +21,8 @@ inline ULONG_PTR ClipboardActivityInputTag()
 using ClipboardTransactionToken = uint32_t;
 
 /**
+ * @param[in] sequence Candidate sequence number.
+ * @param[in] previous Earlier sequence number to compare against.
  * @return True only for a known, strictly later sequence within half the DWORD range.
  * @note Unsigned subtraction handles wraparound; zero and half-range ambiguity fail closed.
  */
@@ -41,8 +43,8 @@ struct ClipboardCopyIntent
  * @brief Tracks physical copy/cut shortcuts without blocking the low-level hook.
  * @note Only the clipboard-mutex holder may begin/end transactions or observe a sequence.
  * The hook thread alone updates modifiers. Injected events never update physical state.
- * @warning The engine must exclude every own sequence, including outstanding injected
- * results, before confirming a candidate. This proves ordering, not writer identity.
+ * @warning The engine may preserve a candidate only when no copy input was injected.
+ * Sequence ordering cannot identify which injected or user write changed the clipboard.
  * Do not add an owner/process filter: it rejects focused applications when retrieval
  * targets the window under the mouse in another application.
  */
@@ -106,7 +108,6 @@ class ClipboardActivityState
         // Capture the transaction before processing this event. A callback paused across
         // Begin/End must not attach its old key to whichever transaction is current later.
         uint64_t current = transaction_.load(std::memory_order_acquire);
-        const DWORD sequence = GetClipboardSequenceNumber();
         if (!active_.load(std::memory_order_acquire) || (flags & LLKHF_INJECTED) != 0 ||
             extraInfo == ClipboardActivityInputTag())
             return;
@@ -120,9 +121,10 @@ class ClipboardActivityState
                 modifiers_.fetch_and(~bit, std::memory_order_acq_rel);
             return;
         }
-        if (!down)
+        if (!down || (key != 'C' && key != 'X' && key != VK_INSERT && key != VK_DELETE))
             return;
 
+        const DWORD sequence = GetClipboardSequenceNumber();
         const uint32_t modifiers = modifiers_.load(std::memory_order_acquire);
         // A missed physical keyup must not turn an ordinary key into copy evidence.
         const bool ctrl = (modifiers & CtrlMask) != 0;
@@ -147,7 +149,7 @@ class ClipboardActivityState
      * @param[in] token Current transaction.
      * @param[in] sequence Candidate matching the sequence immediately after OpenClipboard.
      * @param[in] clearSequence Sequence sampled after closing our clear.
-     * @note The engine must first check all other own sequences and later verify stability.
+     * @note The engine must exclude transactions with injected input and verify stability.
      */
     void ObserveSequence(ClipboardTransactionToken token, DWORD sequence, DWORD clearSequence)
     {
